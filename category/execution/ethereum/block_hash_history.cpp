@@ -19,6 +19,8 @@
 #include <category/core/likely.h>
 #include <category/execution/ethereum/block_hash_history.hpp>
 #include <category/execution/ethereum/core/address.hpp>
+#include <category/execution/ethereum/event/exec_event_ctypes.h>
+#include <category/execution/ethereum/event/exec_event_recorder.hpp>
 #include <category/execution/ethereum/state3/state.hpp>
 
 #include <evmc/evmc.h>
@@ -52,11 +54,36 @@ void deploy_block_hash_history_contract(State &state)
 
 void set_block_hash_history(State &state, BlockHeader const &header)
 {
+    constexpr auto SYSTEM_ADDRESS{
+        0xfffffffffffffffffffffffffffffffffffffffe_address};
+
     if (MONAD_UNLIKELY(!header.number)) {
         return;
     }
 
     if (MONAD_LIKELY(state.account_exists(BLOCK_HISTORY_ADDRESS))) {
+        // Emit call frame event for system call tracing
+        if (ExecutionEventRecorder *const exec_recorder = g_exec_event_recorder.get()) {
+            bytes32_t const &input_data = header.parent_hash;
+            ReservedExecEvent const call_frame_event =
+                exec_recorder->reserve_block_event<monad_exec_txn_call_frame>(
+                    MONAD_EXEC_TXN_CALL_FRAME,
+                    as_bytes(std::span{&input_data, 1}));
+            *call_frame_event.payload = monad_exec_txn_call_frame{
+                .index = 1,
+                .caller = SYSTEM_ADDRESS,
+                .call_target = BLOCK_HISTORY_ADDRESS,
+                .opcode = 0xF1, // CALL opcode
+                .value = 0,
+                .gas = 0,
+                .gas_used = 0,
+                .evmc_status = EVMC_SUCCESS,
+                .depth = 0,
+                .input_length = 32,
+                .return_length = 0};
+            exec_recorder->commit(call_frame_event);
+        }
+
         uint64_t const parent_number = header.number - 1;
         uint256_t const index{parent_number % BLOCK_HISTORY_LENGTH};
         bytes32_t const key{to_bytes(to_big_endian(index))};

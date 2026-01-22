@@ -138,9 +138,10 @@ struct monad_c_eth_block_input
     uint64_t extra_data_length;          ///< Number of bytes used in H_x
     monad_c_bytes32 prev_randao;         ///< H_a: source of randomness
     monad_c_b64 nonce;                   ///< H_n: PoW puzzle solution; now zero
-    monad_c_uint256_ne base_fee_per_gas; ///< H_f: wei burned per unit gas
-    monad_c_bytes32 withdrawals_root;    ///< H_w: consensus-initiated withdrawals
-    uint64_t txn_count;                  ///< Number of transactions in block
+    monad_c_uint256_ne base_fee_per_gas;   ///< H_f: wei burned per unit gas
+    monad_c_bytes32 withdrawals_root;      ///< H_w: consensus-initiated withdrawals
+    monad_c_bytes32 parent_beacon_block_root; ///< Parent beacon block root for EIP-4788
+    uint64_t txn_count;                    ///< Number of transactions in block
 };
 
 /// Fields of an Ethereum block header which are produced as a result of

@@ -97,9 +97,33 @@ void set_beacon_root(BlockState &block_state, BlockHeader const &header)
     constexpr auto BEACON_ROOTS_ADDRESS{
         0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02_address};
     constexpr uint256_t HISTORY_BUFFER_LENGTH{8191};
+    constexpr auto SYSTEM_ADDRESS{
+        0xfffffffffffffffffffffffffffffffffffffffe_address};
 
     State state{block_state, Incarnation{header.number, 0}};
     if (state.account_exists(BEACON_ROOTS_ADDRESS)) {
+        // Emit call frame event for system call tracing
+        if (ExecutionEventRecorder *const exec_recorder = g_exec_event_recorder.get()) {
+            bytes32_t const &input_data = header.parent_beacon_block_root.value();
+            ReservedExecEvent const call_frame_event =
+                exec_recorder->reserve_block_event<monad_exec_txn_call_frame>(
+                    MONAD_EXEC_TXN_CALL_FRAME,
+                    as_bytes(std::span{&input_data, 1}));
+            *call_frame_event.payload = monad_exec_txn_call_frame{
+                .index = 0,
+                .caller = SYSTEM_ADDRESS,
+                .call_target = BEACON_ROOTS_ADDRESS,
+                .opcode = 0xF1, // CALL opcode
+                .value = 0,
+                .gas = 0,
+                .gas_used = 0,
+                .evmc_status = EVMC_SUCCESS,
+                .depth = 0,
+                .input_length = 32,
+                .return_length = 0};
+            exec_recorder->commit(call_frame_event);
+        }
+
         uint256_t timestamp{header.timestamp};
         bytes32_t k1{
             to_bytes(to_big_endian(timestamp % HISTORY_BUFFER_LENGTH))};

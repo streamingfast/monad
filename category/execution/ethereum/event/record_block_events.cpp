@@ -69,6 +69,8 @@ void record_block_start(
              .base_fee_per_gas = eth_block_header.base_fee_per_gas.value_or(0),
              .withdrawals_root =
                  eth_block_header.withdrawals_root.value_or(evmc_bytes32{}),
+             .parent_beacon_block_root =
+                 eth_block_header.parent_beacon_block_root.value_or(evmc_bytes32{}),
              .txn_count = txn_count},
         .monad_block_input = opt_monad_input.value_or({})};
     memcpy(
