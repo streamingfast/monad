@@ -2,6 +2,8 @@ name: Docker
 
 on:
   push:
+    branches-ignore:
+      - feature/add-sys-calls-fh
 
 jobs:
   build:
