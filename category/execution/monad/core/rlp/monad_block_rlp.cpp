@@ -32,6 +32,7 @@ Result<BlockHeader> decode_execution_inputs(byte_string_view &enc)
     BlockHeader header;
 
     BOOST_OUTCOME_TRY(auto payload, parse_list_metadata(enc));
+    BOOST_OUTCOME_TRY(header.parent_hash, decode_bytes32(payload));
     BOOST_OUTCOME_TRY(header.ommers_hash, decode_bytes32(payload));
     BOOST_OUTCOME_TRY(header.beneficiary, decode_address(payload));
     BOOST_OUTCOME_TRY(header.transactions_root, decode_bytes32(payload));
