@@ -288,7 +288,7 @@ Result<BlockExecOutput> propose_block(
     auto const commit_begin = std::chrono::steady_clock::now();
     block_state.commit(
         block_id,
-        consensus_header.execution_inputs,
+        block.header, // TO REMOVE - use corrected header not stale consensus_header.execution_inputs
         results,
         call_frames,
         senders,
@@ -628,12 +628,17 @@ Result<std::pair<uint64_t, uint64_t>> runloop_monad(
             auto propose_dispatch = [&]() -> Result<BlockExecOutput> {
                 auto const rev =
                     chain.get_monad_revision(header.execution_inputs.timestamp);
+
+                // TO REMOVE - correcting parent_hash from block_hash_buffer
+                BlockHeader corrected_header = header.execution_inputs;
+                corrected_header.parent_hash = block_hash_buffer.get(header.seqno - 1);
+
                 SWITCH_MONAD_TRAITS(
                     propose_block,
                     block_id,
                     header,
                     Block{
-                        .header = header.execution_inputs,
+                        .header = corrected_header,
                         .transactions = std::move(body.transactions),
                         .ommers = std::move(body.ommers),
                         .withdrawals = std::move(body.withdrawals)},
