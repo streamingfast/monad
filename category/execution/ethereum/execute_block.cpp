@@ -92,10 +92,36 @@ void transfer_balance_dao(
 }
 
 // EIP-4788
+constexpr auto BEACON_ROOTS_ADDRESS{
+    0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02_address};
+
+// Beacon root contract bytecode from EIP-4788
+constexpr uint8_t BEACON_ROOT_CODE[] = {
+    0x33, 0x73, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe, 0x14, 0x60,
+    0x4d, 0x57, 0x60, 0x20, 0x36, 0x14, 0x60, 0x24, 0x57, 0x5f, 0x5f, 0xfd,
+    0x5b, 0x5f, 0x35, 0x80, 0x15, 0x60, 0x49, 0x57, 0x62, 0x00, 0x1f, 0xff,
+    0x81, 0x06, 0x90, 0x81, 0x54, 0x14, 0x60, 0x3c, 0x57, 0x5f, 0x5f, 0xfd,
+    0x5b, 0x62, 0x00, 0x1f, 0xff, 0x01, 0x54, 0x5f, 0x52, 0x60, 0x20, 0x5f,
+    0xf3, 0x5b, 0x5f, 0x5f, 0xfd, 0x5b, 0x62, 0x00, 0x1f, 0xff, 0x42, 0x06,
+    0x42, 0x81, 0x55, 0x5f, 0x35, 0x90, 0x62, 0x00, 0x1f, 0xff, 0x01, 0x55};
+
+void deploy_beacon_root_contract(State &state)
+{
+    if (MONAD_LIKELY(state.account_exists(BEACON_ROOTS_ADDRESS))) {
+        return;
+    }
+
+    bytes32_t const code_hash = to_bytes(keccak256(BEACON_ROOT_CODE));
+
+    state.create_contract(BEACON_ROOTS_ADDRESS);
+    state.set_code_hash(BEACON_ROOTS_ADDRESS, code_hash);
+    state.set_code(BEACON_ROOTS_ADDRESS, BEACON_ROOT_CODE);
+    state.set_nonce(BEACON_ROOTS_ADDRESS, 1);
+}
+
 void set_beacon_root(BlockState &block_state, BlockHeader const &header)
 {
-    constexpr auto BEACON_ROOTS_ADDRESS{
-        0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02_address};
     constexpr uint256_t HISTORY_BUFFER_LENGTH{8191};
     constexpr auto SYSTEM_ADDRESS{
         0xfffffffffffffffffffffffffffffffffffffffe_address};
@@ -236,6 +262,11 @@ Result<std::vector<Receipt>> execute_block(
     }
 
     if constexpr (traits::evm_rev() >= EVMC_CANCUN) {
+        State state{block_state, Incarnation{block.header.number, 0}};
+        deploy_beacon_root_contract(state);
+        MONAD_ASSERT(block_state.can_merge(state));
+        block_state.merge(state);
+
         set_beacon_root(block_state, block.header);
     }
 
