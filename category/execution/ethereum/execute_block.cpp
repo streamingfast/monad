@@ -255,11 +255,11 @@ Result<std::vector<Receipt>> execute_block(
             deploy_block_hash_history_contract(state);
         }
 
-        set_block_hash_history(state, block.header);
-
         MONAD_ASSERT(block_state.can_merge(state));
         block_state.merge(state);
     }
+
+    set_block_hash_history(block_state, block.header);
 
     if constexpr (traits::evm_rev() >= EVMC_CANCUN) {
         State state{block_state, Incarnation{block.header.number, 0}};

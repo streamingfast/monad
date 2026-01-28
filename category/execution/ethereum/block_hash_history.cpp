@@ -52,7 +52,7 @@ void deploy_block_hash_history_contract(State &state)
     state.set_nonce(BLOCK_HISTORY_ADDRESS, 1);
 }
 
-void set_block_hash_history(State &state, BlockHeader const &header)
+void set_block_hash_history(BlockState &block_state, BlockHeader const &header)
 {
     constexpr auto SYSTEM_ADDRESS{
         0xfffffffffffffffffffffffffffffffffffffffe_address};
@@ -61,6 +61,7 @@ void set_block_hash_history(State &state, BlockHeader const &header)
         return;
     }
 
+    State state{block_state, Incarnation{header.number, 0}};
     if (MONAD_LIKELY(state.account_exists(BLOCK_HISTORY_ADDRESS))) {
         // Emit call frame event for system call tracing
         if (ExecutionEventRecorder *const exec_recorder = g_exec_event_recorder.get()) {
@@ -88,6 +89,9 @@ void set_block_hash_history(State &state, BlockHeader const &header)
         uint256_t const index{parent_number % BLOCK_HISTORY_LENGTH};
         bytes32_t const key{to_bytes(to_big_endian(index))};
         state.set_storage(BLOCK_HISTORY_ADDRESS, key, header.parent_hash);
+
+        MONAD_ASSERT(block_state.can_merge(state));
+        block_state.merge(state);
     }
 }
 
