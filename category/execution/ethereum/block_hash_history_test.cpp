@@ -707,7 +707,7 @@ TEST_F(BlockHistoryFixture, blockhash_opcode_buffer_history_agreement)
     // Identity mapping again
     for (uint64_t i = 0; i < 256; i++) {
         set_block_hash_history(
-            state,
+            block_state,
             BlockHeader{.parent_hash = to_bytes(i + 1), .number = i + 1});
         // i + 1, because set_block_hash_history sets i - 1.
     }
