@@ -104,7 +104,6 @@ static void emit_account_access_events(
             exec_recorder->reserve_block_event<monad_exec_account_access>(
                 MONAD_EXEC_ACCOUNT_ACCESS);
         auto const &orig_account = original_account_state.account_;
-        auto const &curr_account = current_account_state.account_;
         *account_event.payload = monad_exec_account_access{
             .index = account_index,
             .address = address,
