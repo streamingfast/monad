@@ -70,12 +70,25 @@ static void emit_account_access_events(
         ReservedExecEvent const account_event =
             exec_recorder->reserve_block_event<monad_exec_account_access>(
                 MONAD_EXEC_ACCOUNT_ACCESS);
+        auto const &orig_account = original_account_state.account_;
+        auto const &curr_account = current_account_state.account_;
         *account_event.payload = monad_exec_account_access{
             .index = account_index,
             .address = address,
             .access_context = access_context,
-            .storage_entry_count =
-                static_cast<uint32_t>(current_account_state.storage_.size())};
+            .is_balance_modified = false,
+            .is_nonce_modified = false,
+            .prestate = orig_account.has_value() ?
+                monad_c_eth_account_state{
+                    .balance = orig_account->balance,
+                    .nonce = orig_account->nonce,
+                    .code_hash = orig_account->code_hash} :
+                monad_c_eth_account_state{},
+            .modified_balance = {},
+            .modified_nonce = 0,
+            .storage_key_count =
+                static_cast<uint32_t>(current_account_state.storage_.size()),
+            .transient_count = 0};
         exec_recorder->commit(account_event);
 
         // Emit STORAGE_ACCESS for each storage slot
