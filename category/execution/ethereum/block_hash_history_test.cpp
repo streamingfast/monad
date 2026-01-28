@@ -131,7 +131,7 @@ namespace
             BlockHeader const header{
                 .parent_hash = to_bytes(i - 1), .number = i};
             set_block_hash_history(
-                state, header); // sets `number - 1 -> to_bytes(number - 1)`
+                block_state, header); // sets `number - 1 -> to_bytes(number - 1)`
         }
     }
 
@@ -142,7 +142,7 @@ namespace
         for (uint64_t i = start_block; i <= end_block; i++) {
             BlockHeader const header{.parent_hash = fixed_hash, .number = i};
             set_block_hash_history(
-                state, header); // sets `number - 1 -> fixed_hash`
+                block_state, header); // sets `number - 1 -> fixed_hash`
         }
     }
 

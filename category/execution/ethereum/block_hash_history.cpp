@@ -21,6 +21,7 @@
 #include <category/execution/ethereum/core/address.hpp>
 #include <category/execution/ethereum/event/exec_event_ctypes.h>
 #include <category/execution/ethereum/event/exec_event_recorder.hpp>
+#include <category/execution/ethereum/state2/block_state.hpp>
 #include <category/execution/ethereum/state3/state.hpp>
 
 #include <evmc/evmc.h>
