@@ -113,8 +113,8 @@ static void emit_account_access_events(
             .is_nonce_modified = false,
             .prestate = orig_account.has_value() ?
                 monad_c_eth_account_state{
-                    .balance = orig_account->balance,
                     .nonce = orig_account->nonce,
+                    .balance = orig_account->balance,
                     .code_hash = orig_account->code_hash} :
                 monad_c_eth_account_state{},
             .modified_balance = {},
