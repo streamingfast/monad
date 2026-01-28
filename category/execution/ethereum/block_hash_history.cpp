@@ -27,7 +27,6 @@
 
 #include <cstdint>
 #include <cstdio>
-#include <string>
 
 MONAD_NAMESPACE_BEGIN
 
@@ -69,15 +68,13 @@ void set_block_hash_history(State &state, BlockHeader const &header)
             bytes32_t const &input_data = header.parent_hash;
 
             // Debug: Print the parent hash being used
-            std::string parent_hash_hex;
+            printf("DEBUG block_hash_history: block_num=%lu, parent_hash=0x", header.number);
             for (size_t i = 0; i < 32; ++i) {
-                char buf[3];
-                snprintf(buf, sizeof(buf), "%02x", input_data[i]);
-                parent_hash_hex += buf;
+                printf("%02x", input_data[i]);
             }
-            printf("DEBUG block_hash_history: block_num=%lu, parent_hash=0x%s\n",
-                   header.number, parent_hash_hex.c_str());
+            printf("\n");
             fflush(stdout);
+
             ReservedExecEvent const call_frame_event =
                 exec_recorder->reserve_block_event<monad_exec_txn_call_frame>(
                     MONAD_EXEC_TXN_CALL_FRAME,
