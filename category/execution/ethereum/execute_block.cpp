@@ -91,19 +91,17 @@ static void emit_account_access_events(
         .access_context = access_context};
     exec_recorder->commit(header_event);
 
-    // Emit ACCOUNT_ACCESS and STORAGE_ACCESS events
     uint32_t account_index = 0;
     for (auto const &[address, current_stack] : current) {
         auto const &current_account_state = current_stack.recent();
-        auto const it = original.find(address);
-        MONAD_ASSERT(it != original.end());
-        auto const &original_account_state = it->second;
 
-        // Emit ACCOUNT_ACCESS
+        auto const it = original.find(address);
+        auto const &orig_account = (it != original.end()) ?
+            it->second.account_ : std::optional<Account>{};
+
         ReservedExecEvent const account_event =
             exec_recorder->reserve_block_event<monad_exec_account_access>(
                 MONAD_EXEC_ACCOUNT_ACCESS);
-        auto const &orig_account = original_account_state.account_;
         *account_event.payload = monad_exec_account_access{
             .index = account_index,
             .address = address,
@@ -123,12 +121,16 @@ static void emit_account_access_events(
             .transient_count = 0};
         exec_recorder->commit(account_event);
 
-        // Emit STORAGE_ACCESS for each storage slot
         uint32_t storage_index = 0;
         for (auto const &[key, end_value] : current_account_state.storage_) {
-            auto const storage_it = original_account_state.storage_.find(key);
-            MONAD_ASSERT(storage_it != original_account_state.storage_.end());
-            bytes32_t const &start_value = storage_it->second;
+            bytes32_t start_value{};
+            if (it != original.end()) {
+                auto const &original_account_state = it->second;
+                auto const storage_it = original_account_state.storage_.find(key);
+                if (storage_it != original_account_state.storage_.end()) {
+                    start_value = storage_it->second;
+                }
+            }
 
             ReservedExecEvent const storage_event =
                 exec_recorder->reserve_block_event<monad_exec_storage_access>(
