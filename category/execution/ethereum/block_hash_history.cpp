@@ -181,8 +181,7 @@ void set_block_hash_history(BlockState &block_state, BlockHeader const &header)
         state.set_storage(BLOCK_HISTORY_ADDRESS, key, header.parent_hash);
 
         // TO REMOVE - Emit account and storage access events before merging
-        // TEMP DISABLED FOR TESTING
-        // emit_account_access_events(state, MONAD_ACCT_ACCESS_BLOCK_PROLOGUE);
+        emit_account_access_events(state, MONAD_ACCT_ACCESS_BLOCK_PROLOGUE);
 
         MONAD_ASSERT(block_state.can_merge(state));
         block_state.merge(state);
