@@ -250,7 +250,8 @@ void set_beacon_root(BlockState &block_state, BlockHeader const &header)
             BEACON_ROOTS_ADDRESS, k2, header.parent_beacon_block_root.value());
 
         // TO REMOVE - Emit account and storage access events before merging
-        emit_account_access_events(state, MONAD_ACCT_ACCESS_BLOCK_PROLOGUE);
+        // TEMP DISABLED FOR TESTING
+        // emit_account_access_events(state, MONAD_ACCT_ACCESS_BLOCK_PROLOGUE);
 
         MONAD_ASSERT(block_state.can_merge(state));
         block_state.merge(state);
