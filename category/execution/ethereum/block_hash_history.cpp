@@ -31,7 +31,7 @@
 MONAD_NAMESPACE_BEGIN
 
 // TO REMOVE - Helper function to emit account and storage access events for system calls
-static void emit_account_access_events(
+[[maybe_unused]] static void emit_account_access_events(
     State const &state,
     monad_exec_account_access_context access_context)
 {
