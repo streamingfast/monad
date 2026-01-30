@@ -67,6 +67,9 @@ jobs:
           target: runner
           build-args: |
             GIT_COMMIT_HASH=${{ env.GIT_COMMIT_HASH }}
+            CC=gcc-15
+            CXX=g++-15
+            CMAKE_BUILD_TYPE=RelWithDebInfo
           builder: ${{ steps.setup-buildx.outputs.name }}
           allow: security.insecure
           ulimit: "memlock=-1:-1"
