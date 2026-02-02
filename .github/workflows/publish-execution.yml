@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - feature/add-sys-calls
 
 env:
   REGISTRY: ghcr.io
