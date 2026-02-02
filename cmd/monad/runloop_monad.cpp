@@ -662,12 +662,17 @@ Result<std::pair<uint64_t, uint64_t>> runloop_monad(
             auto propose_dispatch = [&]() -> Result<BlockExecOutput> {
                 auto const rev =
                     chain.get_monad_revision(header.execution_inputs.timestamp);
+
+                // Correcting parent_hash from block_hash_buffer
+                BlockHeader corrected_header = header.execution_inputs;
+                corrected_header.parent_hash = block_hash_buffer.get(header.seqno - 1);
+
                 SWITCH_MONAD_TRAITS(
                     propose_block,
                     block_id,
                     header,
                     Block{
-                        .header = header.execution_inputs,
+                        .header = corrected_header,
                         .transactions = std::move(body.transactions),
                         .ommers = std::move(body.ommers),
                         .withdrawals = std::move(body.withdrawals)},
