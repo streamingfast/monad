@@ -128,9 +128,8 @@ MONAD_ANONYMOUS_NAMESPACE_BEGIN
             bytes32_t start_value{};
             if (it != original.end()) {
                 auto const &original_account_state = it->second;
-                auto const storage_it = original_account_state.storage_.find(key);
-                if (storage_it != original_account_state.storage_.end()) {
-                    start_value = storage_it->second;
+                if (auto const *const storage_it = original_account_state.storage_.find(key); storage_it) {
+                    start_value = *storage_it;
                 }
             }
 
