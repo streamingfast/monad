@@ -99,7 +99,7 @@ MONAD_ANONYMOUS_NAMESPACE_BEGIN
 
         auto const it = original.find(address);
         auto const &orig_account = (it != original.end()) ?
-            it->second.account_ : std::optional<Account>{};
+            get_account_for_trace(it->second) : std::optional<Account>{};
 
         ReservedExecEvent const account_event =
             exec_recorder->reserve_block_event<monad_exec_account_access>(
