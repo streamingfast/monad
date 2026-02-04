@@ -41,10 +41,8 @@ constexpr uint8_t BLOCK_HISTORY_CODE[] = {
 
 MONAD_ANONYMOUS_NAMESPACE_BEGIN
 
-MONAD_NAMESPACE_BEGIN
-
 // Helper function to emit account and storage access events for system calls
-[[maybe_unused]] static void emit_account_access_events(
+static void emit_account_access_events(
     State const &state,
     monad_exec_account_access_context access_context)
 {
@@ -77,7 +75,7 @@ MONAD_NAMESPACE_BEGIN
 
         auto const it = original.find(address);
         auto const &orig_account = (it != original.end()) ?
-            it->second.account_ : std::optional<Account>{};
+            get_account_for_trace(it->second) : std::optional<Account>{};
 
         ReservedExecEvent const account_event =
             exec_recorder->reserve_block_event<monad_exec_account_access>(
@@ -106,9 +104,8 @@ MONAD_NAMESPACE_BEGIN
             bytes32_t start_value{};
             if (it != original.end()) {
                 auto const &original_account_state = it->second;
-                auto const storage_it = original_account_state.storage_.find(key);
-                if (storage_it != original_account_state.storage_.end()) {
-                    start_value = storage_it->second;
+                if (auto const *const storage_it = original_account_state.storage_.find(key); storage_it) {
+                    start_value = *storage_it;
                 }
             }
 
@@ -131,6 +128,8 @@ MONAD_NAMESPACE_BEGIN
         account_index++;
     }
 }
+
+MONAD_ANONYMOUS_NAMESPACE_END
 
 void deploy_block_hash_history_contract(State &state)
 {
