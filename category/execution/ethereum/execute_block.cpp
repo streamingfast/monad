@@ -325,31 +325,36 @@ template <Traits traits>
 void execute_block_header(
     Chain const &chain, BlockState &block_state, BlockHeader const &header)
 {
-    State state{block_state, Incarnation{header.number, 0}};
+    {
+        State state{block_state, Incarnation{header.number, 0}};
 
-    deploy_block_hash_history_contract<traits>(state);
-    set_block_hash_history<traits>(state, header);
+        if constexpr (traits::evm_rev() >= EVMC_PRAGUE) {
+            deploy_block_hash_history_contract(state);
+        }
 
-    if constexpr (traits::evm_rev() >= EVMC_CANCUN) {
-        deploy_beacon_root_contract(state);
-    }
+        if constexpr (traits::evm_rev() >= EVMC_CANCUN) {
+            deploy_beacon_root_contract(state);
+        }
 
-    // Ethereum mainnet dao fork
-    if constexpr (traits::evm_rev() == EVMC_HOMESTEAD) {
-        if (MONAD_UNLIKELY(header.number == dao::dao_block_number)) {
-            if (chain.get_chain_id() == 1) {
-                transfer_balance_dao(state);
+        // Ethereum mainnet dao fork
+        if constexpr (traits::evm_rev() == EVMC_HOMESTEAD) {
+            if (MONAD_UNLIKELY(header.number == dao::dao_block_number)) {
+                if (chain.get_chain_id() == 1) {
+                    transfer_balance_dao(state);
+                }
             }
         }
+
+        // TODO: move to execute_monad_block eventually
+        if constexpr (is_monad_trait_v<traits>) {
+            staking::execute_block_prelude<traits>(state);
+        }
+
+        MONAD_ASSERT(block_state.can_merge(state));
+        block_state.merge(state);
     }
 
-    // TODO: move to execute_monad_block eventually
-    if constexpr (is_monad_trait_v<traits>) {
-        staking::execute_block_prelude<traits>(state);
-    }
-
-    MONAD_ASSERT(block_state.can_merge(state));
-    block_state.merge(state);
+    set_block_hash_history(block_state, header);
 
     if constexpr (traits::evm_rev() >= EVMC_CANCUN) {
         set_beacon_root(block_state, header);
