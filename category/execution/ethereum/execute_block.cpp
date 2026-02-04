@@ -204,12 +204,13 @@ void deploy_beacon_root_contract(State &state)
     state.set_nonce(BEACON_ROOTS_ADDRESS, 1);
 }
 
-void set_beacon_root(State &state, BlockHeader const &header)
+void set_beacon_root(BlockState &block_state, BlockHeader const &header)
 {
+    constexpr uint256_t HISTORY_BUFFER_LENGTH{8191};
     constexpr auto SYSTEM_ADDRESS{
         0xfffffffffffffffffffffffffffffffffffffffe_address};
-    constexpr uint256_t HISTORY_BUFFER_LENGTH{8191};
 
+    State state{block_state, Incarnation{header.number, 0}};
     if (state.account_exists(BEACON_ROOTS_ADDRESS)) {
         // Emit call frame event for system call tracing
         if (ExecutionEventRecorder *const exec_recorder = g_exec_event_recorder.get()) {
@@ -219,7 +220,7 @@ void set_beacon_root(State &state, BlockHeader const &header)
                     MONAD_EXEC_TXN_CALL_FRAME,
                     as_bytes(std::span{&input_data, 1}));
             *call_frame_event.payload = monad_exec_txn_call_frame{
-                .index = 1,
+                .index = 0,
                 .caller = SYSTEM_ADDRESS,
                 .call_target = BEACON_ROOTS_ADDRESS,
                 .opcode = 0xF1, // CALL opcode
@@ -243,8 +244,11 @@ void set_beacon_root(State &state, BlockHeader const &header)
         state.set_storage(
             BEACON_ROOTS_ADDRESS, k2, header.parent_beacon_block_root.value());
 
-        // Emit account and storage access events
+        // TO REMOVE - Emit account and storage access events before merging
         emit_account_access_events(state, MONAD_ACCT_ACCESS_BLOCK_PROLOGUE);
+
+        MONAD_ASSERT(block_state.can_merge(state));
+        block_state.merge(state);
     }
 }
 
@@ -328,7 +332,6 @@ void execute_block_header(
 
     if constexpr (traits::evm_rev() >= EVMC_CANCUN) {
         deploy_beacon_root_contract(state);
-        set_beacon_root(state, header);
     }
 
     // Ethereum mainnet dao fork
@@ -347,7 +350,10 @@ void execute_block_header(
 
     MONAD_ASSERT(block_state.can_merge(state));
     block_state.merge(state);
-    record_account_access_events(MONAD_ACCT_ACCESS_BLOCK_PROLOGUE, state);
+
+    if constexpr (traits::evm_rev() >= EVMC_CANCUN) {
+        set_beacon_root(block_state, header);
+    }
 }
 
 EXPLICIT_TRAITS(execute_block_header);
