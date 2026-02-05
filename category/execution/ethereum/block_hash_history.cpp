@@ -39,8 +39,6 @@ constexpr uint8_t BLOCK_HISTORY_CODE[] = {
     0x5f, 0x52, 0x60, 0x20, 0x5f, 0xf3, 0x5b, 0x5f, 0x5f, 0xfd, 0x5b, 0x5f,
     0x35, 0x61, 0x1f, 0xff, 0x60, 0x01, 0x43, 0x03, 0x06, 0x55, 0x00};
 
-MONAD_ANONYMOUS_NAMESPACE_BEGIN
-
 // Helper function to emit account and storage access events for system calls
 static void emit_account_access_events(
     State const &state,
@@ -129,7 +127,7 @@ static void emit_account_access_events(
     }
 }
 
-void deploy_block_hash_history_contract_impl(State &state)
+void deploy_block_hash_history_contract(State &state)
 {
     if (MONAD_LIKELY(state.account_exists(BLOCK_HISTORY_ADDRESS))) {
         return;
@@ -143,7 +141,7 @@ void deploy_block_hash_history_contract_impl(State &state)
     state.set_nonce(BLOCK_HISTORY_ADDRESS, 1);
 }
 
-void set_block_hash_history_impl(BlockState &block_state, BlockHeader const &header)
+void set_block_hash_history(BlockState &block_state, BlockHeader const &header)
 {
     constexpr auto SYSTEM_ADDRESS{
         0xfffffffffffffffffffffffffffffffffffffffe_address};
@@ -187,18 +185,6 @@ void set_block_hash_history_impl(BlockState &block_state, BlockHeader const &hea
         MONAD_ASSERT(block_state.can_merge(state));
         block_state.merge(state);
     }
-}
-
-MONAD_ANONYMOUS_NAMESPACE_END
-
-void deploy_block_hash_history_contract(State &state)
-{
-    deploy_block_hash_history_contract_impl(state);
-}
-
-void set_block_hash_history(BlockState &block_state, BlockHeader const &header)
-{
-    set_block_hash_history_impl(block_state, header);
 }
 
 // Note: EIP-2935 says the get on the block hash history contract should revert
