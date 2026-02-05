@@ -49,6 +49,16 @@ jobs:
           buildkitd-flags: |
             --allow-insecure-entitlement security.insecure
 
+      - name: Free up disk space
+        run: |
+          # Remove unnecessary packages to free up space
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker system prune -af
+          df -h
+
       - name: Configure hugepages (required for build)
         run: |
           sudo bash -c "echo 2048 > /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages"
@@ -76,3 +86,5 @@ jobs:
           ulimit: "memlock=-1:-1"
           cache-from: type=gha,scope=release-execution
           cache-to: type=gha,scope=release-execution,mode=max
+          provenance: false
+          sbom: false
