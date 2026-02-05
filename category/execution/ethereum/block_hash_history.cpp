@@ -129,9 +129,7 @@ static void emit_account_access_events(
     }
 }
 
-MONAD_ANONYMOUS_NAMESPACE_END
-
-void deploy_block_hash_history_contract(State &state)
+void deploy_block_hash_history_contract_impl(State &state)
 {
     if (MONAD_LIKELY(state.account_exists(BLOCK_HISTORY_ADDRESS))) {
         return;
@@ -145,7 +143,7 @@ void deploy_block_hash_history_contract(State &state)
     state.set_nonce(BLOCK_HISTORY_ADDRESS, 1);
 }
 
-void set_block_hash_history(BlockState &block_state, BlockHeader const &header)
+void set_block_hash_history_impl(BlockState &block_state, BlockHeader const &header)
 {
     constexpr auto SYSTEM_ADDRESS{
         0xfffffffffffffffffffffffffffffffffffffffe_address};
@@ -189,6 +187,18 @@ void set_block_hash_history(BlockState &block_state, BlockHeader const &header)
         MONAD_ASSERT(block_state.can_merge(state));
         block_state.merge(state);
     }
+}
+
+MONAD_ANONYMOUS_NAMESPACE_END
+
+void deploy_block_hash_history_contract(State &state)
+{
+    deploy_block_hash_history_contract_impl(state);
+}
+
+void set_block_hash_history(BlockState &block_state, BlockHeader const &header)
+{
+    set_block_hash_history_impl(block_state, header);
 }
 
 // Note: EIP-2935 says the get on the block hash history contract should revert
