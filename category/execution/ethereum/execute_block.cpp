@@ -354,7 +354,9 @@ void execute_block_header(
         block_state.merge(state);
     }
 
-    set_block_hash_history(block_state, header);
+    if constexpr (traits::evm_rev() >= EVMC_CANCUN) {
+        set_block_hash_history(block_state, header);
+    }
 
     if constexpr (traits::evm_rev() >= EVMC_CANCUN) {
         set_beacon_root(block_state, header);
