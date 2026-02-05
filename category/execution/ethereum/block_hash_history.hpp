@@ -15,6 +15,7 @@
 
 #pragma once
 
+#include <category/core/bytes.hpp>
 #include <category/core/config.hpp>
 #include <category/execution/ethereum/core/address.hpp>
 
@@ -27,7 +28,8 @@ class State;
 class BlockState;
 
 constexpr Address BLOCK_HISTORY_ADDRESS{
-    0x0000F90827F1C53a10cb7A02335B175320002935_address};
+    {{0x00, 0x00, 0xF9, 0x08, 0x27, 0xF1, 0xC5, 0x3a, 0x10, 0xcb,
+      0x7A, 0x02, 0x33, 0x5B, 0x17, 0x53, 0x20, 0x00, 0x29, 0x35}}};
 
 constexpr uint64_t BLOCK_HISTORY_LENGTH{8191};
 
