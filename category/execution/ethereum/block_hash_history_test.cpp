@@ -115,7 +115,7 @@ namespace
     void BlockHistoryFixture::deploy_history_contract()
     {
         BlockHeader const header{.parent_hash = bytes32_t{}, .number = 0};
-        deploy_block_hash_history_contract<Prague>(state);
+        deploy_block_hash_history_contract(state);
     }
 
     void BlockHistoryFixture::fill_history(
@@ -127,8 +127,8 @@ namespace
         for (uint64_t i = start_block; i <= end_block; i++) {
             BlockHeader const header{
                 .parent_hash = to_bytes(i - 1), .number = i};
-            set_block_hash_history<Prague>(
-                state, header); // sets `number - 1 -> to_bytes(number - 1)`
+            set_block_hash_history(
+                block_state, header); // sets `number - 1 -> to_bytes(number - 1)`
         }
     }
 
@@ -138,8 +138,8 @@ namespace
     {
         for (uint64_t i = start_block; i <= end_block; i++) {
             BlockHeader const header{.parent_hash = fixed_hash, .number = i};
-            set_block_hash_history<Prague>(
-                state, header); // sets `number - 1 -> fixed_hash`
+            set_block_hash_history(
+                block_state, header); // sets `number - 1 -> fixed_hash`
         }
     }
 
@@ -688,8 +688,8 @@ TEST_F(BlockHistoryFixture, blockhash_opcode_buffer_history_agreement)
 
     // Identity mapping again
     for (uint64_t i = 0; i < 256; i++) {
-        set_block_hash_history<Prague>(
-            state,
+        set_block_hash_history(
+            block_state,
             BlockHeader{.parent_hash = to_bytes(i + 1), .number = i + 1});
         // i + 1, because set_block_hash_history sets i - 1.
     }
