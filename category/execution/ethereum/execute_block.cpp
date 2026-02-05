@@ -220,7 +220,7 @@ void set_beacon_root(BlockState &block_state, BlockHeader const &header)
                     MONAD_EXEC_TXN_CALL_FRAME,
                     as_bytes(std::span{&input_data, 1}));
             *call_frame_event.payload = monad_exec_txn_call_frame{
-                .index = 0,
+                .index = 1,
                 .caller = SYSTEM_ADDRESS,
                 .call_target = BEACON_ROOTS_ADDRESS,
                 .opcode = 0xF1, // CALL opcode
