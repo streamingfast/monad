@@ -26,10 +26,7 @@ RUN cd src && CC=${CC:?} CXX=${CXX:?} CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE:?} CFL
 # Clean up to save disk space before the heavy build
 RUN apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-RUN cd src && ./scripts/build.sh && \
-    # Clean up build artifacts to save space
-    find build -name "*.o" -delete && \
-    find build -name "*.a" -delete 2>/dev/null || true
+RUN cd src && ./scripts/build.sh
 
 # security=insecure for tests which use io_uring
 # RUN --security=insecure cd src && if [ "${CMAKE_BUILD_TYPE:?}" != "Debug" ]; then CC=${CC:?} CXX=${CXX:?} CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE:?} ./scripts/test.sh; fi
