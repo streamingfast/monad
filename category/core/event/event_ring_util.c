@@ -24,6 +24,7 @@
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <unistd.h>
 
 #if __has_include(<linux/limits.h>)
     #include <linux/limits.h> // NOLINT(misc-include-cleaner)
