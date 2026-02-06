@@ -27,7 +27,12 @@
 #ifdef __cplusplus
     #include <bit>
 #else
-    #include <stdbit.h>
+    #ifdef __APPLE__
+        #define stdc_bit_ceil(x) (1ULL << (64 - __builtin_clzll((x) - 1)))
+        #define stdc_has_single_bit(x) (__builtin_popcountll(x) == 1)
+    #else
+        #include <stdbit.h>
+    #endif
 #endif
 
 #include <stddef.h>
