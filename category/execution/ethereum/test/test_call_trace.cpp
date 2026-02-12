@@ -25,6 +25,7 @@
 #include <category/execution/ethereum/state2/block_state.hpp>
 #include <category/execution/ethereum/state3/state.hpp>
 #include <category/execution/ethereum/trace/call_tracer.hpp>
+#include <category/execution/monad/chain/monad_chain.hpp>
 #include <monad/test/traits_test.hpp>
 
 #include <evmc/evmc.h>
@@ -52,8 +53,6 @@ namespace
 
     constexpr auto a = 0x5353535353535353535353535353535353535353_address;
     constexpr auto b = 0xbebebebebebebebebebebebebebebebebebebebe_address;
-
-    static constexpr std::vector<std::optional<Address>> authorities_empty{};
 }
 
 TEST(CallFrame, to_json)
@@ -78,7 +77,7 @@ TEST(CallFrame, to_json)
         "to":"0xbebebebebebebebebebebebebebebebebebebebe",
         "type":"CALL",
         "value":"0x51a5",
-        "depth":0, 
+        "depth":0,
         "calls":[],
         "output":"0x"
     })";
@@ -154,8 +153,12 @@ TYPED_TEST(TraitsTest, execute_success)
     BlockHashBufferFinalized buffer{};
     std::vector<CallFrame> call_frames;
     CallTracer call_tracer{tx, call_frames};
+    auto const chain_ctx =
+        ChainContext<typename TestFixture::Trait>::debug_empty();
+    constexpr std::span<std::optional<Address> const> authorities_empty{};
+    uint256_t base_fee{0};
     EvmcHost<typename TestFixture::Trait> host{
-        call_tracer, tx_context, buffer, s};
+        call_tracer, tx_context, buffer, s, tx, base_fee, 0, chain_ctx};
 
     auto const result =
         ExecuteTransactionNoValidation<typename TestFixture::Trait>(
@@ -163,8 +166,7 @@ TYPED_TEST(TraitsTest, execute_success)
             tx,
             sender,
             authorities_empty,
-            BlockHeader{.beneficiary = beneficiary},
-            0)(s, host);
+            BlockHeader{.beneficiary = beneficiary})(s, host);
     EXPECT_TRUE(result.status_code == EVMC_SUCCESS);
     ASSERT_TRUE(call_frames.size() == 1);
 
@@ -228,8 +230,12 @@ TYPED_TEST(TraitsTest, execute_reverted_insufficient_balance)
     BlockHashBufferFinalized buffer{};
     std::vector<CallFrame> call_frames;
     CallTracer call_tracer{tx, call_frames};
+    auto const chain_ctx =
+        ChainContext<typename TestFixture::Trait>::debug_empty();
+    constexpr std::span<std::optional<Address> const> authorities_empty{};
+    uint256_t base_fee{0};
     EvmcHost<typename TestFixture::Trait> host{
-        call_tracer, tx_context, buffer, s};
+        call_tracer, tx_context, buffer, s, tx, base_fee, 0, chain_ctx};
 
     auto const result =
         ExecuteTransactionNoValidation<typename TestFixture::Trait>(
@@ -237,8 +243,7 @@ TYPED_TEST(TraitsTest, execute_reverted_insufficient_balance)
             tx,
             sender,
             authorities_empty,
-            BlockHeader{.beneficiary = beneficiary},
-            0)(s, host);
+            BlockHeader{.beneficiary = beneficiary})(s, host);
     EXPECT_TRUE(result.status_code == EVMC_INSUFFICIENT_BALANCE);
     ASSERT_TRUE(call_frames.size() == 1);
 
@@ -307,8 +312,12 @@ TYPED_TEST(TraitsTest, create_call_trace)
     BlockHashBufferFinalized buffer{};
     std::vector<CallFrame> call_frames;
     CallTracer call_tracer{tx, call_frames};
+    auto const chain_ctx =
+        ChainContext<typename TestFixture::Trait>::debug_empty();
+    constexpr std::span<std::optional<Address> const> authorities_empty{};
+    uint256_t base_fee{0};
     EvmcHost<typename TestFixture::Trait> host{
-        call_tracer, tx_context, buffer, s};
+        call_tracer, tx_context, buffer, s, tx, base_fee, 0, chain_ctx};
 
     auto const result =
         ExecuteTransactionNoValidation<typename TestFixture::Trait>(
@@ -316,8 +325,7 @@ TYPED_TEST(TraitsTest, create_call_trace)
             tx,
             sender,
             authorities_empty,
-            BlockHeader{.beneficiary = beneficiary},
-            0)(s, host);
+            BlockHeader{.beneficiary = beneficiary})(s, host);
     EXPECT_TRUE(result.status_code == EVMC_SUCCESS);
     ASSERT_TRUE(call_frames.size() == 2);
 
@@ -395,7 +403,7 @@ TYPED_TEST(TraitsTest, selfdestruct_logs)
              StateDelta{
                  .account =
                      {std::nullopt,
-                      Account{.balance = 0, .code_hash = code_hash}}}}},
+                      Account{.balance = 1000u, .code_hash = code_hash}}}}},
         Code{
             {code_hash, icode},
         },
@@ -420,8 +428,12 @@ TYPED_TEST(TraitsTest, selfdestruct_logs)
     BlockHashBufferFinalized buffer{};
     std::vector<CallFrame> call_frames;
     CallTracer call_tracer{tx, call_frames};
+    auto const chain_ctx =
+        ChainContext<typename TestFixture::Trait>::debug_empty();
+    constexpr std::span<std::optional<Address> const> authorities_empty{};
+    uint256_t base_fee{0};
     EvmcHost<typename TestFixture::Trait> host{
-        call_tracer, tx_context, buffer, s};
+        call_tracer, tx_context, buffer, s, tx, base_fee, 0, chain_ctx};
 
     auto const result =
         ExecuteTransactionNoValidation<typename TestFixture::Trait>(
@@ -429,8 +441,7 @@ TYPED_TEST(TraitsTest, selfdestruct_logs)
             tx,
             sender,
             authorities_empty,
-            BlockHeader{.beneficiary = beneficiary},
-            0)(s, host);
+            BlockHeader{.beneficiary = beneficiary})(s, host);
     EXPECT_TRUE(result.status_code == EVMC_SUCCESS);
 
     EXPECT_EQ(call_frames.size(), 4);
@@ -438,10 +449,88 @@ TYPED_TEST(TraitsTest, selfdestruct_logs)
     EXPECT_EQ(call_frames[1].type, CallType::CREATE);
     EXPECT_EQ(call_frames[2].type, CallType::CALL);
     EXPECT_EQ(call_frames[3].type, CallType::SELFDESTRUCT);
+    // contract started with 1000 balance, but it's the nested contract that
+    // selfdestructs, which has 0 balance
+    EXPECT_EQ(call_frames[3].value, 0u);
 
     for (auto const &frame : call_frames) {
         EXPECT_TRUE(frame.logs.has_value());
     }
+}
+
+TYPED_TEST(TraitsTest, selfdestruct_logs_value)
+{
+    InMemoryMachine machine;
+    mpt::Db db{machine};
+    TrieDb tdb{db};
+    vm::VM vm;
+
+    // selfdestruct(ADDR_C): PUSH2 0x0102, SELFDESTRUCT
+    static_assert(ADDR_C == 0x0000000000000000000000000000000000000102_address);
+    auto const code = evmc::from_hex("0x610102FF").value();
+    auto const icode = vm::make_shared_intercode(code);
+    auto const code_hash = to_bytes(keccak256(code));
+
+    commit_sequential(
+        tdb,
+        StateDeltas{
+            {ADDR_C,
+             StateDelta{
+                 .account =
+                     {std::nullopt,
+                      Account{
+                          .balance = std::numeric_limits<uint256_t>::max()}}}},
+            {ADDR_B,
+             StateDelta{
+                 .account =
+                     {std::nullopt,
+                      Account{.balance = 1000u, .code_hash = code_hash}}}}},
+        Code{
+            {code_hash, icode},
+        },
+        BlockHeader{});
+
+    BlockState bs{tdb, vm};
+    Incarnation const incarnation{0, 0};
+    State s{bs, incarnation};
+
+    Transaction const tx{
+        .max_fee_per_gas = 1,
+        .gas_limit = 1'000'000,
+        .value = 0,
+        .to = ADDR_B,
+    };
+
+    auto const &sender = ADDR_C;
+    auto const &beneficiary = ADDR_C;
+
+    evmc_tx_context const tx_context{};
+    BlockHashBufferFinalized buffer{};
+    std::vector<CallFrame> call_frames;
+    CallTracer call_tracer{tx, call_frames};
+    auto const chain_ctx =
+        ChainContext<typename TestFixture::Trait>::debug_empty();
+    constexpr std::span<std::optional<Address> const> authorities_empty{};
+    uint256_t base_fee{0};
+    EvmcHost<typename TestFixture::Trait> host{
+        call_tracer, tx_context, buffer, s, tx, base_fee, 0, chain_ctx};
+
+    auto const result =
+        ExecuteTransactionNoValidation<typename TestFixture::Trait>(
+            EthereumMainnet{},
+            tx,
+            sender,
+            authorities_empty,
+            BlockHeader{.beneficiary = beneficiary})(s, host);
+
+    EXPECT_TRUE(result.status_code == EVMC_SUCCESS);
+
+    EXPECT_EQ(call_frames.size(), 2);
+    EXPECT_EQ(call_frames[0].type, CallType::CALL);
+    EXPECT_EQ(call_frames[1].type, CallType::SELFDESTRUCT);
+    EXPECT_EQ(
+        call_frames[1].value,
+        1000u); // contract started with 1000 balance, sent to ADDR_C
 }
 
 // Regression test for a bug where selfdestruct call frames would be incorrectly
@@ -508,8 +597,12 @@ TYPED_TEST(TraitsTest, selfdestruct_depth)
     BlockHashBufferFinalized buffer{};
     std::vector<CallFrame> call_frames;
     CallTracer call_tracer{tx, call_frames};
+    auto const chain_ctx =
+        ChainContext<typename TestFixture::Trait>::debug_empty();
+    constexpr std::span<std::optional<Address> const> authorities_empty{};
+    uint256_t base_fee{0};
     EvmcHost<typename TestFixture::Trait> host{
-        call_tracer, tx_context, buffer, s};
+        call_tracer, tx_context, buffer, s, tx, base_fee, 0, chain_ctx};
 
     auto const result =
         ExecuteTransactionNoValidation<typename TestFixture::Trait>(
@@ -517,8 +610,7 @@ TYPED_TEST(TraitsTest, selfdestruct_depth)
             tx,
             sender,
             authorities_empty,
-            BlockHeader{.beneficiary = beneficiary},
-            0)(s, host);
+            BlockHeader{.beneficiary = beneficiary})(s, host);
     EXPECT_TRUE(result.status_code == EVMC_SUCCESS);
 
     EXPECT_EQ(call_frames.size(), 4);
@@ -531,7 +623,9 @@ TYPED_TEST(TraitsTest, selfdestruct_depth)
 
     EXPECT_EQ(call_frames[2].type, CallType::SELFDESTRUCT);
     EXPECT_EQ(call_frames[2].depth, 2);
+    EXPECT_EQ(call_frames[2].value, 0u); // Second contract had zero balance
 
     EXPECT_EQ(call_frames[3].type, CallType::SELFDESTRUCT);
     EXPECT_EQ(call_frames[3].depth, 1);
+    EXPECT_EQ(call_frames[3].value, 0u); // First contract had zero balance
 }

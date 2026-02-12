@@ -25,6 +25,8 @@
 #include <category/execution/ethereum/state2/block_state.hpp>
 #include <category/execution/ethereum/state3/state.hpp>
 #include <category/execution/ethereum/tx_context.hpp>
+#include <category/execution/monad/chain/monad_chain.hpp>
+
 #include <monad/test/traits_test.hpp>
 
 #include <evmc/evmc.h>
@@ -138,8 +140,19 @@ TYPED_TEST(TraitsTest, emit_log)
     State state{bs, Incarnation{0, 0}};
     BlockHashBufferFinalized const block_hash_buffer;
     NoopCallTracer call_tracer;
+    Transaction tx{};
+    auto const chain_ctx =
+        ChainContext<typename TestFixture::Trait>::debug_empty();
+    uint256_t base_fee{0};
     EvmcHost<typename TestFixture::Trait> host{
-        call_tracer, EMPTY_TX_CONTEXT, block_hash_buffer, state};
+        call_tracer,
+        EMPTY_TX_CONTEXT,
+        block_hash_buffer,
+        state,
+        tx,
+        base_fee,
+        0,
+        chain_ctx};
 
     host.emit_log(
         from,
@@ -167,8 +180,19 @@ TYPED_TEST(TraitsTest, access_precompile)
     State state{bs, Incarnation{0, 0}};
     BlockHashBufferFinalized const block_hash_buffer;
     NoopCallTracer call_tracer;
+    Transaction tx{};
+    auto const chain_ctx =
+        ChainContext<typename TestFixture::Trait>::debug_empty();
+    uint256_t base_fee{0};
     EvmcHost<typename TestFixture::Trait> host{
-        call_tracer, EMPTY_TX_CONTEXT, block_hash_buffer, state};
+        call_tracer,
+        EMPTY_TX_CONTEXT,
+        block_hash_buffer,
+        state,
+        tx,
+        base_fee,
+        0,
+        chain_ctx};
 
     EXPECT_EQ(
         host.access_account(0x0000000000000000000000000000000000000001_address),

@@ -104,6 +104,7 @@ find_package(Boost REQUIRED COMPONENTS fiber json CONFIG)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(brotli REQUIRED IMPORTED_TARGET libbrotlienc libbrotlidec)
 pkg_check_modules(crypto++ REQUIRED IMPORTED_TARGET libcrypto++)
+pkg_check_modules(zstd REQUIRED IMPORTED_TARGET libzstd)
 
 # ankerl
 add_library(ankerl_hash INTERFACE)
@@ -172,7 +173,7 @@ if(MONAD_COMPILER_LLVM)
 endif()
 
 # magic_enum
-find_package(magic_enum REQUIRED)
+add_subdirectory("third_party/magic_enum")
 
 # nanobench
 add_subdirectory("third_party/nanobench")
@@ -192,7 +193,10 @@ target_compile_options(
 
 # silkpre
 set(OPTIONAL_BUILD_TESTS OFF)
+set(OLD_CMAKE_POLICY_VERSION_MINIMUM "${CMAKE_POLICY_VERSION_MINIMUM}")
+set(CMAKE_POLICY_VERSION_MINIMUM "3.5")
 add_subdirectory(third_party/silkpre)
+set(CMAKE_POLICY_VERSION_MINIMUM "${OLD_CMAKE_POLICY_VERSION_MINIMUM}")
 # undo the injection of ccache silkpre/ff does
 set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE)
 set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK)
