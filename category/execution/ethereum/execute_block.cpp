@@ -332,9 +332,6 @@ void execute_block_header(
             deploy_block_hash_history_contract(state);
         }
 
-        if constexpr (traits::evm_rev() >= EVMC_CANCUN) {
-            deploy_beacon_root_contract(state);
-        }
 
         // Ethereum mainnet dao fork
         if constexpr (traits::evm_rev() == EVMC_HOMESTEAD) {
