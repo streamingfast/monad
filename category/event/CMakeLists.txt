@@ -34,6 +34,18 @@ option(MONAD_EVENT_USE_LIBHUGETLBFS
 
 find_library(libzstd_file zstd REQUIRED)
 
+if(APPLE)
+  execute_process(
+    COMMAND brew --prefix zstd
+    OUTPUT_VARIABLE ZSTD_PREFIX
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
+  if(ZSTD_PREFIX)
+    include_directories(${ZSTD_PREFIX}/include)
+    link_directories(${ZSTD_PREFIX}/lib)
+  endif()
+endif()
+
 add_library(
   monad_event
   "../core/assert.c"
