@@ -24,7 +24,11 @@
     #error This file should only be included directly by event_recorder.h
 #endif
 
+#ifdef __APPLE__
+#define stdc_bit_width(x) (64 - __builtin_clzll(x))
+#else
 #include <stdbit.h>
+#endif
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>

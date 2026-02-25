@@ -65,6 +65,94 @@
 
 MONAD_ANONYMOUS_NAMESPACE_BEGIN
 
+// Helper function to emit account and storage access events for system calls
+[[maybe_unused]] static void emit_account_access_events(
+    State const &state,
+    monad_exec_account_access_context access_context)
+{
+    ExecutionEventRecorder *const exec_recorder = g_exec_event_recorder.get();
+    if (!exec_recorder) {
+        return;
+    }
+
+    auto const &current = state.current();
+    auto const &original = state.original();
+
+    // Count total accounts
+    uint32_t const total_accounts = static_cast<uint32_t>(current.size());
+    if (total_accounts == 0) {
+        return;
+    }
+
+    // Emit ACCOUNT_ACCESS_LIST_HEADER
+    ReservedExecEvent const header_event =
+        exec_recorder->reserve_block_event<monad_exec_account_access_list_header>(
+            MONAD_EXEC_ACCOUNT_ACCESS_LIST_HEADER);
+    *header_event.payload = monad_exec_account_access_list_header{
+        .entry_count = total_accounts,
+        .access_context = access_context};
+    exec_recorder->commit(header_event);
+
+    uint32_t account_index = 0;
+    for (auto const &[address, current_stack] : current) {
+        auto const &current_account_state = current_stack.recent();
+
+        auto const it = original.find(address);
+        auto const &orig_account = (it != original.end()) ?
+            get_account_for_trace(it->second) : std::optional<Account>{};
+
+        ReservedExecEvent const account_event =
+            exec_recorder->reserve_block_event<monad_exec_account_access>(
+                MONAD_EXEC_ACCOUNT_ACCESS);
+        *account_event.payload = monad_exec_account_access{
+            .index = account_index,
+            .address = address,
+            .access_context = access_context,
+            .is_balance_modified = false,
+            .is_nonce_modified = false,
+            .prestate = orig_account.has_value() ?
+                monad_c_eth_account_state{
+                    .nonce = orig_account->nonce,
+                    .balance = orig_account->balance,
+                    .code_hash = orig_account->code_hash} :
+                monad_c_eth_account_state{},
+            .modified_balance = {},
+            .modified_nonce = 0,
+            .storage_key_count =
+                static_cast<uint32_t>(current_account_state.storage_.size()),
+            .transient_count = 0};
+        exec_recorder->commit(account_event);
+
+        uint32_t storage_index = 0;
+        for (auto const &[key, end_value] : current_account_state.storage_) {
+            bytes32_t start_value{};
+            if (it != original.end()) {
+                auto const &original_account_state = it->second;
+                if (auto const *const storage_it = original_account_state.storage_.find(key); storage_it) {
+                    start_value = *storage_it;
+                }
+            }
+
+            ReservedExecEvent const storage_event =
+                exec_recorder->reserve_block_event<monad_exec_storage_access>(
+                    MONAD_EXEC_STORAGE_ACCESS);
+            *storage_event.payload = monad_exec_storage_access{
+                .address = address,
+                .index = storage_index,
+                .access_context = access_context,
+                .modified = (start_value != end_value),
+                .transient = false,
+                .key = key,
+                .start_value = start_value,
+                .end_value = end_value};
+            exec_recorder->commit(storage_event);
+            storage_index++;
+        }
+
+        account_index++;
+    }
+}
+
 // EIP-4895
 void process_withdrawal(
     State &state, std::optional<std::vector<Withdrawal>> const &withdrawals)
@@ -88,13 +176,40 @@ void transfer_balance_dao(State &state)
 }
 
 // EIP-4788
-void set_beacon_root(State &state, BlockHeader const &header)
-{
-    constexpr auto BEACON_ROOTS_ADDRESS{
-        0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02_address};
-    constexpr uint256_t HISTORY_BUFFER_LENGTH{8191};
+constexpr auto BEACON_ROOTS_ADDRESS{
+    0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02_address};
 
+
+void set_beacon_root(BlockState &block_state, BlockHeader const &header)
+{
+    constexpr uint256_t HISTORY_BUFFER_LENGTH{8191};
+    constexpr auto SYSTEM_ADDRESS{
+        0xfffffffffffffffffffffffffffffffffffffffe_address};
+
+    State state{block_state, Incarnation{header.number, 0}};
     if (state.account_exists(BEACON_ROOTS_ADDRESS)) {
+        // Emit call frame event for system call tracing
+        if (ExecutionEventRecorder *const exec_recorder = g_exec_event_recorder.get()) {
+            bytes32_t const &input_data = header.parent_beacon_block_root.value();
+            ReservedExecEvent const call_frame_event =
+                exec_recorder->reserve_block_event<monad_exec_txn_call_frame>(
+                    MONAD_EXEC_TXN_CALL_FRAME,
+                    as_bytes(std::span{&input_data, 1}));
+            *call_frame_event.payload = monad_exec_txn_call_frame{
+                .index = 0,
+                .caller = SYSTEM_ADDRESS,
+                .call_target = BEACON_ROOTS_ADDRESS,
+                .opcode = 0xF1, // CALL opcode
+                .value = 0,
+                .gas = 0,
+                .gas_used = 0,
+                .evmc_status = EVMC_SUCCESS,
+                .depth = 0,
+                .input_length = 32,
+                .return_length = 0};
+            exec_recorder->commit(call_frame_event);
+        }
+
         uint256_t timestamp{header.timestamp};
         bytes32_t k1{
             to_bytes(to_big_endian(timestamp % HISTORY_BUFFER_LENGTH))};
@@ -104,6 +219,12 @@ void set_beacon_root(State &state, BlockHeader const &header)
             BEACON_ROOTS_ADDRESS, k1, to_bytes(to_big_endian(timestamp)));
         state.set_storage(
             BEACON_ROOTS_ADDRESS, k2, header.parent_beacon_block_root.value());
+
+        // TO REMOVE - Emit account and storage access events before merging
+        emit_account_access_events(state, MONAD_ACCT_ACCESS_BLOCK_PROLOGUE);
+
+        MONAD_ASSERT(block_state.can_merge(state));
+        block_state.merge(state);
     }
 }
 
@@ -180,32 +301,37 @@ template <Traits traits>
 void execute_block_header(
     Chain const &chain, BlockState &block_state, BlockHeader const &header)
 {
-    State state{block_state, Incarnation{header.number, 0}};
+    {
+        State state{block_state, Incarnation{header.number, 0}};
 
-    deploy_block_hash_history_contract<traits>(state);
-    set_block_hash_history<traits>(state, header);
+        if constexpr (traits::evm_rev() >= EVMC_PRAGUE) {
+            deploy_block_hash_history_contract(state);
+        }
 
-    if constexpr (traits::evm_rev() >= EVMC_CANCUN) {
-        set_beacon_root(state, header);
-    }
 
-    // Ethereum mainnet dao fork
-    if constexpr (traits::evm_rev() == EVMC_HOMESTEAD) {
-        if (MONAD_UNLIKELY(header.number == dao::dao_block_number)) {
-            if (chain.get_chain_id() == 1) {
-                transfer_balance_dao(state);
+        // Ethereum mainnet dao fork
+        if constexpr (traits::evm_rev() == EVMC_HOMESTEAD) {
+            if (MONAD_UNLIKELY(header.number == dao::dao_block_number)) {
+                if (chain.get_chain_id() == 1) {
+                    transfer_balance_dao(state);
+                }
             }
         }
+
+        // TODO: move to execute_monad_block eventually
+        if constexpr (is_monad_trait_v<traits>) {
+            staking::execute_block_prelude<traits>(state);
+        }
+
+        MONAD_ASSERT(block_state.can_merge(state));
+        block_state.merge(state);
     }
 
-    // TODO: move to execute_monad_block eventually
-    if constexpr (is_monad_trait_v<traits>) {
-        staking::execute_block_prelude<traits>(state);
-    }
+    set_block_hash_history(block_state, header);
 
-    MONAD_ASSERT(block_state.can_merge(state));
-    block_state.merge(state);
-    record_account_access_events(MONAD_ACCT_ACCESS_BLOCK_PROLOGUE, state);
+    if constexpr (traits::evm_rev() >= EVMC_CANCUN) {
+        set_beacon_root(block_state, header);
+    }
 }
 
 EXPLICIT_TRAITS(execute_block_header);

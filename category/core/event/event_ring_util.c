@@ -245,6 +245,16 @@ int monad_event_ring_init_simple(
         return rc;
     }
     size_t const ring_bytes = monad_event_ring_calc_storage(&ring_size);
+#ifdef __APPLE__
+    if (ftruncate(ring_fd, ring_offset + (off_t)ring_bytes) == -1) {
+        rc = errno;
+        return FORMAT_ERRC(
+            rc,
+            "ftruncate failed for event ring file `%s`, size %lu",
+            error_name,
+            ring_bytes);
+    }
+#else
     rc = posix_fallocate(ring_fd, ring_offset, (off_t)ring_bytes);
     if (rc != 0) {
         return FORMAT_ERRC(
@@ -253,6 +263,7 @@ int monad_event_ring_init_simple(
             error_name,
             ring_bytes);
     }
+#endif
     return monad_event_ring_init_file(
         &ring_size,
         ring_config->content_type,

@@ -14,7 +14,11 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include <errno.h>
+#ifdef __APPLE__
+#define stdc_has_single_bit(x) (__builtin_popcountll(x) == 1)
+#else
 #include <stdbit.h>
+#endif
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>

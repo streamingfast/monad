@@ -24,6 +24,20 @@ project(monad_event)
 option(MONAD_EVENT_DISABLE_LIBHUGETLBFS
   "Disable the default value in the `monad_event_open_hugetlbfs_dir_fd` API function (removes dependency on libhugetlbfs)" OFF)
 
+find_library(libzstd_file zstd REQUIRED)
+
+if(APPLE)
+  execute_process(
+    COMMAND brew --prefix zstd
+    OUTPUT_VARIABLE ZSTD_PREFIX
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
+  if(ZSTD_PREFIX)
+    include_directories(${ZSTD_PREFIX}/include)
+    link_directories(${ZSTD_PREFIX}/lib)
+  endif()
+endif()
+
 add_library(
   monad_event
   "../core/assert.c"

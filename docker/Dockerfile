@@ -23,6 +23,9 @@ ENV GIT_COMMIT_HASH=$GIT_COMMIT_HASH
 
 RUN cd src && CC=${CC:?} CXX=${CXX:?} CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE:?} CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" ASMFLAGS="-march=haswell" ./scripts/configure.sh
 
+# Clean up to save disk space before the heavy build
+RUN apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
 RUN cd src && ./scripts/build.sh
 
 # security=insecure for tests which use io_uring
