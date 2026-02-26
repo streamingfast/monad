@@ -26,6 +26,9 @@
 #include <cstring>
 #include <optional>
 
+#define TRACER_LOG(fmt, ...) \
+    std::fprintf(stderr, "[TRACER] " fmt "\n", ##__VA_ARGS__)
+
 MONAD_NAMESPACE_BEGIN
 
 void record_block_start(
@@ -76,6 +79,16 @@ void record_block_start(
         data(eth_block_header.extra_data),
         block_start.payload->eth_block_input.extra_data_length);
     exec_recorder->commit(block_start);
+
+    TRACER_LOG("EVENT[SEQNO=%lu] BLOCK_START num=%lu round=%lu epoch=%lu txn_count=%zu coinbase=%s timestamp=%lu gas_limit=%lu",
+        block_start.seqno,
+        static_cast<unsigned long>(eth_block_header.number),
+        static_cast<unsigned long>(block_round),
+        static_cast<unsigned long>(epoch),
+        txn_count,
+        eth_block_header.beneficiary.to_string().c_str(),
+        static_cast<unsigned long>(eth_block_header.timestamp),
+        eth_block_header.gas_limit);
 }
 
 Result<BlockExecOutput> record_block_result(Result<BlockExecOutput> result)
@@ -99,6 +112,9 @@ Result<BlockExecOutput> record_block_result(Result<BlockExecOutput> result)
                     MONAD_EXEC_BLOCK_REJECT);
             *block_reject.payload = static_cast<uint32_t>(error_value);
             exec_recorder->commit(block_reject);
+            TRACER_LOG("EVENT[SEQNO=%lu] BLOCK_REJECT error_code=%u",
+                block_reject.seqno,
+                error_value);
         }
         else {
             ReservedExecEvent const evm_error =
@@ -107,6 +123,10 @@ Result<BlockExecOutput> record_block_result(Result<BlockExecOutput> result)
             *evm_error.payload = monad_exec_evm_error{
                 .domain_id = error_domain.id(), .status_code = error_value};
             exec_recorder->commit(evm_error);
+            TRACER_LOG("EVENT[SEQNO=%lu] EVM_ERROR domain=%llu status=%u",
+                evm_error.seqno,
+                static_cast<unsigned long long>(error_domain.id()),
+                error_value);
         }
     }
     else {
@@ -124,6 +144,11 @@ Result<BlockExecOutput> record_block_result(Result<BlockExecOutput> result)
                     exec_output.eth_header.logs_bloom),
                 .gas_used = exec_output.eth_header.gas_used}};
         exec_recorder->commit(block_end);
+
+        TRACER_LOG("EVENT[SEQNO=%lu] BLOCK_END gas_used=%lu num_receipts=%zu",
+            block_end.seqno,
+            exec_output.eth_header.gas_used,
+            exec_output.receipts.size());
     }
     exec_recorder->end_current_block();
     return result;

@@ -180,12 +180,14 @@ void record_storage_events(
         storage_access.event->content_ext[MONAD_FLOW_ACCOUNT_INDEX] =
             account_index;
         exec_recorder->commit(storage_access);
-        TRACER_LOG("EVENT[SEQNO=%lu] STORAGE_ACCESS txn=%s acct_idx=%u modified=%d transient=%d",
+        TRACER_LOG("EVENT[SEQNO=%lu] STORAGE_ACCESS txn=%s acct_idx=%u addr=%s modified=%d transient=%d slot_idx=%zu",
             storage_access.seqno,
             opt_txn_num.has_value() ? std::to_string(*opt_txn_num).c_str() : "BLOCK",
             account_index,
+            address->to_string().c_str(),
             is_modified,
-            is_transient);
+            is_transient,
+            index);
         ++index;
     }
 }
@@ -231,13 +233,16 @@ void record_account_events(
         .transient_count = static_cast<uint32_t>(
             size(account_info.prestate->transient_storage_))};
     exec_recorder->commit(account_access);
-    TRACER_LOG("EVENT[SEQNO=%lu] ACCOUNT_ACCESS txn=%s idx=%u balance_mod=%d nonce_mod=%d ctx=%u",
+    TRACER_LOG("EVENT[SEQNO=%lu] ACCOUNT_ACCESS txn=%s idx=%u addr=%s balance_mod=%d nonce_mod=%d ctx=%u prebal=%lu modbal=%lu",
         account_access.seqno,
         opt_txn_num.has_value() ? std::to_string(*opt_txn_num).c_str() : "BLOCK",
         index,
+        account_info.address->to_string().c_str(),
         is_balance_modified,
         is_nonce_modified,
-        static_cast<unsigned>(ctx));
+        static_cast<unsigned>(ctx),
+        static_cast<unsigned long>(initial_state.balance),
+        static_cast<unsigned long>(modified_balance));
 
     auto const *const post_state_storage_map =
         account_info.is_read_only_access()
@@ -331,9 +336,15 @@ void record_txn_header_events(
             as_bytes(std::span{transaction.blob_versioned_hashes}));
     init_txn_header_start(transaction, sender, txn_header_start.payload);
     exec_recorder->commit(txn_header_start);
-    TRACER_LOG("EVENT[SEQNO=%lu] TXN_HEADER_START txn=%u",
+    TRACER_LOG("EVENT[SEQNO=%lu] TXN_HEADER_START txn=%u from=%s to=%s value=%lu gas=%lu gasprice=%lu nonce=%lu",
         txn_header_start.seqno,
-        txn_num);
+        txn_num,
+        sender.to_string().c_str(),
+        transaction.to ? transaction.to->to_string().c_str() : "CONTRACT_CREATE",
+        static_cast<unsigned long>(transaction.value),
+        transaction.gas_limit,
+        static_cast<unsigned long>(transaction.max_fee_per_gas),
+        transaction.nonce);
 
     // TXN_ACCESS_LIST_ENTRY
     for (uint32_t index = 0; AccessEntry const &e : transaction.access_list) {
@@ -424,11 +435,13 @@ void record_txn_output_events(
             .topic_count = static_cast<uint8_t>(log.topics.size()),
             .data_length = static_cast<uint32_t>(log.data.size())};
         exec_recorder->commit(txn_log);
-        TRACER_LOG("EVENT[SEQNO=%lu] TXN_LOG txn=%u idx=%u topics=%zu",
+        TRACER_LOG("EVENT[SEQNO=%lu] TXN_LOG txn=%u idx=%u addr=%s topics=%zu data_len=%zu",
             txn_log.seqno,
             txn_num,
             index,
-            log.topics.size());
+            log.address.to_string().c_str(),
+            log.topics.size(),
+            log.data.size());
         ++index;
     }
 
@@ -460,14 +473,17 @@ void record_txn_output_events(
             .return_length = call_frame.output.size(),
         };
         exec_recorder->commit(txn_call_frame);
-        TRACER_LOG("EVENT[SEQNO=%lu] TX_CALL_FRAME txn=%u idx=%u depth=%lu opcode=0x%02x gas=%lu status=%d",
+        TRACER_LOG("EVENT[SEQNO=%lu] TX_CALL_FRAME txn=%u idx=%u depth=%lu opcode=0x%02x gas=%lu status=%d caller=%s target=%s value=%lu",
             txn_call_frame.seqno,
             txn_num,
             index,
             static_cast<unsigned long>(call_frame.depth),
             txn_call_frame.payload->opcode,
             call_frame.gas,
-            txn_call_frame.payload->evmc_status);
+            txn_call_frame.payload->evmc_status,
+            call_frame.from.to_string().c_str(),
+            call_frame.to.has_value() ? call_frame.to->to_string().c_str() : "CREATE",
+            static_cast<unsigned long>(call_frame.value));
         ++index;
     }
 
