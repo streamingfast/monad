@@ -460,11 +460,11 @@ void record_txn_output_events(
             .return_length = call_frame.output.size(),
         };
         exec_recorder->commit(txn_call_frame);
-        TRACER_LOG("EVENT[SEQNO=%lu] TX_CALL_FRAME txn=%u idx=%u depth=%u opcode=0x%02x gas=%lu status=%d",
+        TRACER_LOG("EVENT[SEQNO=%lu] TX_CALL_FRAME txn=%u idx=%u depth=%lu opcode=0x%02x gas=%lu status=%d",
             txn_call_frame.seqno,
             txn_num,
             index,
-            call_frame.depth,
+            static_cast<unsigned long>(call_frame.depth),
             txn_call_frame.payload->opcode,
             call_frame.gas,
             txn_call_frame.payload->evmc_status);
