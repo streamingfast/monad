@@ -180,13 +180,12 @@ void record_storage_events(
         storage_access.event->content_ext[MONAD_FLOW_ACCOUNT_INDEX] =
             account_index;
         exec_recorder->commit(storage_access);
-        TRACER_LOG("EVENT[SEQNO=%lu] STORAGE_ACCESS txn=%s acct_idx=%u modified=%d transient=%d key=%s",
+        TRACER_LOG("EVENT[SEQNO=%lu] STORAGE_ACCESS txn=%s acct_idx=%u modified=%d transient=%d",
             storage_access.seqno,
             opt_txn_num.has_value() ? std::to_string(*opt_txn_num).c_str() : "BLOCK",
             account_index,
             is_modified,
-            is_transient,
-            to_hex(key).substr(0, 10).c_str());
+            is_transient);
         ++index;
     }
 }
@@ -232,11 +231,10 @@ void record_account_events(
         .transient_count = static_cast<uint32_t>(
             size(account_info.prestate->transient_storage_))};
     exec_recorder->commit(account_access);
-    TRACER_LOG("EVENT[SEQNO=%lu] ACCOUNT_ACCESS txn=%s idx=%u addr=%s balance_mod=%d nonce_mod=%d ctx=%u",
+    TRACER_LOG("EVENT[SEQNO=%lu] ACCOUNT_ACCESS txn=%s idx=%u balance_mod=%d nonce_mod=%d ctx=%u",
         account_access.seqno,
         opt_txn_num.has_value() ? std::to_string(*opt_txn_num).c_str() : "BLOCK",
         index,
-        to_hex(*account_info.address).substr(0, 10).c_str(),
         is_balance_modified,
         is_nonce_modified,
         static_cast<unsigned>(ctx));
@@ -287,7 +285,7 @@ void record_account_access_events_internal(
         .entry_count = static_cast<uint32_t>(prestate_map.size()),
         .access_context = ctx};
     exec_recorder->commit(list_header);
-    TRACER_LOG("EVENT[SEQNO=%lu] ACCOUNT_ACCESS_LIST_HEADER txn=%s count=%u ctx=%u",
+    TRACER_LOG("EVENT[SEQNO=%lu] ACCOUNT_ACCESS_LIST_HEADER txn=%s count=%zu ctx=%u",
         list_header.seqno,
         opt_txn_num.has_value() ? std::to_string(*opt_txn_num).c_str() : "BLOCK",
         prestate_map.size(),
@@ -333,11 +331,9 @@ void record_txn_header_events(
             as_bytes(std::span{transaction.blob_versioned_hashes}));
     init_txn_header_start(transaction, sender, txn_header_start.payload);
     exec_recorder->commit(txn_header_start);
-    FIREHOSE_TRACER_LOG("EVENT[SEQNO=%lu] TXN_HEADER_START txn=%u hash=%s from=%s",
+    TRACER_LOG("EVENT[SEQNO=%lu] TXN_HEADER_START txn=%u",
         txn_header_start.seqno,
-        txn_num,
-        to_hex(txn_header_start.payload->txn_hash).substr(0, 10).c_str(),
-        to_hex(sender).substr(0, 10).c_str());
+        txn_num);
 
     // TXN_ACCESS_LIST_ENTRY
     for (uint32_t index = 0; AccessEntry const &e : transaction.access_list) {
@@ -352,11 +348,10 @@ void record_txn_header_events(
                 .address = e.a,
                 .storage_key_count = static_cast<uint32_t>(e.keys.size())}};
         exec_recorder->commit(access_list_entry);
-        FIREHOSE_TRACER_LOG("EVENT[SEQNO=%lu] TXN_ACCESS_LIST_ENTRY txn=%u idx=%u addr=%s keys=%u",
+        TRACER_LOG("EVENT[SEQNO=%lu] TXN_ACCESS_LIST_ENTRY txn=%u idx=%u keys=%u",
             access_list_entry.seqno,
             txn_num,
             index,
-            to_hex(e.a).substr(0, 10).c_str(),
             static_cast<uint32_t>(e.keys.size()));
         ++index;
     }
@@ -381,20 +376,17 @@ void record_txn_header_events(
             .authority = authorities[index].value_or({}),
             .is_valid_authority = authorities[index].has_value()};
         exec_recorder->commit(auth_list_entry);
-        FIREHOSE_TRACER_LOG("EVENT[SEQNO=%lu] TXN_AUTH_LIST_ENTRY txn=%u idx=%u addr=%s valid=%d",
+        TRACER_LOG("EVENT[SEQNO=%lu] TXN_AUTH_LIST_ENTRY txn=%u idx=%u valid=%d",
             auth_list_entry.seqno,
             txn_num,
             index,
-            to_hex(e.address).substr(0, 10).c_str(),
             authorities[index].has_value());
         ++index;
     }
 
     // TXN_HEADER_END
-    uint64_t const header_end_seqno = exec_recorder->record_txn_marker_event(MONAD_EXEC_TXN_HEADER_END, txn_num);
-    FIREHOSE_TRACER_LOG("EVENT[SEQNO=%lu] TXN_HEADER_END txn=%u",
-        header_end_seqno,
-        txn_num);
+    exec_recorder->record_txn_marker_event(MONAD_EXEC_TXN_HEADER_END, txn_num);
+    TRACER_LOG("TXN_HEADER_END txn=%u", txn_num);
 }
 
 void record_txn_output_events(
@@ -432,11 +424,10 @@ void record_txn_output_events(
             .topic_count = static_cast<uint8_t>(log.topics.size()),
             .data_length = static_cast<uint32_t>(log.data.size())};
         exec_recorder->commit(txn_log);
-        TRACER_LOG("EVENT[SEQNO=%lu] TXN_LOG txn=%u idx=%u addr=%s topics=%u",
+        TRACER_LOG("EVENT[SEQNO=%lu] TXN_LOG txn=%u idx=%u topics=%zu",
             txn_log.seqno,
             txn_num,
             index,
-            to_hex(log.address).substr(0, 10).c_str(),
             log.topics.size());
         ++index;
     }
@@ -469,14 +460,12 @@ void record_txn_output_events(
             .return_length = call_frame.output.size(),
         };
         exec_recorder->commit(txn_call_frame);
-        TRACER_LOG("EVENT[SEQNO=%lu] TX_CALL_FRAME txn=%u idx=%u depth=%u opcode=0x%02x caller=%s target=%s gas=%lu status=%d",
+        TRACER_LOG("EVENT[SEQNO=%lu] TX_CALL_FRAME txn=%u idx=%u depth=%u opcode=0x%02x gas=%lu status=%d",
             txn_call_frame.seqno,
             txn_num,
             index,
             call_frame.depth,
             txn_call_frame.payload->opcode,
-            to_hex(call_frame.from).substr(0, 10).c_str(),
-            to_hex(call_frame.to.value_or(Address{})).substr(0, 10).c_str(),
             call_frame.gas,
             txn_call_frame.payload->evmc_status);
         ++index;
