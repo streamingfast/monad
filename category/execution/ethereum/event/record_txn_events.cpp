@@ -50,6 +50,21 @@ using namespace monad;
 #define TRACER_LOG(fmt, ...) \
     std::fprintf(stderr, "[TRACER] " fmt "\n", ##__VA_ARGS__)
 
+// helper function to convert address bytes to hex string
+inline std::string addr_to_hex(Address const &addr)
+{
+    char buf[41];
+    snprintf(
+        buf, sizeof(buf),
+        "%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
+        addr.bytes[0], addr.bytes[1], addr.bytes[2], addr.bytes[3], addr.bytes[4],
+        addr.bytes[5], addr.bytes[6], addr.bytes[7], addr.bytes[8], addr.bytes[9],
+        addr.bytes[10], addr.bytes[11], addr.bytes[12], addr.bytes[13],
+        addr.bytes[14], addr.bytes[15], addr.bytes[16], addr.bytes[17],
+        addr.bytes[18], addr.bytes[19]);
+    return std::string(buf);
+}
+
 MONAD_ANONYMOUS_NAMESPACE_BEGIN
 
 // Initializes the TXN_HEADER_START event payload
@@ -184,7 +199,7 @@ void record_storage_events(
             storage_access.seqno,
             opt_txn_num.has_value() ? std::to_string(*opt_txn_num).c_str() : "BLOCK",
             account_index,
-            address->to_string().c_str(),
+            addr_to_hex(*address).c_str(),
             is_modified,
             is_transient,
             index);
@@ -237,7 +252,7 @@ void record_account_events(
         account_access.seqno,
         opt_txn_num.has_value() ? std::to_string(*opt_txn_num).c_str() : "BLOCK",
         index,
-        account_info.address->to_string().c_str(),
+        addr_to_hex(*account_info.address).c_str(),
         is_balance_modified,
         is_nonce_modified,
         static_cast<unsigned>(ctx),
@@ -339,8 +354,8 @@ void record_txn_header_events(
     TRACER_LOG("EVENT[SEQNO=%lu] TXN_HEADER_START txn=%u from=%s to=%s value=%lu gas=%lu gasprice=%lu nonce=%lu",
         txn_header_start.seqno,
         txn_num,
-        sender.to_string().c_str(),
-        transaction.to ? transaction.to->to_string().c_str() : "CONTRACT_CREATE",
+        addr_to_hex(sender).c_str(),
+        transaction.to ? addr_to_hex(*transaction.to).c_str() : "CONTRACT_CREATE",
         static_cast<unsigned long>(transaction.value),
         transaction.gas_limit,
         static_cast<unsigned long>(transaction.max_fee_per_gas),
@@ -439,7 +454,7 @@ void record_txn_output_events(
             txn_log.seqno,
             txn_num,
             index,
-            log.address.to_string().c_str(),
+            addr_to_hex(log.address).c_str(),
             log.topics.size(),
             log.data.size());
         ++index;
@@ -481,8 +496,8 @@ void record_txn_output_events(
             txn_call_frame.payload->opcode,
             call_frame.gas,
             txn_call_frame.payload->evmc_status,
-            call_frame.from.to_string().c_str(),
-            call_frame.to.has_value() ? call_frame.to->to_string().c_str() : "CREATE",
+            addr_to_hex(call_frame.from).c_str(),
+            call_frame.to.has_value() ? addr_to_hex(*call_frame.to).c_str() : "CREATE",
             static_cast<unsigned long>(call_frame.value));
         ++index;
     }
