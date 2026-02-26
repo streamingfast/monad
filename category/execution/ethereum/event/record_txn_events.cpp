@@ -333,6 +333,11 @@ void record_txn_header_events(
             as_bytes(std::span{transaction.blob_versioned_hashes}));
     init_txn_header_start(transaction, sender, txn_header_start.payload);
     exec_recorder->commit(txn_header_start);
+    FIREHOSE_TRACER_LOG("EVENT[SEQNO=%lu] TXN_HEADER_START txn=%u hash=%s from=%s",
+        txn_header_start.seqno,
+        txn_num,
+        to_hex(txn_header_start.payload->txn_hash).substr(0, 10).c_str(),
+        to_hex(sender).substr(0, 10).c_str());
 
     // TXN_ACCESS_LIST_ENTRY
     for (uint32_t index = 0; AccessEntry const &e : transaction.access_list) {
@@ -347,6 +352,12 @@ void record_txn_header_events(
                 .address = e.a,
                 .storage_key_count = static_cast<uint32_t>(e.keys.size())}};
         exec_recorder->commit(access_list_entry);
+        FIREHOSE_TRACER_LOG("EVENT[SEQNO=%lu] TXN_ACCESS_LIST_ENTRY txn=%u idx=%u addr=%s keys=%u",
+            access_list_entry.seqno,
+            txn_num,
+            index,
+            to_hex(e.a).substr(0, 10).c_str(),
+            static_cast<uint32_t>(e.keys.size()));
         ++index;
     }
 
@@ -370,11 +381,20 @@ void record_txn_header_events(
             .authority = authorities[index].value_or({}),
             .is_valid_authority = authorities[index].has_value()};
         exec_recorder->commit(auth_list_entry);
+        FIREHOSE_TRACER_LOG("EVENT[SEQNO=%lu] TXN_AUTH_LIST_ENTRY txn=%u idx=%u addr=%s valid=%d",
+            auth_list_entry.seqno,
+            txn_num,
+            index,
+            to_hex(e.address).substr(0, 10).c_str(),
+            authorities[index].has_value());
         ++index;
     }
 
     // TXN_HEADER_END
-    exec_recorder->record_txn_marker_event(MONAD_EXEC_TXN_HEADER_END, txn_num);
+    uint64_t const header_end_seqno = exec_recorder->record_txn_marker_event(MONAD_EXEC_TXN_HEADER_END, txn_num);
+    FIREHOSE_TRACER_LOG("EVENT[SEQNO=%lu] TXN_HEADER_END txn=%u",
+        header_end_seqno,
+        txn_num);
 }
 
 void record_txn_output_events(
