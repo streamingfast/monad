@@ -38,12 +38,17 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <memory>
 #include <optional>
 #include <span>
 #include <utility>
 
 using namespace monad;
+
+// tracer logging macro for event sequence tracking
+#define TRACER_LOG(fmt, ...) \
+    std::fprintf(stderr, "[TRACER] " fmt "\n", ##__VA_ARGS__)
 
 MONAD_ANONYMOUS_NAMESPACE_BEGIN
 
@@ -175,6 +180,13 @@ void record_storage_events(
         storage_access.event->content_ext[MONAD_FLOW_ACCOUNT_INDEX] =
             account_index;
         exec_recorder->commit(storage_access);
+        TRACER_LOG("EVENT[SEQNO=%lu] STORAGE_ACCESS txn=%s acct_idx=%u modified=%d transient=%d key=%s",
+            storage_access.seqno,
+            opt_txn_num.has_value() ? std::to_string(*opt_txn_num).c_str() : "BLOCK",
+            account_index,
+            is_modified,
+            is_transient,
+            to_hex(key).substr(0, 10).c_str());
         ++index;
     }
 }
@@ -220,6 +232,14 @@ void record_account_events(
         .transient_count = static_cast<uint32_t>(
             size(account_info.prestate->transient_storage_))};
     exec_recorder->commit(account_access);
+    TRACER_LOG("EVENT[SEQNO=%lu] ACCOUNT_ACCESS txn=%s idx=%u addr=%s balance_mod=%d nonce_mod=%d ctx=%u",
+        account_access.seqno,
+        opt_txn_num.has_value() ? std::to_string(*opt_txn_num).c_str() : "BLOCK",
+        index,
+        to_hex(*account_info.address).substr(0, 10).c_str(),
+        is_balance_modified,
+        is_nonce_modified,
+        static_cast<unsigned>(ctx));
 
     auto const *const post_state_storage_map =
         account_info.is_read_only_access()
@@ -267,6 +287,11 @@ void record_account_access_events_internal(
         .entry_count = static_cast<uint32_t>(prestate_map.size()),
         .access_context = ctx};
     exec_recorder->commit(list_header);
+    TRACER_LOG("EVENT[SEQNO=%lu] ACCOUNT_ACCESS_LIST_HEADER txn=%s count=%u ctx=%u",
+        list_header.seqno,
+        opt_txn_num.has_value() ? std::to_string(*opt_txn_num).c_str() : "BLOCK",
+        prestate_map.size(),
+        static_cast<unsigned>(ctx));
 
     auto const &current_state_map = state.current();
     for (uint32_t index = 0; auto const &[address, prestate] : prestate_map) {
@@ -387,6 +412,12 @@ void record_txn_output_events(
             .topic_count = static_cast<uint8_t>(log.topics.size()),
             .data_length = static_cast<uint32_t>(log.data.size())};
         exec_recorder->commit(txn_log);
+        TRACER_LOG("EVENT[SEQNO=%lu] TXN_LOG txn=%u idx=%u addr=%s topics=%u",
+            txn_log.seqno,
+            txn_num,
+            index,
+            to_hex(log.address).substr(0, 10).c_str(),
+            log.topics.size());
         ++index;
     }
 
@@ -418,6 +449,16 @@ void record_txn_output_events(
             .return_length = call_frame.output.size(),
         };
         exec_recorder->commit(txn_call_frame);
+        TRACER_LOG("EVENT[SEQNO=%lu] TX_CALL_FRAME txn=%u idx=%u depth=%u opcode=0x%02x caller=%s target=%s gas=%lu status=%d",
+            txn_call_frame.seqno,
+            txn_num,
+            index,
+            call_frame.depth,
+            txn_call_frame.payload->opcode,
+            to_hex(call_frame.from).substr(0, 10).c_str(),
+            to_hex(call_frame.to.value_or(Address{})).substr(0, 10).c_str(),
+            call_frame.gas,
+            txn_call_frame.payload->evmc_status);
         ++index;
     }
 
