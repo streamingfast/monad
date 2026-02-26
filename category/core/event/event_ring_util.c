@@ -192,11 +192,20 @@ static int decompress_snap_buf_to_temp_file(
         goto Done;
     }
 
+#ifdef __linux__
     out->fd = memfd_create("zstd-ring-decomp", 0);
     if (out->fd == -1) {
         rc = FORMAT_ERRC(errno, "could not memfd_create decompression buffer");
         goto Done;
     }
+#else
+    out->fd = shm_open("/zstd-ring-decomp", O_RDWR | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR);
+    if (out->fd == -1) {
+        rc = FORMAT_ERRC(errno, "could not shm_open decompression buffer");
+        goto Done;
+    }
+    (void)shm_unlink("/zstd-ring-decomp");
+#endif
     rc = decompress_snapshot(
         buf, buf_size, out->fd, max_size, error_name, &out->is_snapshot);
 
