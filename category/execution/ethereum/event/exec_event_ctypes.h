@@ -68,6 +68,8 @@ enum monad_exec_event_type : uint16_t
     MONAD_EXEC_ACCOUNT_ACCESS,
     MONAD_EXEC_STORAGE_ACCESS,
     MONAD_EXEC_EVM_ERROR,
+    MONAD_EXEC_BLOCK_SYSTEM_CALL_START,
+    MONAD_EXEC_BLOCK_SYSTEM_CALL_END,
 };
 
 /// Reserved event type used for recording errors
@@ -291,9 +293,27 @@ struct monad_exec_evm_error
     int64_t status_code; ///< Boost.Outcome status code of error
 };
 
+/// Event emitted at the start of a block-level system call (prologue/epilogue).
+struct monad_exec_block_system_call_start
+{
+    monad_c_address caller;      ///< Address initiating the system call
+    monad_c_address call_target; ///< Address receiving the system call
+    uint8_t opcode;              ///< EVM opcode (e.g. 0xF1 CALL)
+    uint64_t gas;                ///< Gas available for the call
+    uint64_t input_length;       ///< Length of trailing input bytes
+};
+
+/// Event emitted at the end of a block-level system call (prologue/epilogue).
+struct monad_exec_block_system_call_end
+{
+    uint64_t gas_used;      ///< Gas consumed by the system call
+    int32_t evmc_status;    ///< evmc_status_code of the call
+    uint64_t return_length; ///< Length of trailing return bytes
+};
+
 // clang-format on
 
-constexpr size_t MONAD_EXEC_EVENT_COUNT = 25;
+constexpr size_t MONAD_EXEC_EVENT_COUNT = 27;
 extern struct monad_event_metadata const
     g_monad_exec_event_metadata[MONAD_EXEC_EVENT_COUNT];
 extern uint8_t const g_monad_exec_event_schema_hash[32];

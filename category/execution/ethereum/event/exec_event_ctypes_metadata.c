@@ -172,6 +172,18 @@ struct monad_event_metadata const
              .c_name = "EVM_ERROR",
              .description = "Error occurred in execution process (not a "
                             "validation error)"},
+
+        [MONAD_EXEC_BLOCK_SYSTEM_CALL_START] =
+            {.event_type = MONAD_EXEC_BLOCK_SYSTEM_CALL_START,
+             .c_name = "BLOCK_SYSTEM_CALL_START",
+             .description = "Event emitted at the start of a block-level "
+                            "system call (prologue/epilogue)"},
+
+        [MONAD_EXEC_BLOCK_SYSTEM_CALL_END] =
+            {.event_type = MONAD_EXEC_BLOCK_SYSTEM_CALL_END,
+             .c_name = "BLOCK_SYSTEM_CALL_END",
+             .description = "Event emitted at the end of a block-level "
+                            "system call (prologue/epilogue)"},
 };
 
 uint8_t const g_monad_exec_event_schema_hash[32] = {

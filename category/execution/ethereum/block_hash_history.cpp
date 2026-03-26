@@ -54,9 +54,6 @@ static void emit_account_access_events(
 
     // Count total accounts
     uint32_t const total_accounts = static_cast<uint32_t>(current.size());
-    if (total_accounts == 0) {
-        return;
-    }
 
     // Emit ACCOUNT_ACCESS_LIST_HEADER
     ReservedExecEvent const header_event =
