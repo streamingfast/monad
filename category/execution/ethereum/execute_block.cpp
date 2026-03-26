@@ -188,26 +188,19 @@ void set_beacon_root(BlockState &block_state, BlockHeader const &header)
 
     State state{block_state, Incarnation{header.number, 0}};
     if (state.account_exists(BEACON_ROOTS_ADDRESS)) {
-        // Emit call frame event for system call tracing
         if (ExecutionEventRecorder *const exec_recorder = g_exec_event_recorder.get()) {
             bytes32_t const &input_data = header.parent_beacon_block_root.value();
-            ReservedExecEvent const call_frame_event =
-                exec_recorder->reserve_block_event<monad_exec_txn_call_frame>(
-                    MONAD_EXEC_TXN_CALL_FRAME,
+            ReservedExecEvent const start_event =
+                exec_recorder->reserve_block_event<monad_exec_block_system_call_start>(
+                    MONAD_EXEC_BLOCK_SYSTEM_CALL_START,
                     as_bytes(std::span{&input_data, 1}));
-            *call_frame_event.payload = monad_exec_txn_call_frame{
-                .index = 0,
+            *start_event.payload = monad_exec_block_system_call_start{
                 .caller = SYSTEM_ADDRESS,
                 .call_target = BEACON_ROOTS_ADDRESS,
                 .opcode = 0xF1, // CALL opcode
-                .value = 0,
                 .gas = 0,
-                .gas_used = 0,
-                .evmc_status = EVMC_SUCCESS,
-                .depth = 0,
-                .input_length = 32,
-                .return_length = 0};
-            exec_recorder->commit(call_frame_event);
+                .input_length = 32};
+            exec_recorder->commit(start_event);
         }
 
         uint256_t timestamp{header.timestamp};
@@ -220,11 +213,21 @@ void set_beacon_root(BlockState &block_state, BlockHeader const &header)
         state.set_storage(
             BEACON_ROOTS_ADDRESS, k2, header.parent_beacon_block_root.value());
 
-        // TO REMOVE - Emit account and storage access events before merging
         emit_account_access_events(state, MONAD_ACCT_ACCESS_BLOCK_PROLOGUE);
 
         MONAD_ASSERT(block_state.can_merge(state));
         block_state.merge(state);
+
+        if (ExecutionEventRecorder *const exec_recorder = g_exec_event_recorder.get()) {
+            ReservedExecEvent const end_event =
+                exec_recorder->reserve_block_event<monad_exec_block_system_call_end>(
+                    MONAD_EXEC_BLOCK_SYSTEM_CALL_END);
+            *end_event.payload = monad_exec_block_system_call_end{
+                .gas_used = 0,
+                .evmc_status = EVMC_SUCCESS,
+                .return_length = 0};
+            exec_recorder->commit(end_event);
+        }
     }
 }
 
