@@ -306,9 +306,10 @@ struct monad_exec_block_system_call_start
 /// Event emitted at the end of a block-level system call (prologue/epilogue).
 struct monad_exec_block_system_call_end
 {
-    uint64_t gas_used;      ///< Gas consumed by the system call
-    int32_t evmc_status;    ///< evmc_status_code of the call
-    uint64_t return_length; ///< Length of trailing return bytes
+    uint64_t gas_used;             ///< Gas consumed by the system call
+    int32_t evmc_status;           ///< evmc_status_code of the call
+    uint64_t return_length;        ///< Length of trailing return bytes
+    uint32_t num_account_accesses; ///< Number of account access events that follow
 };
 
 // clang-format on

@@ -20,9 +20,12 @@
 #include <category/execution/ethereum/event/exec_event_ctypes.h>
 #include <category/execution/ethereum/event/exec_event_recorder.hpp>
 #include <category/execution/ethereum/event/record_block_events.hpp>
+#include <category/execution/ethereum/state3/account_state.hpp>
+#include <category/execution/ethereum/state3/state.hpp>
 #include <category/execution/ethereum/validate_block.hpp>
 
 #include <bit>
+#include <cstdint>
 #include <cstring>
 #include <optional>
 
@@ -150,6 +153,92 @@ Result<BlockExecOutput> record_block_result(Result<BlockExecOutput> result)
     }
     exec_recorder->end_current_block();
     return result;
+}
+
+uint32_t record_system_call_account_accesses(
+    State const &state,
+    monad_exec_account_access_context access_context)
+{
+    ExecutionEventRecorder *const exec_recorder = g_exec_event_recorder.get();
+    if (!exec_recorder) {
+        return 0;
+    }
+
+    auto const &current = state.current();
+    auto const &original = state.original();
+
+    uint32_t const total_accounts = static_cast<uint32_t>(current.size());
+    if (total_accounts == 0) {
+        return 0;
+    }
+
+    ReservedExecEvent const header_event =
+        exec_recorder->reserve_block_event<monad_exec_account_access_list_header>(
+            MONAD_EXEC_ACCOUNT_ACCESS_LIST_HEADER);
+    *header_event.payload = monad_exec_account_access_list_header{
+        .entry_count = total_accounts,
+        .access_context = access_context};
+    exec_recorder->commit(header_event);
+
+    uint32_t account_index = 0;
+    for (auto const &[address, current_stack] : current) {
+        auto const &current_account_state = current_stack.recent();
+
+        auto const it = original.find(address);
+        auto const &orig_account = (it != original.end()) ?
+            get_account_for_trace(it->second) : std::optional<Account>{};
+
+        ReservedExecEvent const account_event =
+            exec_recorder->reserve_block_event<monad_exec_account_access>(
+                MONAD_EXEC_ACCOUNT_ACCESS);
+        *account_event.payload = monad_exec_account_access{
+            .index = account_index,
+            .address = address,
+            .access_context = access_context,
+            .is_balance_modified = false,
+            .is_nonce_modified = false,
+            .prestate = orig_account.has_value() ?
+                monad_c_eth_account_state{
+                    .nonce = orig_account->nonce,
+                    .balance = orig_account->balance,
+                    .code_hash = orig_account->code_hash} :
+                monad_c_eth_account_state{},
+            .modified_balance = {},
+            .modified_nonce = 0,
+            .storage_key_count =
+                static_cast<uint32_t>(current_account_state.storage_.size()),
+            .transient_count = 0};
+        exec_recorder->commit(account_event);
+
+        uint32_t storage_index = 0;
+        for (auto const &[key, end_value] : current_account_state.storage_) {
+            bytes32_t start_value{};
+            if (it != original.end()) {
+                auto const &original_account_state = it->second;
+                if (auto const *const storage_it = original_account_state.storage_.find(key); storage_it) {
+                    start_value = *storage_it;
+                }
+            }
+
+            ReservedExecEvent const storage_event =
+                exec_recorder->reserve_block_event<monad_exec_storage_access>(
+                    MONAD_EXEC_STORAGE_ACCESS);
+            *storage_event.payload = monad_exec_storage_access{
+                .address = address,
+                .index = storage_index,
+                .access_context = access_context,
+                .modified = (start_value != end_value),
+                .transient = false,
+                .key = key,
+                .start_value = start_value,
+                .end_value = end_value};
+            exec_recorder->commit(storage_event);
+            storage_index++;
+        }
+
+        account_index++;
+    }
+    return total_accounts;
 }
 
 MONAD_NAMESPACE_END

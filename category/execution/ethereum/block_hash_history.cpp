@@ -21,6 +21,7 @@
 #include <category/execution/ethereum/core/address.hpp>
 #include <category/execution/ethereum/event/exec_event_ctypes.h>
 #include <category/execution/ethereum/event/exec_event_recorder.hpp>
+#include <category/execution/ethereum/event/record_block_events.hpp>
 #include <category/execution/ethereum/state2/block_state.hpp>
 #include <category/execution/ethereum/state3/state.hpp>
 
@@ -38,91 +39,6 @@ constexpr uint8_t BLOCK_HISTORY_CODE[] = {
     0x43, 0x03, 0x11, 0x60, 0x42, 0x57, 0x61, 0x1f, 0xff, 0x90, 0x06, 0x54,
     0x5f, 0x52, 0x60, 0x20, 0x5f, 0xf3, 0x5b, 0x5f, 0x5f, 0xfd, 0x5b, 0x5f,
     0x35, 0x61, 0x1f, 0xff, 0x60, 0x01, 0x43, 0x03, 0x06, 0x55, 0x00};
-
-// Helper function to emit account and storage access events for system calls
-static void emit_account_access_events(
-    State const &state,
-    monad_exec_account_access_context access_context)
-{
-    ExecutionEventRecorder *const exec_recorder = g_exec_event_recorder.get();
-    if (!exec_recorder) {
-        return;
-    }
-
-    auto const &current = state.current();
-    auto const &original = state.original();
-
-    // Count total accounts
-    uint32_t const total_accounts = static_cast<uint32_t>(current.size());
-
-    // Emit ACCOUNT_ACCESS_LIST_HEADER
-    ReservedExecEvent const header_event =
-        exec_recorder->reserve_block_event<monad_exec_account_access_list_header>(
-            MONAD_EXEC_ACCOUNT_ACCESS_LIST_HEADER);
-    *header_event.payload = monad_exec_account_access_list_header{
-        .entry_count = total_accounts,
-        .access_context = access_context};
-    exec_recorder->commit(header_event);
-
-    uint32_t account_index = 0;
-    for (auto const &[address, current_stack] : current) {
-        auto const &current_account_state = current_stack.recent();
-
-        auto const it = original.find(address);
-        auto const &orig_account = (it != original.end()) ?
-            get_account_for_trace(it->second) : std::optional<Account>{};
-
-        ReservedExecEvent const account_event =
-            exec_recorder->reserve_block_event<monad_exec_account_access>(
-                MONAD_EXEC_ACCOUNT_ACCESS);
-        *account_event.payload = monad_exec_account_access{
-            .index = account_index,
-            .address = address,
-            .access_context = access_context,
-            .is_balance_modified = false,
-            .is_nonce_modified = false,
-            .prestate = orig_account.has_value() ?
-                monad_c_eth_account_state{
-                    .nonce = orig_account->nonce,
-                    .balance = orig_account->balance,
-                    .code_hash = orig_account->code_hash} :
-                monad_c_eth_account_state{},
-            .modified_balance = {},
-            .modified_nonce = 0,
-            .storage_key_count =
-                static_cast<uint32_t>(current_account_state.storage_.size()),
-            .transient_count = 0};
-        exec_recorder->commit(account_event);
-
-        uint32_t storage_index = 0;
-        for (auto const &[key, end_value] : current_account_state.storage_) {
-            bytes32_t start_value{};
-            if (it != original.end()) {
-                auto const &original_account_state = it->second;
-                if (auto const *const storage_it = original_account_state.storage_.find(key); storage_it) {
-                    start_value = *storage_it;
-                }
-            }
-
-            ReservedExecEvent const storage_event =
-                exec_recorder->reserve_block_event<monad_exec_storage_access>(
-                    MONAD_EXEC_STORAGE_ACCESS);
-            *storage_event.payload = monad_exec_storage_access{
-                .address = address,
-                .index = storage_index,
-                .access_context = access_context,
-                .modified = (start_value != end_value),
-                .transient = false,
-                .key = key,
-                .start_value = start_value,
-                .end_value = end_value};
-            exec_recorder->commit(storage_event);
-            storage_index++;
-        }
-
-        account_index++;
-    }
-}
 
 void deploy_block_hash_history_contract(State &state)
 {
@@ -169,7 +85,8 @@ void set_block_hash_history(BlockState &block_state, BlockHeader const &header)
         bytes32_t const key{to_bytes(to_big_endian(index))};
         state.set_storage(BLOCK_HISTORY_ADDRESS, key, header.parent_hash);
 
-        emit_account_access_events(state, MONAD_ACCT_ACCESS_BLOCK_PROLOGUE);
+        uint32_t const num_account_accesses =
+            record_system_call_account_accesses(state, MONAD_ACCT_ACCESS_BLOCK_PROLOGUE);
 
         MONAD_ASSERT(block_state.can_merge(state));
         block_state.merge(state);
@@ -181,7 +98,8 @@ void set_block_hash_history(BlockState &block_state, BlockHeader const &header)
             *end_event.payload = monad_exec_block_system_call_end{
                 .gas_used = 0,
                 .evmc_status = EVMC_SUCCESS,
-                .return_length = 0};
+                .return_length = 0,
+                .num_account_accesses = num_account_accesses};
             exec_recorder->commit(end_event);
         }
     }

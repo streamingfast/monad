@@ -20,6 +20,8 @@
 #include <category/core/int.hpp>
 #include <category/core/result.hpp>
 #include <category/execution/ethereum/core/block.hpp>
+#include <category/execution/ethereum/event/exec_event_ctypes.h>
+#include <category/execution/ethereum/state3/state.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -48,5 +50,10 @@ void record_block_start(
 /// Record block execution output events (or an execution error event, if
 /// Result::has_error() is true); also clears the active block flow ID
 Result<BlockExecOutput> record_block_result(Result<BlockExecOutput>);
+
+/// Emit ACCOUNT_ACCESS_LIST_HEADER + ACCOUNT_ACCESS + STORAGE_ACCESS events
+uint32_t record_system_call_account_accesses(
+    State const &state,
+    monad_exec_account_access_context access_context);
 
 MONAD_NAMESPACE_END
