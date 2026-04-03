@@ -68,18 +68,15 @@ namespace
         return result_floor + static_cast<uint32_t>(r <= fractional);
     }
 
-    std::pair<compact_virtual_chunk_offset_t, compact_virtual_chunk_offset_t>
+    compact_offset_pair
     deserialize_compaction_offsets(byte_string_view const bytes)
     {
         MONAD_ASSERT(bytes.size() == 2 * sizeof(uint32_t));
-        compact_virtual_chunk_offset_t fast_offset{
-            INVALID_COMPACT_VIRTUAL_OFFSET};
-        compact_virtual_chunk_offset_t slow_offset{
-            INVALID_COMPACT_VIRTUAL_OFFSET};
-        fast_offset.set_value(unaligned_load<uint32_t>(bytes.data()));
-        slow_offset.set_value(
+        compact_offset_pair offsets;
+        offsets.fast.set_value(unaligned_load<uint32_t>(bytes.data()));
+        offsets.slow.set_value(
             unaligned_load<uint32_t>(bytes.data() + sizeof(uint32_t)));
-        return {fast_offset, slow_offset};
+        return offsets;
     }
 }
 
@@ -157,6 +154,18 @@ void UpdateAuxImpl::append(chunk_list const list, uint32_t const idx) noexcept
         MONAD_DEBUG_ASSERT(chunk.size() == 0);
         db_metadata_[0].main->free_capacity_add_(capacity);
         db_metadata_[1].main->free_capacity_add_(capacity);
+    }
+    else {
+        auto const insertion_count = static_cast<uint32_t>(
+            db_metadata_[0].main->at(idx)->insertion_count());
+        if (insertion_count >= virtual_chunk_offset_t::MAX_COUNT * 9 / 10) {
+            LOG_WARNING_CFORMAT(
+                "Virtual offset space is running out "
+                "(insertion count: %u / %u). "
+                "Please perform a database reset.",
+                insertion_count,
+                (uint32_t)virtual_chunk_offset_t::MAX_COUNT);
+        }
     }
 }
 
@@ -1095,8 +1104,6 @@ Node::SharedPtr UpdateAuxImpl::do_update(
     uint64_t const version, bool const compaction, bool const can_write_to_fast,
     bool const write_root)
 {
-    auto g(unique_lock());
-    auto g2(set_current_upsert_tid());
 
     if (is_in_memory()) {
         UpdateList root_updates;
@@ -1111,8 +1118,7 @@ Node::SharedPtr UpdateAuxImpl::do_update(
 
     if (prev_root) {
         // previous compaction offset
-        std::tie(compact_offset_fast, compact_offset_slow) =
-            deserialize_compaction_offsets(prev_root->value());
+        compact_offsets = deserialize_compaction_offsets(prev_root->value());
     }
     if (compaction) {
         if (enable_dynamic_history_length_) {
@@ -1128,9 +1134,7 @@ Node::SharedPtr UpdateAuxImpl::do_update(
 
     curr_upsert_auto_expire_version = calc_auto_expire_version(version);
     UpdateList root_updates;
-    byte_string const compact_offsets_bytes =
-        serialize((uint32_t)compact_offset_fast) +
-        serialize((uint32_t)compact_offset_slow);
+    byte_string const compact_offsets_bytes = compact_offsets.serialize();
     auto root_update = make_update(
         {}, compact_offsets_bytes, false, std::move(updates), version);
     root_updates.push_front(root_update);
@@ -1171,8 +1175,8 @@ Node::SharedPtr UpdateAuxImpl::do_update(
         curr_fast_writer_offset.offset,
         curr_slow_writer_offset.count,
         curr_slow_writer_offset.offset,
-        (uint32_t)compact_offset_fast,
-        (uint32_t)compact_offset_slow);
+        (uint32_t)compact_offsets.fast,
+        (uint32_t)compact_offsets.slow);
     return root;
 }
 
@@ -1186,19 +1190,19 @@ void UpdateAuxImpl::release_unreferenced_chunks()
         *this,
         get_root_offset_at_version(min_valid_version),
         min_valid_version);
-    auto const [min_offset_fast, min_offset_slow] =
+    auto const min_offsets =
         deserialize_compaction_offsets(min_valid_root->value());
     MONAD_ASSERT(
-        min_offset_fast != INVALID_COMPACT_VIRTUAL_OFFSET &&
-        min_offset_slow != INVALID_COMPACT_VIRTUAL_OFFSET);
-    chunks_to_remove_before_count_fast_ = min_offset_fast.get_count();
-    chunks_to_remove_before_count_slow_ = min_offset_slow.get_count();
+        min_offsets.fast != INVALID_COMPACT_VIRTUAL_OFFSET &&
+        min_offsets.slow != INVALID_COMPACT_VIRTUAL_OFFSET);
+    chunks_to_remove_before_count_fast_ = min_offsets.fast.get_count();
+    chunks_to_remove_before_count_slow_ = min_offsets.slow.get_count();
     LOG_INFO_CFORMAT(
         "Min valid version %lu compaction offset fast=%u, slow=%u. Remove "
         "chunks before count fast=%u, slow=%u",
         min_valid_version,
-        (uint32_t)min_offset_fast,
-        (uint32_t)min_offset_slow,
+        (uint32_t)min_offsets.fast,
+        (uint32_t)min_offsets.slow,
         chunks_to_remove_before_count_fast_,
         chunks_to_remove_before_count_slow_);
     MONAD_ASSERT(
@@ -1229,21 +1233,21 @@ double UpdateAuxImpl::calculate_disk_usage_if_erased_up_to_and_including(
         *this,
         get_root_offset_at_version(min_version_post_erase),
         min_version_post_erase);
-    auto const [min_offset_fast, min_offset_slow] =
+    auto const min_offsets =
         deserialize_compaction_offsets(min_valid_root_post_erase->value());
     MONAD_ASSERT(
-        min_offset_fast != INVALID_COMPACT_VIRTUAL_OFFSET &&
-        min_offset_slow != INVALID_COMPACT_VIRTUAL_OFFSET);
+        min_offsets.fast != INVALID_COMPACT_VIRTUAL_OFFSET &&
+        min_offsets.slow != INVALID_COMPACT_VIRTUAL_OFFSET);
     auto const fast_list_max_count =
         db_metadata()->fast_list_end()->insertion_count();
     auto const slow_list_max_count =
         db_metadata()->slow_list_end()->insertion_count();
-    MONAD_ASSERT(fast_list_max_count >= min_offset_fast.get_count());
-    MONAD_ASSERT(slow_list_max_count >= min_offset_slow.get_count());
+    MONAD_ASSERT(fast_list_max_count >= min_offsets.fast.get_count());
+    MONAD_ASSERT(slow_list_max_count >= min_offsets.slow.get_count());
     auto const num_fast_chunks =
-        fast_list_max_count - min_offset_fast.get_count() + 1;
+        fast_list_max_count - min_offsets.fast.get_count() + 1;
     auto const num_slow_chunks =
-        slow_list_max_count - min_offset_slow.get_count() + 1;
+        slow_list_max_count - min_offsets.slow.get_count() + 1;
     return (num_fast_chunks + num_slow_chunks) / (double)io->chunk_count();
 }
 
@@ -1332,8 +1336,6 @@ void UpdateAuxImpl::move_trie_version_forward(
     MONAD_ASSERT(
         dest > src && dest != INVALID_BLOCK_NUM &&
         dest >= db_history_max_version());
-    auto g(unique_lock());
-    auto g2(set_current_upsert_tid());
     auto const offset = get_root_offset_at_version(src);
     update_root_offset(src, INVALID_OFFSET);
     // Must erase versions that will fall out of history range first
@@ -1375,58 +1377,116 @@ void UpdateAuxImpl::advance_compact_offsets()
 
     Compaction offset update algo:
     The fast ring is compacted at a steady pace based on the average disk growth
-    observed over recent blocks. And slow ring compaction begins when overall
-    disk usage reaches `usage_limit_start_compact_slow`, and slow list disk
-    usage reaches `slow_usage_limit_start_compact_slow`. The slow list
-    compaction range is adjusted according to the slow ring garbage collection
-    ratio from the last block.
+    across the history window (or the last block's growth if the oldest root is
+    not on the fast list). Compaction head only advances when the uncompacted
+    range exceeds min_versions_of_growth_before_compact_fast_list versions'
+    worth of growth, to prevent over-compaction when the history window shrinks.
+    Slow ring compaction begins when overall disk usage reaches
+    `usage_limit_start_compact_slow` and slow list disk usage reaches
+    `slow_usage_limit_start_compact_slow`. The slow list compaction range is
+    adjusted according to the slow ring garbage collection ratio from the last
+    block.
     */
     MONAD_ASSERT(is_on_disk());
 
     constexpr double fast_usage_limit_start_compaction = 0.1;
     constexpr unsigned fast_chunk_count_limit_start_compaction = 800;
-    double const fast_disk_usage =
+    constexpr uint32_t max_compact_offset_range =
+        512; // 32MB, each unit of compact_virtual_chunk_offset_t represents
+             // 64KB
+    // Only advance fast compaction when the fast list contains at least this
+    // many versions' worth of average disk growth (prevents over-compaction)
+    constexpr uint32_t min_versions_of_growth_before_compact_fast_list = 5000;
+    // Small constant added to avg_disk_growth to ensure minimum progress
+    constexpr uint32_t min_compaction_progress_buffer = 8;
+
+    auto const fast_disk_usage =
         num_chunks(chunk_list::fast) / (double)io->chunk_count();
-    if (fast_disk_usage < fast_usage_limit_start_compaction &&
-        num_chunks(chunk_list::fast) <
-            fast_chunk_count_limit_start_compaction) {
+    uint64_t const max_version = db_history_max_version();
+    if ((fast_disk_usage < fast_usage_limit_start_compaction &&
+         num_chunks(chunk_list::fast) <
+             fast_chunk_count_limit_start_compaction) ||
+        max_version == INVALID_BLOCK_NUM ||
+        compact_offsets.fast >= last_block_end_offset_fast_) {
         return;
     }
 
     MONAD_ASSERT(
-        compact_offset_fast != INVALID_COMPACT_VIRTUAL_OFFSET &&
-        compact_offset_slow != INVALID_COMPACT_VIRTUAL_OFFSET);
+        compact_offsets.fast != INVALID_COMPACT_VIRTUAL_OFFSET &&
+        compact_offsets.slow != INVALID_COMPACT_VIRTUAL_OFFSET);
+    /* The fast list compaction offset range is determined both by the
+    average disk growth over historical blocks, and the fast list offset
+    range of the latest version, so that fast-list usage adapts appropriately to
+    changes in history length. */
     compact_offset_range_fast_ = MIN_COMPACT_VIRTUAL_OFFSET;
 
-    /* Compact the fast ring based on average disk growth over recent blocks. */
-    if (compact_offset_fast < last_block_end_offset_fast_) {
-        auto const valid_history_length =
-            db_history_max_version() - db_history_min_valid_version() + 1;
-        compact_offset_range_fast_.set_value(divide_and_round(
-            last_block_end_offset_fast_ - compact_offset_fast,
-            valid_history_length));
-        compact_offset_fast += compact_offset_range_fast_;
+    uint64_t const min_version = db_history_min_valid_version();
+    MONAD_ASSERT(min_version != INVALID_BLOCK_NUM);
+    compact_virtual_chunk_offset_t const curr_fast_writer_offset{
+        physical_to_virtual(node_writer_fast->sender().offset())};
+    // Estimate average fast-list disk growth per version. If the oldest root
+    // is on the fast list, compute from the full history range. Otherwise fall
+    // back to the last block's growth (e.g. roots from statesync may be on the
+    // slow list).
+    uint32_t avg_disk_growth_fast = last_block_disk_growth_fast_;
+    auto const min_version_root_virtual_offset =
+        physical_to_virtual(get_root_offset_at_version(min_version));
+    if (min_version_root_virtual_offset.in_fast_list() &&
+        max_version > min_version) {
+        avg_disk_growth_fast = divide_and_round(
+            curr_fast_writer_offset -
+                compact_virtual_chunk_offset_t{min_version_root_virtual_offset},
+            max_version - min_version);
+    }
+    // Only advance the fast-list compaction offset if the uncompacted range
+    // exceeds min_versions_of_growth_before_compact_fast_list (5000) versions'
+    // worth of growth, to prevent over-compaction when the history window
+    // shrinks.
+    uint32_t const latest_block_fast_uncompacted_range =
+        curr_fast_writer_offset - compact_offsets.fast;
+    if (latest_block_fast_uncompacted_range >
+        static_cast<uint64_t>(avg_disk_growth_fast) *
+            min_versions_of_growth_before_compact_fast_list) {
+        // Stride that would evenly spread the uncompacted range across the
+        // history window, keeping fast-list disk usage steady over time.
+        uint32_t const target_fast_compaction_stride = divide_and_round(
+            latest_block_fast_uncompacted_range, max_version - min_version + 1);
+        uint32_t to_advance = std::min(
+            target_fast_compaction_stride,
+            avg_disk_growth_fast + min_compaction_progress_buffer);
+        to_advance =
+            std::min(to_advance, max_compact_offset_range); // Cap at 32MB
+        compact_offset_range_fast_.set_value(to_advance);
+        compact_offsets.fast += compact_offset_range_fast_;
     }
     constexpr double usage_limit_start_compact_slow = 0.6;
     constexpr double slow_usage_limit_start_compact_slow = 0.2;
-    auto const slow_list_usage =
+    double const slow_disk_usage =
         num_chunks(chunk_list::slow) / (double)io->chunk_count();
-    // we won't start compacting slow list when slow list usage is low or total
-    // usage is below 60%
-    if (disk_usage() > usage_limit_start_compact_slow &&
-        slow_list_usage > slow_usage_limit_start_compact_slow) {
+    double const total_disk_usage = fast_disk_usage + slow_disk_usage;
+    // Do not compact slow list until slow list usage and total usage are both
+    // above the thresholds
+    if (total_disk_usage > usage_limit_start_compact_slow &&
+        slow_disk_usage > slow_usage_limit_start_compact_slow) {
         // Compact slow ring: the offset is based on slow list garbage
-        // collection ratio of last block
-        compact_offset_range_slow_.set_value(
-            (stats.compacted_bytes_in_slow != 0 &&
-             compact_offset_range_slow_ != 0)
-                ? std::min(
-                      (uint32_t)last_block_disk_growth_slow_ + 1,
-                      (uint32_t)std::round(
-                          double(compact_offset_range_slow_ << 16) /
-                          stats.compacted_bytes_in_slow))
-                : 1);
-        compact_offset_slow += compact_offset_range_slow_;
+        // collection ratio of the last block. We use the ratio of compacted
+        // bytes to determine how aggressively to advance the compaction head.
+        if (stats.compacted_bytes_in_slow != 0 &&
+            compact_offset_range_slow_ != 0) {
+            uint32_t const gc_efficiency = static_cast<uint32_t>(std::round(
+                double(compact_offset_range_slow_ << 16) /
+                stats.compacted_bytes_in_slow));
+            // Cap at last block's growth + 1 to avoid advancing too fast
+            uint32_t const new_range = std::min(
+                static_cast<uint32_t>(last_block_disk_growth_slow_ + 1),
+                gc_efficiency);
+            compact_offset_range_slow_.set_value(new_range);
+        }
+        else {
+            // No valid data, use minimum progress
+            compact_offset_range_slow_.set_value(1);
+        }
+        compact_offsets.slow += compact_offset_range_slow_;
     }
     else {
         compact_offset_range_slow_ = MIN_COMPACT_VIRTUAL_OFFSET;
@@ -1621,7 +1681,7 @@ void UpdateAuxImpl::print_update_stats(uint64_t const version)
                 ? (100.0 * stats.nodes_copied_fast_to_fast_for_fast /
                    nodes_copied_for_slow)
                 : 0);
-        if (compact_offset_slow) {
+        if (compact_offsets.slow) {
             auto const nodes_copied_for_slow =
                 stats.compacted_nodes_in_slow +
                 stats.nodes_copied_fast_to_fast_for_slow +
@@ -1718,8 +1778,8 @@ void UpdateAuxImpl::collect_compaction_read_stats(
 #if MONAD_MPT_COLLECT_STATS
     auto const node_offset = physical_to_virtual(physical_node_offset);
     if (compact_virtual_chunk_offset_t(node_offset) <
-        (node_offset.in_fast_list() ? compact_offset_fast
-                                    : compact_offset_slow)) {
+        (node_offset.in_fast_list() ? compact_offsets.fast
+                                    : compact_offsets.slow)) {
         // node orig offset in fast list but compact to slow list
         ++stats.nreads_before_compact_offset[!node_offset.in_fast_list()];
         stats.bytes_read_before_compact_offset[!node_offset.in_fast_list()] +=
@@ -1779,7 +1839,7 @@ void UpdateAuxImpl::collect_compacted_nodes_stats(
             MONAD_ASSERT(!node_offset.in_fast_list());
             MONAD_ASSERT(
                 compact_virtual_chunk_offset_t{node_offset} <
-                compact_offset_slow);
+                compact_offsets.slow);
             ++stats.compacted_nodes_in_slow;
             stats.compacted_bytes_in_slow += node_disk_size;
         }
@@ -1788,7 +1848,7 @@ void UpdateAuxImpl::collect_compacted_nodes_stats(
     if (!copy_node_for_fast && !rewrite_to_fast) {
         MONAD_ASSERT(!node_offset.in_fast_list());
         MONAD_ASSERT(
-            compact_virtual_chunk_offset_t{node_offset} < compact_offset_slow);
+            compact_virtual_chunk_offset_t{node_offset} < compact_offsets.slow);
         stats.compacted_bytes_in_slow += node_disk_size;
     }
     (void)copy_node_for_fast;

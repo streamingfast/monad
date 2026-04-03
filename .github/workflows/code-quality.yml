@@ -2,24 +2,42 @@ name: Code Quality Checks
 
 on:
   push:
+    branches: ["main"]
+  pull_request:
+    types: [ opened, synchronize, reopened, edited ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: >
+    ${{
+      (github.event_name == 'push' && format('push-{0}-code-quality', github.ref))
+      || (github.event_name == 'pull_request' && format('pr-{0}-code-quality', github.event.pull_request.number))
+      || (github.event_name == 'workflow_dispatch' && format('workflow-dispatch-{0}-code-quality', github.run_id))
+      || format('{0}-code-quality', github.run_id)
+    }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   formatting-check:
     name: Check clang-format
     runs-on: ubuntu-24.04
+    env:
+      LLVM_VERSION: '19'
     steps:
       - uses: actions/checkout@v4
-
-      - name: Formatting Check
-        uses: jidicula/clang-format-action@v4.13.0
         with:
-          clang-format-version: 19
-          include-regex: './(category|cmd|test)/.*\.(cpp|hpp|c|h)'
+            submodules: false
+      - name: Install clang-format-${{ env.LLVM_VERSION }}
+        run: |
+          wget https://apt.llvm.org/llvm.sh
+          sudo bash llvm.sh ${{ env.LLVM_VERSION }}
+          sudo apt install -y clang-format-${{ env.LLVM_VERSION }}
+      - name: Run clang-format check
+        run: |
+          find category cmd test -regex '.*\.\(cpp\|hpp\|c\|h\)' -exec clang-format-${{ env.LLVM_VERSION }} -style=file --dry-run --Werror {} + 
 
   traits-check:
       name: Trait instantiation check
@@ -71,15 +89,6 @@ jobs:
 
         - name: Setup Docker Buildx
           uses: docker/setup-buildx-action@v3
-
-        - name: Build `base` stage
-          uses: docker/build-push-action@v5
-          with:
-            context: .
-            file: docker/Dockerfile
-            target: base
-            cache-from: type=gha,scope=base
-            cache-to: type=gha,scope=base,mode=max
 
         - name: Build `code_quality` stage
           uses: docker/build-push-action@v5

@@ -15,6 +15,7 @@
 
 #include <category/core/assert.h>
 #include <category/core/bytes.hpp>
+#include <category/core/hex.hpp>
 #include <category/core/int.hpp>
 #include <category/core/likely.h>
 #include <category/execution/ethereum/block_hash_history.hpp>
@@ -28,6 +29,20 @@
 #include <evmc/evmc.h>
 
 #include <cstdint>
+
+MONAD_ANONYMOUS_NAMESPACE_BEGIN
+
+byte_string const BLOCK_HISTORY_CODE =
+    from_hex(
+        "0x3373fffffffffffffffffffffffffffffffffffffffe14604657602036036042575f"
+        "35600143038111604257611fff81430311604257611fff9006545f5260205ff35b5f5f"
+        "fd5b5f35611fff60014303065500")
+        .value();
+
+constexpr auto BLOCK_HISTORY_CODE_HASH{
+    0x6e49e66782037c0555897870e29fa5e552daf4719552131a0abce779daec0a5d_bytes32};
+
+MONAD_ANONYMOUS_NAMESPACE_END
 
 MONAD_NAMESPACE_BEGIN
 

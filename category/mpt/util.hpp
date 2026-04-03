@@ -18,6 +18,7 @@
 #include <category/async/util.hpp>
 #include <category/core/assert.h>
 #include <category/core/byte_string.hpp>
+#include <category/core/hex.hpp>
 #include <category/mpt/config.hpp>
 #include <category/mpt/nibbles_view.hpp>
 
@@ -53,16 +54,20 @@ static byte_string const empty_trie_hash = [] {
 
 struct virtual_chunk_offset_t
 {
-    file_offset_t offset : 28; //!< Offset into the chunk, max is 256Mb
-    file_offset_t
-        count : 20; //!< Count of the chunk, max is 1 million, therefore maximum
-                    //!< addressable storage is 256Tb
-    file_offset_t spare : 15;
+    static constexpr unsigned OFFSET_BITS = chunk_offset_t::OFFSET_BITS;
+    static constexpr unsigned COUNT_BITS = chunk_offset_t::ID_BITS;
+    static constexpr unsigned SPARE_BITS = chunk_offset_t::SPARE_BITS;
+
+    file_offset_t offset : OFFSET_BITS; //!< Offset into the chunk, max is 256Mb
+    file_offset_t count : COUNT_BITS; //!< Count of the chunk, max is 1 million,
+                                      //!< therefore maximum addressable storage
+                                      //!< is 256Tb
+    file_offset_t spare : SPARE_BITS;
     file_offset_t is_in_fast_list : 1;
 
-    static constexpr file_offset_t MAX_OFFSET = (1ULL << 28) - 1;
-    static constexpr file_offset_t MAX_COUNT = (1U << 20) - 1;
-    static constexpr file_offset_t MAX_SPARE = (1U << 15) - 1;
+    static constexpr file_offset_t MAX_OFFSET = (1ULL << OFFSET_BITS) - 1;
+    static constexpr file_offset_t MAX_COUNT = (1U << COUNT_BITS) - 1;
+    static constexpr file_offset_t MAX_SPARE = (1U << SPARE_BITS) - 1;
 
     static constexpr virtual_chunk_offset_t invalid_value() noexcept
     {
@@ -104,42 +109,17 @@ struct virtual_chunk_offset_t
     // ignore `spare` and `is_in_fast_list`
     constexpr file_offset_t raw() const noexcept
     {
-        union _
-        {
-            file_offset_t ret;
-            virtual_chunk_offset_t self;
-
-            constexpr _()
-                : ret{}
-            {
-            }
-        } u;
-
-        u.self = *this;
-        u.self.spare =
-            0; // must be flattened, otherwise can't go into the rbtree key
-        u.self.is_in_fast_list = 0;
-        return u.ret;
+        return (static_cast<file_offset_t>(count) << OFFSET_BITS) |
+               static_cast<file_offset_t>(offset);
     }
 
     // for hash table key, only ignore `spare`
     constexpr file_offset_t hasher_raw() const noexcept
     {
-        union _
-        {
-            file_offset_t ret;
-            virtual_chunk_offset_t self;
-
-            constexpr _()
-                : ret{}
-            {
-            }
-        } u;
-
-        u.self = *this;
-        u.self.spare =
-            0; // must be flattened, otherwise can't go into the rbtree key
-        return u.ret;
+        return (static_cast<file_offset_t>(is_in_fast_list)
+                << (OFFSET_BITS + COUNT_BITS + SPARE_BITS)) |
+               (static_cast<file_offset_t>(count) << OFFSET_BITS) |
+               static_cast<file_offset_t>(offset);
     }
 };
 
@@ -166,7 +146,9 @@ struct virtual_chunk_offset_t_hasher
 class compact_virtual_chunk_offset_t
 {
     static constexpr unsigned most_significant_bits = sizeof(uint32_t) * 8;
-    static constexpr unsigned bits_to_truncate = 48 - most_significant_bits;
+    static constexpr unsigned bits_to_truncate =
+        virtual_chunk_offset_t::OFFSET_BITS +
+        virtual_chunk_offset_t::COUNT_BITS - most_significant_bits;
     uint32_t v_{0};
 
     struct prevent_public_construction_tag
@@ -205,9 +187,8 @@ public:
 
     constexpr uint32_t get_count() const
     {
-        // most significant 20 bits
-        static constexpr unsigned count_bits = 20;
-        return v_ >> (most_significant_bits - count_bits);
+        return v_ >>
+               (most_significant_bits - virtual_chunk_offset_t::COUNT_BITS);
     }
 
     // NOLINTNEXTLINE(google-explicit-constructor)
@@ -252,6 +233,33 @@ static constexpr compact_virtual_chunk_offset_t INVALID_COMPACT_VIRTUAL_OFFSET =
 
 static constexpr compact_virtual_chunk_offset_t MIN_COMPACT_VIRTUAL_OFFSET =
     compact_virtual_chunk_offset_t::min_value();
+
+//! A pair of compact virtual chunk offsets for fast and slow lists.
+struct compact_offset_pair
+{
+    compact_virtual_chunk_offset_t fast{INVALID_COMPACT_VIRTUAL_OFFSET};
+    compact_virtual_chunk_offset_t slow{INVALID_COMPACT_VIRTUAL_OFFSET};
+
+    // Returns true if either component is below the corresponding threshold
+    constexpr bool any_below(compact_offset_pair threshold) const noexcept
+    {
+        return fast < threshold.fast || slow < threshold.slow;
+    }
+
+    // Returns true if the fast component is below the threshold
+    constexpr bool fast_below(compact_offset_pair threshold) const noexcept
+    {
+        return fast < threshold.fast;
+    }
+
+    byte_string serialize() const;
+
+    constexpr bool
+    operator==(compact_offset_pair const &) const noexcept = default;
+};
+
+static_assert(sizeof(compact_offset_pair) == 8);
+static_assert(alignof(compact_offset_pair) == 4);
 
 inline constexpr unsigned
 bitmask_index(uint16_t const mask, unsigned const i) noexcept
@@ -313,6 +321,12 @@ inline byte_string serialize(V n)
     static_assert(std::endian::native == std::endian::little);
     auto arr = std::bit_cast<std::array<unsigned char, sizeof(V)>>(n);
     return byte_string{arr.data(), arr.size()};
+}
+
+inline byte_string compact_offset_pair::serialize() const
+{
+    return ::monad::mpt::serialize((uint32_t)fast) +
+           ::monad::mpt::serialize((uint32_t)slow);
 }
 
 MONAD_MPT_NAMESPACE_END

@@ -24,7 +24,6 @@
 #include <algorithm>
 #include <bit>
 #include <cstddef>
-#include <cstring>
 #include <span>
 
 MONAD_RLP_NAMESPACE_BEGIN
@@ -96,7 +95,7 @@ encode_string(std::span<unsigned char> d, byte_string_view const s)
             abort();
 #endif
         }
-        std::memcpy(d.data(), s.data(), s.size());
+        std::copy(s.begin(), s.end(), d.data());
         d = d.subspan(s.size());
     }
     else {
@@ -110,7 +109,7 @@ encode_string(std::span<unsigned char> d, byte_string_view const s)
             abort();
 #endif
         }
-        std::memcpy(d.data(), s.data(), s.size());
+        std::copy(s.begin(), s.end(), d.data());
         d = d.subspan(s.size());
     }
     return d;
@@ -142,7 +141,7 @@ encode_list(std::span<unsigned char> d, byte_string_view const s)
             abort();
 #endif
         }
-        std::memcpy(d.data(), s.data(), s.size());
+        std::copy(s.begin(), s.end(), d.data());
         d = d.subspan(s.size());
     }
     else {
@@ -156,7 +155,7 @@ encode_list(std::span<unsigned char> d, byte_string_view const s)
             abort();
 #endif
         }
-        std::memcpy(d.data(), s.data(), s.size());
+        std::copy(s.begin(), s.end(), d.data());
         d = d.subspan(s.size());
     }
     return d;

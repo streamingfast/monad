@@ -21,9 +21,11 @@
 #include <category/execution/ethereum/core/account.hpp>
 #include <category/execution/ethereum/core/address.hpp>
 #include <category/execution/ethereum/core/receipt.hpp>
+#include <category/execution/ethereum/reserve_balance.hpp>
 #include <category/execution/ethereum/state3/account_state.hpp>
 #include <category/execution/ethereum/state3/version_stack.hpp>
 #include <category/execution/ethereum/types/incarnation.hpp>
+#include <category/execution/monad/reserve_balance.hpp>
 #include <category/vm/evm/traits.hpp>
 #include <category/vm/vm.hpp>
 
@@ -68,6 +70,16 @@ class State
     std::deque<Set<Address>> dirty_;
 
     bool const relaxed_validation_{false};
+    ReserveBalance rb_;
+
+    template <Traits traits>
+    friend bool revert_transaction_cached(State &);
+    template <Traits traits>
+        requires is_monad_trait_v<traits>
+    friend void init_reserve_balance_context(
+        State &, Address const &, Transaction const &,
+        std::optional<uint256_t> const &, uint64_t,
+        ChainContext<traits> const &);
 
 public:
     OriginalAccountState &original_account_state(Address const &);
@@ -122,6 +134,10 @@ public:
 
     bytes32_t get_code_hash(Address const &);
 
+    bool is_destructed(Address const &);
+
+    bool is_current_incarnation(Address const &);
+
     bytes32_t get_storage(Address const &, bytes32_t const &key);
 
     bytes32_t get_transient_storage(Address const &, bytes32_t const &key);
@@ -135,8 +151,6 @@ public:
     void add_to_balance(Address const &, uint256_t const &delta);
 
     void subtract_from_balance(Address const &, uint256_t const &delta);
-
-    void set_code_hash(Address const &, bytes32_t const &hash);
 
     evmc_storage_status
     set_storage(Address const &, bytes32_t const &key, bytes32_t const &value);

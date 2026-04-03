@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include <category/core/config.hpp>
+#include <category/core/hex.hpp>
 #include <category/core/int.hpp>
 #include <category/core/likely.h>
 #include <category/execution/monad/chain/monad_testnet.hpp>
@@ -24,13 +25,16 @@ MONAD_NAMESPACE_BEGIN
 
 monad_revision MonadTestnet::get_monad_revision(uint64_t const timestamp) const
 {
-    if (MONAD_LIKELY(timestamp >= 1763562600)) { // 2025-11-19T14:30:00.000Z
+    if (MONAD_LIKELY(timestamp >= 1773153000)) { // 2026-03-10T14:30:00.000Z
+        return MONAD_NINE;
+    }
+    else if (timestamp >= 1763562600) { // 2025-11-19T14:30:00.000Z
         return MONAD_EIGHT;
     }
-    if (timestamp >= 1762353000) { // 2025-11-05T14:30:00.000Z
+    else if (timestamp >= 1762353000) { // 2025-11-05T14:30:00.000Z
         return MONAD_SEVEN;
     }
-    if (timestamp >= 1761917400) { // 2025-10-31T13:30:00.000Z
+    else if (timestamp >= 1761917400) { // 2025-10-31T13:30:00.000Z
         return MONAD_SIX;
     }
     else if (timestamp >= 1761658200) { // 2025-10-28T13:30:00.000Z
@@ -60,8 +64,8 @@ GenesisState MonadTestnet::get_genesis_state() const
 {
     BlockHeader const header{
         .gas_limit = 5000,
-        .extra_data = evmc::from_hex("0x11bbe8db4e347b4e8c937c1c8370e4b5ed33a"
-                                     "db3db69cbdb7a38e1e50b1b82fa")
+        .extra_data = from_hex("0x11bbe8db4e347b4e8c937c1c8370e4b5ed33a"
+                               "db3db69cbdb7a38e1e50b1b82fa")
                           .value(),
         .base_fee_per_gas = 0,
         .withdrawals_root = NULL_ROOT,

@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include <category/rpc/monad_executor.h>
+#include <category/rpc/overrides.hpp>
 
 #include <category/core/assert.h>
 #include <category/core/byte_string.hpp>
@@ -21,6 +22,7 @@
 #include <category/core/fiber/fiber_group.hpp>
 #include <category/core/fiber/fiber_thread_pool.hpp>
 #include <category/core/fiber/priority_pool.hpp>
+#include <category/core/hex.hpp>
 #include <category/core/int.hpp>
 #include <category/core/keccak.hpp>
 #include <category/core/likely.h>
@@ -53,6 +55,7 @@
 #include <category/execution/ethereum/tx_context.hpp>
 #include <category/execution/ethereum/types/incarnation.hpp>
 #include <category/execution/ethereum/validate_transaction.hpp>
+#include <category/execution/ethereum/validate_transaction_error.hpp>
 #include <category/execution/monad/chain/monad_chain.hpp>
 #include <category/execution/monad/chain/monad_devnet.hpp>
 #include <category/execution/monad/chain/monad_mainnet.hpp>
@@ -90,29 +93,12 @@
 #include <ankerl/unordered_dense.h>
 #include <evmc/evmc.h>
 #include <evmc/evmc.hpp>
-#include <evmc/hex.hpp>
 #include <intx/intx.hpp>
 #include <nlohmann/json_fwd.hpp>
 #include <quill/Quill.h>
 
 using namespace monad;
 using namespace monad::vm;
-
-struct monad_state_override
-{
-    struct monad_state_override_object
-    {
-        std::optional<uint256_t> balance{std::nullopt};
-        std::optional<uint64_t> nonce{std::nullopt};
-        std::optional<byte_string> code{std::nullopt};
-        ankerl::unordered_dense::segmented_map<bytes32_t, bytes32_t> state{};
-        ankerl::unordered_dense::segmented_map<bytes32_t, bytes32_t>
-            state_diff{};
-    };
-
-    ankerl::unordered_dense::segmented_map<Address, monad_state_override_object>
-        override_sets;
-};
 
 namespace
 {
@@ -185,32 +171,8 @@ namespace
         "failed to recover the grandparent transactions context";
     char const *const TRANSACTION_OUT_OF_BOUNDS_ERR_MSG =
         "transaction out of bounds";
-    using StateOverrideObj = monad_state_override::monad_state_override_object;
-
     static ankerl::unordered_dense::segmented_set<Address>
         empty_senders_and_authorities{};
-
-    ankerl::unordered_dense::segmented_set<Address>
-    combine_senders_and_authorities(
-        std::vector<Address> const &senders,
-        std::vector<std::vector<std::optional<Address>>> const &authorities)
-    {
-        ankerl::unordered_dense::segmented_set<Address> senders_and_authorities;
-
-        for (Address const &sender : senders) {
-            senders_and_authorities.insert(sender);
-        }
-
-        for (auto const &authorities_ : authorities) {
-            for (std::optional<Address> const &authority : authorities_) {
-                if (authority.has_value()) {
-                    senders_and_authorities.insert(authority.value());
-                }
-            }
-        }
-
-        return senders_and_authorities;
-    }
 
     void apply_state_overrides(
         BlockState &block_state, Incarnation const incarnation,
@@ -323,8 +285,8 @@ namespace
             // a subroutine. Solving this issue by manually setting account to
             // be EOA for validation
             state.set_code(sender, {});
-            BOOST_OUTCOME_TRY(
-                validate_transaction<traits>(enriched_txn, sender, state));
+            BOOST_OUTCOME_TRY(validate_ethereum_transaction<traits>(
+                enriched_txn, sender, state));
         }
 
         auto const senders = std::vector{sender};
@@ -532,7 +494,7 @@ namespace
                     rlp::encode_transaction(transactions[transaction_index])));
                 nlohmann::json entry{
                     {"result", nlohmann::json{}},
-                    {"txHash", std::format("0x{}", evmc::hex(tx_hash))}};
+                    {"txHash", std::format("0x{}", to_hex(tx_hash))}};
                 return entry;
             };
 
@@ -580,140 +542,6 @@ namespace
 namespace monad
 {
     quill::Logger *tracer = nullptr;
-}
-
-monad_state_override *monad_state_override_create()
-{
-    monad_state_override *const m = new monad_state_override();
-
-    return m;
-}
-
-void monad_state_override_destroy(monad_state_override *const m)
-{
-    MONAD_ASSERT(m);
-    delete m;
-}
-
-void add_override_address(
-    monad_state_override *const m, uint8_t const *const addr,
-    size_t const addr_len)
-{
-    MONAD_ASSERT(m);
-
-    MONAD_ASSERT(addr);
-    MONAD_ASSERT(addr_len == sizeof(Address));
-    Address address;
-    std::memcpy(address.bytes, addr, sizeof(Address));
-
-    MONAD_ASSERT(m->override_sets.find(address) == m->override_sets.end());
-    m->override_sets.emplace(address, StateOverrideObj{});
-}
-
-void set_override_balance(
-    monad_state_override *const m, uint8_t const *const addr,
-    size_t const addr_len, uint8_t const *const balance,
-    size_t const balance_len)
-{
-    MONAD_ASSERT(m);
-
-    MONAD_ASSERT(addr);
-    MONAD_ASSERT(addr_len == sizeof(Address));
-    Address address;
-    std::memcpy(address.bytes, addr, sizeof(Address));
-    MONAD_ASSERT(m->override_sets.find(address) != m->override_sets.end());
-
-    MONAD_ASSERT(balance);
-    MONAD_ASSERT(balance_len == sizeof(uint256_t));
-    m->override_sets[address].balance =
-        intx::be::unsafe::load<uint256_t>(balance);
-}
-
-void set_override_nonce(
-    monad_state_override *const m, uint8_t const *const addr,
-    size_t const addr_len, uint64_t const nonce)
-{
-    MONAD_ASSERT(m);
-
-    MONAD_ASSERT(addr);
-    MONAD_ASSERT(addr_len == sizeof(Address));
-    Address address;
-    std::memcpy(address.bytes, addr, sizeof(Address));
-    MONAD_ASSERT(m->override_sets.find(address) != m->override_sets.end());
-
-    m->override_sets[address].nonce = nonce;
-}
-
-void set_override_code(
-    monad_state_override *const m, uint8_t const *const addr,
-    size_t const addr_len, uint8_t const *const code, size_t const code_len)
-{
-    MONAD_ASSERT(m);
-
-    MONAD_ASSERT(addr);
-    MONAD_ASSERT(addr_len == sizeof(Address));
-    Address address;
-    std::memcpy(address.bytes, addr, sizeof(Address));
-    MONAD_ASSERT(m->override_sets.find(address) != m->override_sets.end());
-
-    MONAD_ASSERT(code);
-    m->override_sets[address].code = {code, code + code_len};
-}
-
-void set_override_state_diff(
-    monad_state_override *const m, uint8_t const *const addr,
-    size_t const addr_len, uint8_t const *const key, size_t const key_len,
-    uint8_t const *const value, size_t const value_len)
-{
-    MONAD_ASSERT(m);
-
-    MONAD_ASSERT(addr);
-    MONAD_ASSERT(addr_len == sizeof(Address));
-    Address address;
-    std::memcpy(address.bytes, addr, sizeof(Address));
-    MONAD_ASSERT(m->override_sets.find(address) != m->override_sets.end());
-
-    MONAD_ASSERT(key);
-    MONAD_ASSERT(key_len == sizeof(bytes32_t));
-    bytes32_t k;
-    std::memcpy(k.bytes, key, sizeof(bytes32_t));
-
-    MONAD_ASSERT(value);
-    MONAD_ASSERT(value_len == sizeof(bytes32_t));
-    bytes32_t v;
-    std::memcpy(v.bytes, value, sizeof(bytes32_t));
-
-    auto &state_object = m->override_sets[address].state_diff;
-    MONAD_ASSERT(state_object.find(k) == state_object.end());
-    state_object.emplace(k, v);
-}
-
-void set_override_state(
-    monad_state_override *const m, uint8_t const *const addr,
-    size_t const addr_len, uint8_t const *const key, size_t const key_len,
-    uint8_t const *const value, size_t const value_len)
-{
-    MONAD_ASSERT(m);
-
-    MONAD_ASSERT(addr);
-    MONAD_ASSERT(addr_len == sizeof(Address));
-    Address address;
-    std::memcpy(address.bytes, addr, sizeof(Address));
-    MONAD_ASSERT(m->override_sets.find(address) != m->override_sets.end());
-
-    MONAD_ASSERT(key);
-    MONAD_ASSERT(key_len == sizeof(bytes32_t));
-    bytes32_t k;
-    std::memcpy(k.bytes, key, sizeof(bytes32_t));
-
-    MONAD_ASSERT(value);
-    MONAD_ASSERT(value_len == sizeof(bytes32_t));
-    bytes32_t v;
-    std::memcpy(v.bytes, value, sizeof(bytes32_t));
-
-    auto &state_object = m->override_sets[address].state;
-    MONAD_ASSERT(state_object.find(k) == state_object.end());
-    state_object.emplace(k, v);
 }
 
 void monad_executor_result_release(monad_executor_result *const result)
@@ -1317,6 +1145,11 @@ struct monad_executor
                     1, std::memory_order_relaxed);
                 fiber_group->executing_count.fetch_add(
                     1, std::memory_order_relaxed);
+                BOOST_SCOPE_EXIT_ALL(&fiber_group)
+                {
+                    fiber_group->executing_count.fetch_sub(
+                        1, std::memory_order_relaxed);
+                };
                 try {
                     auto const chain =
                         [chain_config] -> std::unique_ptr<Chain> {

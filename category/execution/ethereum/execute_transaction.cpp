@@ -33,7 +33,6 @@
 #include <category/execution/ethereum/transaction_gas.hpp>
 #include <category/execution/ethereum/tx_context.hpp>
 #include <category/execution/ethereum/validate_transaction.hpp>
-#include <category/vm/evm/delegation.hpp>
 #include <category/vm/evm/explicit_traits.hpp>
 #include <category/vm/evm/switch_traits.hpp>
 #include <category/vm/evm/traits.hpp>
@@ -220,6 +219,16 @@ template <Traits traits>
 evmc::Result ExecuteTransactionNoValidation<traits>::operator()(
     State &state, EvmcHost<traits> &host)
 {
+    if constexpr (::monad::is_monad_trait_v<traits>) {
+        init_reserve_balance_context<traits>(
+            state,
+            sender_,
+            tx_,
+            header_.base_fee_per_gas,
+            host.i_,
+            host.chain_ctx_);
+    }
+
     irrevocable_change<traits>(
         state,
         tx_,
@@ -264,9 +273,10 @@ evmc::Result ExecuteTransactionNoValidation<traits>::operator()(
         }
     }
 
-    auto result = (msg.kind == EVMC_CREATE || msg.kind == EVMC_CREATE2)
-                      ? ::monad::create<traits>(&host, state, msg)
-                      : ::monad::call<traits>(&host, state, msg);
+    auto result =
+        (msg.kind == EVMC_CREATE || msg.kind == EVMC_CREATE2)
+            ? ::monad::execute_create_message<traits>(&host, state, msg)
+            : ::monad::execute_call_message<traits>(&host, state, msg);
 
     result.gas_refund += auth_refund;
     return result;
@@ -301,9 +311,7 @@ template <Traits traits>
 Result<evmc::Result> ExecuteTransaction<traits>::execute_impl2(State &state)
 {
     auto const validate_lambda = [this, &state] {
-        auto result = chain_.validate_transaction(
-            header_.number,
-            header_.timestamp,
+        auto result = validate_transaction<traits>(
             tx_,
             sender_,
             state,
@@ -399,11 +407,17 @@ Result<Receipt> ExecuteTransaction<traits>::operator()()
 {
     TRACE_TXN_EVENT(StartTxn);
 
-    BOOST_OUTCOME_TRY(static_validate_transaction<traits>(
-        tx_,
-        header_.base_fee_per_gas,
-        header_.excess_blob_gas,
-        chain_.get_chain_id()));
+    {
+        auto validation_result = static_validate_transaction<traits>(
+            tx_,
+            header_.base_fee_per_gas,
+            header_.excess_blob_gas,
+            chain_.get_chain_id());
+        if (validation_result.has_error()) {
+            prev_.get_future().wait();
+            return std::move(validation_result).as_failure();
+        }
+    }
 
     {
         TRACE_TXN_EVENT(StartExecution);
@@ -450,13 +464,5 @@ Result<Receipt> ExecuteTransaction<traits>::operator()()
 }
 
 EXPLICIT_TRAITS_CLASS(ExecuteTransaction);
-
-uint64_t g_star(
-    evmc_revision const rev, Transaction const &tx,
-    uint64_t const gas_remaining, uint64_t const refund)
-{
-    SWITCH_EVM_TRAITS(g_star, tx, gas_remaining, refund);
-    MONAD_ASSERT(false);
-}
 
 MONAD_NAMESPACE_END

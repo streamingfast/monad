@@ -27,7 +27,7 @@
 
 MONAD_NAMESPACE_BEGIN
 
-static constexpr Address RESERVE_BALANCE_CA = Address{0x1001};
+inline constexpr Address RESERVE_BALANCE_CA = Address{0x1001};
 
 class ReserveBalanceContract
 {
@@ -47,6 +47,10 @@ public:
     template <Traits traits>
     static std::pair<PrecompileFunc, uint64_t>
     precompile_dispatch(byte_string_view &);
+
+    template <Traits traits>
+    Result<byte_string> precompile_dipped_into_reserve(
+        byte_string_view, evmc_address const &, evmc_uint256be const &);
 
     Result<byte_string> precompile_fallback(
         byte_string_view, evmc_address const &, evmc_uint256be const &);

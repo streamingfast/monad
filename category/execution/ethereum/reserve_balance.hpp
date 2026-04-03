@@ -24,6 +24,7 @@
 #include <evmc/evmc.h>
 
 #include <cstdint>
+#include <optional>
 
 MONAD_NAMESPACE_BEGIN
 
@@ -35,5 +36,15 @@ bool revert_transaction(
     Address const &sender, Transaction const &,
     uint256_t const &base_fee_per_gas, uint64_t i, State &,
     ChainContext<traits> const &);
+
+template <Traits traits>
+bool revert_transaction_cached(State &);
+
+template <Traits traits>
+    requires is_monad_trait_v<traits>
+void init_reserve_balance_context(
+    State &state, Address const &sender, Transaction const &tx,
+    std::optional<uint256_t> const &base_fee_per_gas, uint64_t i,
+    ChainContext<traits> const &ctx);
 
 MONAD_NAMESPACE_END

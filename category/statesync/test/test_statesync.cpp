@@ -18,14 +18,17 @@
 #include <category/core/basic_formatter.hpp>
 #include <category/core/byte_string.hpp>
 #include <category/core/bytes.hpp>
+#include <category/core/hex.hpp>
 #include <category/execution/ethereum/chain/ethereum_mainnet.hpp>
 #include <category/execution/ethereum/chain/genesis_state.hpp>
 #include <category/execution/ethereum/core/fmt/bytes_fmt.hpp>
 #include <category/execution/ethereum/core/rlp/block_rlp.hpp>
 #include <category/execution/ethereum/db/trie_db.hpp>
 #include <category/execution/ethereum/db/util.hpp>
+#include <category/execution/ethereum/rlp/encode2.hpp>
 #include <category/mpt/ondisk_db_config.hpp>
 #include <category/statesync/statesync_client.h>
+#include <category/statesync/statesync_client_context.hpp>
 #include <category/statesync/statesync_server.h>
 #include <category/statesync/statesync_server_context.hpp>
 #include <category/statesync/statesync_version.h>
@@ -166,13 +169,12 @@ namespace
 
         void init()
         {
-            char const *const str = cdbname.c_str();
-            cctx = monad_statesync_client_context_create(
-                &str,
-                1,
-                static_cast<unsigned>(get_nprocs() - 1),
+            cctx = new monad_statesync_client_context{
+                {cdbname},
+                std::make_optional(static_cast<unsigned>(get_nprocs() - 1)),
+                4,
                 &client,
-                &statesync_send_request);
+                &statesync_send_request};
             net = {.client = &client, .cctx = cctx};
             for (size_t i = 0; i < monad_statesync_client_prefixes(); ++i) {
                 monad_statesync_client_handle_new_peer(
@@ -374,10 +376,9 @@ TEST_F(StateSyncFixture, sync_from_some)
         constexpr auto ADDR1 =
             0x5353535353535353535353535353535353535353_address;
         auto const code =
-            evmc::from_hex(
-                "7ffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-                "fffffffffff7fffffffffffffffffffffffffffffffffffffffffff"
-                "ffffffffffffffffffffff0160005500")
+            from_hex("7ffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                     "fffffffffff7fffffffffffffffffffffffffffffffffffffffffff"
+                     "ffffffffffffffffffffff0160005500")
                 .value();
         auto const code_hash = to_bytes(keccak256(code));
         auto const icode = vm::make_shared_intercode(code);
@@ -955,9 +956,9 @@ TEST_F(StateSyncFixture, update_contract_twice)
         to_bytes(keccak256(rlp::encode_block_header(stdb.read_eth_header())));
 
     auto const code =
-        evmc::from_hex("7ffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-                       "fffffffffff7fffffffffffffffffffffffffffffffffffffffffff"
-                       "ffffffffffffffffffffff0160005500")
+        from_hex("7ffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                 "fffffffffff7fffffffffffffffffffffffffffffffffffffffffff"
+                 "ffffffffffffffffffffff0160005500")
             .value();
     auto const code_hash = to_bytes(keccak256(code));
     auto const icode = vm::make_shared_intercode(code);
@@ -1354,4 +1355,19 @@ TEST_F(StateSyncFixture, validation_old_target_greater_than_target)
     client.rqs.push_back(rq);
     monad_statesync_server_run_once(server);
     EXPECT_FALSE(client.success);
+}
+
+TEST(ProtocolValidation, storage_deletion_rejects_oversized_key)
+{
+    StatesyncProtocolV1 proto;
+
+    Address a{0xdeadbeef};
+    byte_string oversized_key(33, 0xff);
+
+    byte_string buf{};
+    buf += to_byte_string_view(a.bytes);
+    buf += rlp::encode_string2(oversized_key);
+
+    EXPECT_FALSE(proto.handle_upsert(
+        nullptr, SYNC_TYPE_UPSERT_STORAGE_DELETE, buf.data(), buf.size()));
 }

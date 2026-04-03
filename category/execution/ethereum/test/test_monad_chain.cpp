@@ -33,6 +33,7 @@
 #include <category/execution/monad/chain/monad_testnet.hpp>
 #include <category/execution/monad/reserve_balance.h>
 #include <category/execution/monad/reserve_balance.hpp>
+#include <category/execution/monad/staking/util/constants.hpp>
 #include <category/execution/monad/system_sender.hpp>
 #include <category/execution/monad/validate_monad_transaction.hpp>
 #include <category/mpt/db.hpp>
@@ -155,8 +156,8 @@ void run_revert_transaction_test(
     uint8_t const prevent_dip_bitset, uint64_t const initial_balance_mon,
     uint64_t const gas_fee_mon, uint64_t const value_mon, bool const expected)
 {
-    constexpr uint256_t BASE_FEE_PER_GAS = 10;
-    constexpr Address SENDER{1};
+    static constexpr uint256_t BASE_FEE_PER_GAS = 10;
+    static constexpr Address SENDER{1};
     InMemoryMachine machine;
     mpt::Db db{machine};
     TrieDb tdb{db};
@@ -242,6 +243,8 @@ void run_revert_transaction_test(
 
     {
         State state{bs, Incarnation{1, 1}};
+        init_reserve_balance_context<traits>(
+            state, SENDER, tx, BASE_FEE_PER_GAS, 1, chain_context);
         state.subtract_from_balance(SENDER, gas_fee);
         uint256_t const value = uint256_t{value_mon} * 1000000000000000000ULL;
         state.subtract_from_balance(SENDER, value);
@@ -252,8 +255,12 @@ void run_revert_transaction_test(
             1, // transaction index
             state,
             chain_context);
+        bool should_revert_cached = revert_transaction_cached<traits>(state);
 
         EXPECT_EQ(should_revert, expected)
+            << std::bitset<64>{prevent_dip_bitset};
+
+        EXPECT_EQ(should_revert_cached, should_revert)
             << std::bitset<64>{prevent_dip_bitset};
     }
 }
@@ -322,6 +329,159 @@ TYPED_TEST(MonadTraitsTest, revert_transaction_no_dip_gas_fee_with_value_false)
             false // expected should_revert
         );
     }
+}
+
+TYPED_TEST(MonadTraitsTest, reserve_balance_checks_disabled_before_monad_four)
+{
+    if constexpr (TestFixture::Trait::monad_rev() < MONAD_FOUR) {
+        // For revisions before MONAD_FOUR, reserve-balance tracking must stay
+        // disabled. If it is accidentally enabled, this case hits
+        // sender_gas_fees > reserve for a non-dipping sender and throws.
+        run_revert_transaction_test<typename TestFixture::Trait>(
+            (1 << IsDelegated), // not allowed to dip into reserve
+            20, // initial balance (MON)
+            11, // gas fee (MON), strictly greater than reserve (10 MON)
+            0, // value (MON)
+            false // expected should_revert
+        );
+    }
+}
+
+TYPED_TEST(
+    MonadTraitsTest,
+    sender_gas_fee_above_reserve_stays_failed_after_large_credit)
+{
+    using traits = typename TestFixture::Trait;
+    if constexpr (traits::monad_rev() < MONAD_FOUR) {
+        GTEST_SKIP() << "reserve-balance checks are disabled before MONAD_FOUR";
+    }
+
+    static constexpr Address SENDER{1};
+    static constexpr uint256_t BASE_FEE_PER_GAS = 10;
+    auto const to_wei = [](uint64_t mon) {
+        return uint256_t{mon} * 1000000000000000000ULL;
+    };
+
+    InMemoryMachine machine;
+    mpt::Db db{machine};
+    TrieDb tdb{db};
+    vm::VM vm;
+    BlockState bs{tdb, vm};
+
+    {
+        State init_state{bs, Incarnation{0, 0}};
+        init_state.add_to_balance(SENDER, to_wei(20));
+        MONAD_ASSERT(bs.can_merge(init_state));
+        bs.merge(init_state);
+    }
+
+    uint256_t const sender_gas_fee = to_wei(11); // reserve is capped at 10 MON
+    uint256_t const gas_limit_u256 = sender_gas_fee / BASE_FEE_PER_GAS;
+    MONAD_ASSERT(
+        (sender_gas_fee % BASE_FEE_PER_GAS) == 0 &&
+        gas_limit_u256 <= std::numeric_limits<uint64_t>::max());
+
+    Transaction const tx{
+        .max_fee_per_gas = BASE_FEE_PER_GAS,
+        .gas_limit = static_cast<uint64_t>(gas_limit_u256),
+        .type = TransactionType::legacy,
+        .max_priority_fee_per_gas = 0,
+    };
+
+    ankerl::unordered_dense::segmented_set<Address> const
+        empty_grandparent_senders_and_authorities;
+    ankerl::unordered_dense::segmented_set<Address>
+        parent_senders_and_authorities;
+    parent_senders_and_authorities.insert(SENDER); // sender cannot dip
+    std::vector<Address> const senders = {SENDER};
+    std::vector<std::vector<std::optional<Address>>> const authorities = {{}};
+    ankerl::unordered_dense::segmented_set<Address> senders_and_authorities;
+    senders_and_authorities.insert(SENDER);
+    ChainContext<traits> const context{
+        .grandparent_senders_and_authorities =
+            empty_grandparent_senders_and_authorities,
+        .parent_senders_and_authorities = parent_senders_and_authorities,
+        .senders_and_authorities = senders_and_authorities,
+        .senders = senders,
+        .authorities = authorities,
+    };
+
+    State state{bs, Incarnation{1, 1}};
+    init_reserve_balance_context<traits>(
+        state, SENDER, tx, BASE_FEE_PER_GAS, 0, context);
+    state.subtract_from_balance(SENDER, sender_gas_fee);
+
+    EXPECT_TRUE(revert_transaction<traits>(
+        SENDER, tx, BASE_FEE_PER_GAS, 0, state, context));
+    EXPECT_TRUE(revert_transaction_cached<traits>(state));
+
+    uint256_t const sender_balance = state.get_balance(SENDER);
+    state.add_to_balance(
+        SENDER, std::numeric_limits<uint256_t>::max() - sender_balance);
+
+    EXPECT_TRUE(revert_transaction<traits>(
+        SENDER, tx, BASE_FEE_PER_GAS, 0, state, context));
+    EXPECT_TRUE(revert_transaction_cached<traits>(state));
+}
+
+TYPED_TEST(MonadTraitsTest, staking_contract_balance_drop_does_not_revert)
+{
+    if constexpr (TestFixture::Trait::monad_rev() < MONAD_FOUR) {
+        GTEST_SKIP() << "reserve-balance checks are disabled before MONAD_FOUR";
+    }
+
+    using traits = typename TestFixture::Trait;
+    constexpr Address sender{1};
+    constexpr uint256_t base_fee_per_gas = 10;
+
+    auto const to_wei = [](uint64_t mon) {
+        return uint256_t{mon} * staking::MON;
+    };
+
+    InMemoryMachine machine;
+    mpt::Db db{machine};
+    TrieDb tdb{db};
+    vm::VM vm;
+    BlockState bs{tdb, vm};
+
+    {
+        State state{bs, Incarnation{0, 0}};
+        state.add_to_balance(sender, to_wei(20));
+        state.add_to_balance(staking::STAKING_CA, to_wei(10));
+        MONAD_ASSERT(bs.can_merge(state));
+        bs.merge(state);
+    }
+
+    uint256_t const sender_gas_fee = to_wei(1);
+    uint256_t const gas_limit_u256 = sender_gas_fee / base_fee_per_gas;
+    MONAD_ASSERT(
+        (sender_gas_fee % base_fee_per_gas) == 0 &&
+        gas_limit_u256 <= std::numeric_limits<uint64_t>::max());
+
+    Transaction const tx{
+        .max_fee_per_gas = base_fee_per_gas,
+        .gas_limit = static_cast<uint64_t>(gas_limit_u256),
+        .type = TransactionType::legacy,
+        .max_priority_fee_per_gas = 0,
+    };
+
+    ChainContext<traits> const chain_context{
+        .grandparent_senders_and_authorities = {},
+        .parent_senders_and_authorities = {},
+        .senders_and_authorities = {sender},
+        .senders = {sender},
+        .authorities = {{}},
+    };
+
+    State state{bs, Incarnation{1, 1}};
+    init_reserve_balance_context<traits>(
+        state, sender, tx, base_fee_per_gas, 0, chain_context);
+    state.subtract_from_balance(sender, sender_gas_fee);
+    state.subtract_from_balance(staking::STAKING_CA, to_wei(1));
+
+    EXPECT_FALSE(revert_transaction<traits>(
+        sender, tx, base_fee_per_gas, 0, state, chain_context));
+    EXPECT_FALSE(revert_transaction_cached<traits>(state));
 }
 
 TYPED_TEST(MonadTraitsTest, revert_transaction_dip_false)
@@ -397,9 +557,9 @@ TYPED_TEST(MonadTraitsTest, can_sender_dip_into_reserve)
 TYPED_TEST(MonadTraitsTest, reserve_checks_code_hash)
 {
     using traits = typename TestFixture::Trait;
-    constexpr Address SENDER{1};
-    constexpr Address NEW_CONTRACT{2};
-    constexpr uint64_t BASE_FEE_PER_GAS = 10;
+    static constexpr Address SENDER{1};
+    static constexpr Address NEW_CONTRACT{2};
+    static constexpr uint64_t BASE_FEE_PER_GAS = 10;
     auto const to_wei = [](uint64_t mon) {
         return uint256_t{mon} * 1000000000000000000ULL;
     };
@@ -444,6 +604,8 @@ TYPED_TEST(MonadTraitsTest, reserve_checks_code_hash)
         .authorities = authorities};
 
     auto const prepare_state = [&](State &state) {
+        init_reserve_balance_context<traits>(
+            state, SENDER, tx, BASE_FEE_PER_GAS, 0, context);
         state.subtract_from_balance(SENDER, gas_cost);
         state.subtract_from_balance(NEW_CONTRACT, to_wei(3));
         byte_string const contract_code{0x60, 0x00};
@@ -455,15 +617,173 @@ TYPED_TEST(MonadTraitsTest, reserve_checks_code_hash)
 
     bool const should_revert = revert_transaction<traits>(
         SENDER, tx, BASE_FEE_PER_GAS, 0, state, context);
+    bool const should_revert_cached = revert_transaction_cached<traits>(state);
 
     if constexpr (traits::monad_rev() < MONAD_FOUR) {
         EXPECT_FALSE(should_revert);
+        EXPECT_FALSE(should_revert_cached);
     }
     else if constexpr (traits::monad_rev() >= MONAD_EIGHT) {
         EXPECT_FALSE(should_revert);
+        EXPECT_FALSE(should_revert_cached);
     }
     else {
         EXPECT_TRUE(should_revert);
+        EXPECT_TRUE(should_revert_cached);
+    }
+}
+
+TYPED_TEST(MonadTraitsTest, reserve_checks_empty_code_hash)
+{
+    using traits = typename TestFixture::Trait;
+    static constexpr Address SENDER{1};
+    static constexpr Address NEW_CONTRACT{2};
+    static constexpr uint64_t BASE_FEE_PER_GAS = 10;
+    auto const to_wei = [](uint64_t mon) {
+        return uint256_t{mon} * 1000000000000000000ULL;
+    };
+
+    InMemoryMachine machine;
+    mpt::Db db{machine};
+    TrieDb tdb{db};
+    vm::VM vm;
+    BlockState bs{tdb, vm};
+
+    {
+        State init_state{bs, Incarnation{0, 0}};
+        init_state.add_to_balance(SENDER, to_wei(20));
+        init_state.add_to_balance(NEW_CONTRACT, to_wei(3));
+        MONAD_ASSERT(bs.can_merge(init_state));
+        bs.merge(init_state);
+    }
+
+    Transaction const tx{
+        .max_fee_per_gas = BASE_FEE_PER_GAS,
+        .gas_limit = 1,
+        .type = TransactionType::legacy,
+        .max_priority_fee_per_gas = 0,
+    };
+    uint256_t const gas_cost =
+        uint256_t{BASE_FEE_PER_GAS} * uint256_t{tx.gas_limit};
+
+    ankerl::unordered_dense::segmented_set<Address> const
+        empty_grandparent_senders_and_authorities;
+    ankerl::unordered_dense::segmented_set<Address> const
+        empty_parent_senders_and_authorities;
+    std::vector<Address> const senders = {SENDER};
+    std::vector<std::vector<std::optional<Address>>> const authorities = {{}};
+    ankerl::unordered_dense::segmented_set<Address> senders_and_authorities;
+    senders_and_authorities.insert(SENDER);
+    ChainContext<traits> const context{
+        .grandparent_senders_and_authorities =
+            empty_grandparent_senders_and_authorities,
+        .parent_senders_and_authorities = empty_parent_senders_and_authorities,
+        .senders_and_authorities = senders_and_authorities,
+        .senders = senders,
+        .authorities = authorities};
+
+    State state{bs, Incarnation{1, 1}};
+    init_reserve_balance_context<traits>(
+        state, SENDER, tx, BASE_FEE_PER_GAS, 0, context);
+    state.subtract_from_balance(SENDER, gas_cost);
+    state.subtract_from_balance(NEW_CONTRACT, to_wei(3));
+    state.set_code(NEW_CONTRACT, {});
+
+    bool const should_revert = revert_transaction<traits>(
+        SENDER, tx, BASE_FEE_PER_GAS, 0, state, context);
+    bool const should_revert_cached = revert_transaction_cached<traits>(state);
+
+    if constexpr (traits::monad_rev() < MONAD_FOUR) {
+        EXPECT_FALSE(should_revert);
+        EXPECT_FALSE(should_revert_cached);
+    }
+    else {
+        EXPECT_TRUE(should_revert);
+        EXPECT_TRUE(should_revert_cached);
+    }
+}
+
+TYPED_TEST(MonadTraitsTest, reserve_checks_prefunded_init_selfdestruct)
+{
+    using traits = typename TestFixture::Trait;
+    constexpr Address SENDER{1};
+    constexpr Address NEW_CONTRACT{2};
+    constexpr Address BENEFICIARY{3};
+    constexpr uint64_t BASE_FEE_PER_GAS = 10;
+    auto const to_wei = [](uint64_t mon) {
+        return uint256_t{mon} * 1000000000000000000ULL;
+    };
+
+    InMemoryMachine machine;
+    mpt::Db db{machine};
+    TrieDb tdb{db};
+    vm::VM vm;
+    BlockState bs{tdb, vm};
+
+    {
+        State init_state{bs, Incarnation{0, 0}};
+        init_state.add_to_balance(SENDER, to_wei(20));
+        init_state.add_to_balance(NEW_CONTRACT, to_wei(3));
+        MONAD_ASSERT(bs.can_merge(init_state));
+        bs.merge(init_state);
+    }
+
+    Transaction const tx{
+        .max_fee_per_gas = BASE_FEE_PER_GAS,
+        .gas_limit = 1,
+        .type = TransactionType::legacy,
+        .max_priority_fee_per_gas = 0,
+    };
+    uint256_t const gas_cost =
+        uint256_t{BASE_FEE_PER_GAS} * uint256_t{tx.gas_limit};
+
+    ankerl::unordered_dense::segmented_set<Address> const
+        empty_grandparent_senders_and_authorities;
+    ankerl::unordered_dense::segmented_set<Address> const
+        empty_parent_senders_and_authorities;
+    std::vector<Address> const senders = {SENDER};
+    std::vector<std::vector<std::optional<Address>>> const authorities = {{}};
+    ankerl::unordered_dense::segmented_set<Address> senders_and_authorities;
+    senders_and_authorities.insert(SENDER);
+    ChainContext<traits> const context{
+        .grandparent_senders_and_authorities =
+            empty_grandparent_senders_and_authorities,
+        .parent_senders_and_authorities = empty_parent_senders_and_authorities,
+        .senders_and_authorities = senders_and_authorities,
+        .senders = senders,
+        .authorities = authorities};
+
+    State state{bs, Incarnation{1, 1}};
+    init_reserve_balance_context<traits>(
+        state, SENDER, tx, BASE_FEE_PER_GAS, 0, context);
+    state.subtract_from_balance(SENDER, gas_cost);
+
+    // Model constructor-time SELFDESTRUCT at a pre-funded address:
+    // create the account in current incarnation, then selfdestruct it before
+    // any runtime code is set.
+    state.create_contract(NEW_CONTRACT);
+    auto const [inserted, initial_balance] =
+        state.selfdestruct<traits>(NEW_CONTRACT, BENEFICIARY);
+    EXPECT_TRUE(inserted);
+    EXPECT_EQ(initial_balance, to_wei(3));
+    EXPECT_EQ(state.get_balance(NEW_CONTRACT), 0);
+    EXPECT_EQ(state.get_balance(BENEFICIARY), to_wei(3));
+
+    bool const should_revert = revert_transaction<traits>(
+        SENDER, tx, BASE_FEE_PER_GAS, 0, state, context);
+    bool const should_revert_cached = revert_transaction_cached<traits>(state);
+
+    if constexpr (traits::monad_rev() < MONAD_FOUR) {
+        EXPECT_FALSE(should_revert);
+        EXPECT_FALSE(should_revert_cached);
+    }
+    else if constexpr (traits::monad_rev() >= MONAD_NINE) {
+        EXPECT_FALSE(should_revert);
+        EXPECT_FALSE(should_revert_cached);
+    }
+    else {
+        EXPECT_TRUE(should_revert);
+        EXPECT_TRUE(should_revert_cached);
     }
 }
 
@@ -477,14 +797,8 @@ TYPED_TEST(MonadTraitsTest, system_transaction_sender_is_authority)
     State state{bs, Incarnation{0, 0}};
     std::vector<std::optional<Address>> const authorities = {SYSTEM_SENDER};
 
-    auto const res = validate_monad_transaction(
-        TestFixture::Trait::monad_rev(),
-        TestFixture::Trait::evm_rev(),
-        {},
-        {},
-        state,
-        0,
-        authorities);
+    auto const res = validate_transaction<typename TestFixture::Trait>(
+        {}, {}, state, 0, authorities);
     if constexpr (TestFixture::Trait::monad_rev() < MONAD_FOUR) {
         EXPECT_TRUE(res.has_value());
     }

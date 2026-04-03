@@ -62,11 +62,10 @@ struct MonadChain : Chain
     get_revision(uint64_t block_number, uint64_t timestamp) const override;
 
     virtual monad_revision get_monad_revision(uint64_t timestamp) const = 0;
-
-    virtual Result<void> validate_transaction(
-        uint64_t block_number, uint64_t timestamp, Transaction const &,
-        Address const &sender, State &, uint256_t const &base_fee_per_gas,
-        std::span<std::optional<Address> const> authorities) const override;
 };
+
+ankerl::unordered_dense::segmented_set<Address> combine_senders_and_authorities(
+    std::span<Address const> const,
+    std::span<std::vector<std::optional<Address>> const> const);
 
 MONAD_NAMESPACE_END

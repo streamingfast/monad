@@ -20,10 +20,12 @@
 #include <category/core/keccak.hpp>
 #include <category/core/likely.h>
 #include <category/core/result.hpp>
+#include <category/execution/ethereum/chain/chain.hpp>
 #include <category/execution/ethereum/core/block.hpp>
 #include <category/execution/ethereum/core/receipt.hpp>
 #include <category/execution/ethereum/core/rlp/block_rlp.hpp>
 #include <category/execution/ethereum/core/transaction.hpp>
+#include <category/execution/ethereum/dao.hpp>
 #include <category/execution/ethereum/transaction_gas.hpp>
 #include <category/execution/ethereum/validate_block.hpp>
 #include <category/vm/evm/explicit_traits.hpp>
@@ -75,6 +77,21 @@ bytes32_t compute_ommers_hash(std::vector<BlockHeader> const &ommers)
 template <Traits traits>
 Result<void> static_validate_header(BlockHeader const &header)
 {
+    // There's a subtle way in which this introduces a bug that doesn't really
+    // matter - if for some reason we were trying to run non-mainnet Ethereum
+    // blocks with Homestead block numbers, this check would incorrectly get
+    // fired. However this, check will soon be removed once we drop support for
+    // EVMC_HOMESTEAD
+    if constexpr (is_evm_trait_v<traits>) {
+        // EIP-779
+        if (MONAD_UNLIKELY(
+                header.number >= dao::dao_block_number &&
+                header.number <= dao::dao_block_number + 9 &&
+                header.extra_data != dao::extra_data)) {
+            return BlockError::WrongDaoExtraData;
+        }
+    }
+
     // YP eq. 56
     if (MONAD_UNLIKELY(header.gas_limit < 5000)) {
         return BlockError::InvalidGasLimit;
@@ -160,7 +177,8 @@ Result<void> static_validate_header(BlockHeader const &header)
 EXPLICIT_TRAITS(static_validate_header);
 
 template <Traits traits>
-constexpr Result<void> static_validate_ommers(Block const &block)
+constexpr Result<void>
+static_validate_ommers(Chain const &chain, Block const &block)
 {
     // YP eq. 33
     if (compute_ommers_hash(block.ommers) != block.header.ommers_hash) {
@@ -187,7 +205,12 @@ constexpr Result<void> static_validate_ommers(Block const &block)
 
     // YP eq. 167
     for (auto const &ommer : block.ommers) {
-        BOOST_OUTCOME_TRY(static_validate_header<traits>(ommer));
+        evmc_revision const rev =
+            chain.get_revision(ommer.number, ommer.timestamp);
+        BOOST_OUTCOME_TRY([&] {
+            SWITCH_EVM_TRAITS(static_validate_header, ommer);
+            MONAD_ABORT_PRINTF("unhandled ommer rev switch case: %d", rev);
+        }());
     }
 
     return success();
@@ -216,7 +239,8 @@ constexpr Result<void> static_validate_4844(Block const &block)
 }
 
 template <Traits traits>
-constexpr Result<void> static_validate_body(Block const &block)
+constexpr Result<void>
+static_validate_body(Chain const &chain, Block const &block)
 {
     // EIP-4895
     if constexpr (traits::evm_rev() < EVMC_SHANGHAI) {
@@ -230,29 +254,23 @@ constexpr Result<void> static_validate_body(Block const &block)
         }
     }
 
-    BOOST_OUTCOME_TRY(static_validate_ommers<traits>(block));
+    BOOST_OUTCOME_TRY(static_validate_ommers<traits>(chain, block));
     BOOST_OUTCOME_TRY(static_validate_4844<traits>(block));
 
     return success();
 }
 
 template <Traits traits>
-Result<void> static_validate_block(Block const &block)
+Result<void> static_validate_block(Chain const &chain, Block const &block)
 {
     BOOST_OUTCOME_TRY(static_validate_header<traits>(block.header));
 
-    BOOST_OUTCOME_TRY(static_validate_body<traits>(block));
+    BOOST_OUTCOME_TRY(static_validate_body<traits>(chain, block));
 
     return success();
 }
 
 EXPLICIT_TRAITS(static_validate_block);
-
-Result<void> static_validate_block(evmc_revision const rev, Block const &block)
-{
-    SWITCH_EVM_TRAITS(static_validate_block, block);
-    MONAD_ASSERT(false);
-}
 
 Result<void>
 validate_output_header(BlockHeader const &input, BlockHeader const &output)

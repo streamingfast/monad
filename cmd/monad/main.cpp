@@ -226,10 +226,7 @@ try {
     try {
         cli.parse(argc, argv);
     }
-    catch (CLI::CallForHelp const &e) {
-        return cli.exit(e);
-    }
-    catch (CLI::RequiredError const &e) {
+    catch (CLI::ParseError const &e) {
         return cli.exit(e);
     }
 

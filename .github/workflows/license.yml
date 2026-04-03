@@ -1,19 +1,17 @@
 name: License
 
 on:
-  merge_group:
-    branches: ["main"]
-    paths-ignore:
-      - 'third_party/**'
   push:
     branches: ["main"]
     paths-ignore:
       - 'third_party/**'
   pull_request:
-    branches: ["main"]
     types: [ opened, synchronize, reopened, edited ]
     paths-ignore:
       - 'third_party/**'
+
+permissions:
+  contents: read
 
 jobs:
   check-license:

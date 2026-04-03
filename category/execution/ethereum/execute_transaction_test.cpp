@@ -13,6 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/core/hex.hpp>
 #include <category/core/int.hpp>
 #include <category/execution/ethereum/block_hash_buffer.hpp>
 #include <category/execution/ethereum/chain/ethereum_mainnet.hpp>
@@ -27,6 +28,7 @@
 #include <category/execution/ethereum/trace/call_tracer.hpp>
 #include <category/execution/ethereum/trace/state_tracer.hpp>
 #include <category/execution/ethereum/tx_context.hpp>
+#include <category/execution/ethereum/validate_transaction.hpp>
 #include <category/execution/monad/chain/monad_devnet.hpp>
 #include <category/execution/monad/chain/monad_testnet.hpp>
 #include <monad/test/traits_test.hpp>
@@ -331,7 +333,7 @@ TYPED_TEST(TraitsTest, refunds_delete)
 
     // Sets s[0] = 1 if passed any data, clears s[0] if data is empty.
     auto const contract_code =
-        evmc::from_hex("0x3615600b576001600055005b6000600055").value();
+        from_hex("0x3615600b576001600055005b6000600055").value();
 
     {
         State state{bs, Incarnation{0, 0}};
@@ -357,7 +359,7 @@ TYPED_TEST(TraitsTest, refunds_delete)
             .max_fee_per_gas = max_fee_per_gas,
             .gas_limit = gas_limit_tx1,
             .to = contract,
-            .data = evmc::from_hex("0x01").value(),
+            .data = from_hex("0x01").value(),
         };
 
         BlockHeader const header{.beneficiary = bene};
@@ -490,7 +492,7 @@ TYPED_TEST(TraitsTest, refunds_delete_then_set)
     BlockMetrics metrics;
 
     // s[0] = 0; s[0] = 1
-    auto const contract_code = evmc::from_hex("0x60006000556001600055").value();
+    auto const contract_code = from_hex("0x60006000556001600055").value();
 
     {
         State state{bs, Incarnation{0, 0}};
@@ -626,5 +628,56 @@ TYPED_TEST(TraitsTest, refunds_delete_then_set)
                 initial_balance - (gas_charged * max_fee_per_gas) +
                     (storage_refund * max_fee_per_gas));
         }
+    }
+}
+
+TYPED_TEST(TraitsTest, static_validate_transaction_failure)
+{
+    InMemoryMachine machine;
+    mpt::Db db{machine};
+    db_t tdb{db};
+    vm::VM vm;
+    BlockState bs{tdb, vm};
+    BlockMetrics metrics;
+
+    boost::fibers::promise<void> prev{};
+    prev.set_value();
+
+    NoopCallTracer noop_call_tracer;
+    trace::StateTracer noop_state_tracer = std::monostate{};
+
+    auto const chain_ctx =
+        ChainContext<typename TestFixture::Trait>::debug_empty();
+
+    static constexpr auto from{
+        0xf8636377b7a998b51a3cf2bd711b870b3ab0ad56_address};
+
+    Transaction const tx{.sc = {.chain_id = 1 /* invalid chain id */}};
+
+    BlockHeader const header{};
+    BlockHashBufferFinalized const block_hash_buffer;
+
+    auto const receipt = ExecuteTransaction<typename TestFixture::Trait>(
+        MonadDevnet{},
+        0,
+        tx,
+        from,
+        {},
+        header,
+        block_hash_buffer,
+        bs,
+        metrics,
+        prev,
+        noop_call_tracer,
+        noop_state_tracer,
+        chain_ctx)();
+
+    ASSERT_TRUE(receipt.has_error());
+
+    if constexpr (TestFixture::Trait::evm_rev() < EVMC_SPURIOUS_DRAGON) {
+        ASSERT_EQ(receipt.error(), TransactionError::TypeNotSupported);
+    }
+    else {
+        ASSERT_EQ(receipt.error(), TransactionError::WrongChainId);
     }
 }

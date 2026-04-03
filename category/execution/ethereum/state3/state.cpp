@@ -100,6 +100,7 @@ State::State(
     : block_state_{block_state}
     , incarnation_{incarnation}
     , relaxed_validation_{relaxed_validation}
+    , rb_{this}
 {
 }
 
@@ -170,6 +171,8 @@ void State::pop_reject()
         removals.pop_back();
     }
 
+    rb_.on_pop_reject(accounts);
+
     --version_;
 }
 
@@ -234,6 +237,21 @@ bytes32_t State::get_code_hash(Address const &address)
         return account.value().code_hash;
     }
     return NULL_HASH;
+}
+
+bool State::is_destructed(Address const &address)
+{
+    auto const &account_state = recent_account_state(address);
+    return account_state.is_destructed();
+}
+
+bool State::is_current_incarnation(Address const &address)
+{
+    auto const &account = recent_account(address);
+    if (MONAD_LIKELY(account.has_value())) {
+        return account.value().incarnation == incarnation_;
+    }
+    return false;
 }
 
 bytes32_t State::get_storage(Address const &address, bytes32_t const &key)
@@ -322,6 +340,7 @@ void State::add_to_balance(Address const &address, uint256_t const &delta)
 
     account.value().balance += delta;
     account_state.touch();
+    rb_.on_credit(address);
 }
 
 void State::subtract_from_balance(
@@ -337,13 +356,7 @@ void State::subtract_from_balance(
 
     account.value().balance -= delta;
     account_state.touch();
-}
-
-void State::set_code_hash(Address const &address, bytes32_t const &hash)
-{
-    auto &account = current_account(address);
-    MONAD_ASSERT(account.has_value());
-    account.value().code_hash = hash;
+    rb_.on_debit(address);
 }
 
 evmc_storage_status State::set_storage(
@@ -405,24 +418,27 @@ std::pair<bool, uint256_t>
 State::selfdestruct(Address const &address, Address const &beneficiary)
 {
     auto &account_state = current_account_state(address);
-    auto &account = account_state.account_;
-    MONAD_ASSERT(account.has_value());
-    auto const initial_balance = account.value().balance;
+    uint256_t const balance = get_balance(address);
 
     if constexpr (traits::evm_rev() < EVMC_CANCUN) {
-        add_to_balance(beneficiary, account.value().balance);
-        account.value().balance = 0;
-        original_account_state(address).set_validate_exact_balance();
+        if (address != beneficiary) {
+            add_to_balance(beneficiary, balance);
+        }
+        subtract_from_balance(address, balance);
     }
     else {
-        if (address != beneficiary || account->incarnation == incarnation_) {
-            add_to_balance(beneficiary, account.value().balance);
-            account.value().balance = 0;
-            original_account_state(address).set_validate_exact_balance();
+        if (address != beneficiary || is_current_incarnation(address)) {
+            if (address != beneficiary) {
+                add_to_balance(beneficiary, balance);
+            }
+            subtract_from_balance(address, balance);
         }
     }
 
-    return {account_state.destruct(), initial_balance};
+    bool const inserted = account_state.destruct();
+    // Recompute reserve-balance status after setting the destructed flag.
+    rb_.on_debit(address);
+    return {inserted, balance};
 }
 
 EXPLICIT_TRAITS_MEMBER(State::selfdestruct);
@@ -554,6 +570,7 @@ void State::set_code(Address const &address, byte_string_view const code)
     auto const code_hash = to_bytes(keccak256(code));
     code_[code_hash] = vm().try_insert_varcode_raw(code_hash, code);
     account.value().code_hash = code_hash;
+    rb_.on_set_code(address, code);
 }
 
 void State::create_contract(Address const &address)

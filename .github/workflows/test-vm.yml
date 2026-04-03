@@ -2,6 +2,9 @@ name: VM Tests
 
 on:
   push:
+    branches: ["main"]
+  pull_request:
+    types: [ opened, synchronize, reopened, edited ]
     paths:
       - '.github/workflows/test-vm.yml'
       - 'CMakeLists.txt'
@@ -14,9 +17,18 @@ on:
       - 'docker/Dockerfile'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: >
+    ${{
+      (github.event_name == 'push' && format('push-{0}-vm-tests', github.ref))
+      || (github.event_name == 'pull_request' && format('pr-{0}-vm-tests', github.event.pull_request.number))
+      || (github.event_name == 'workflow_dispatch' && format('workflow-dispatch-{0}-vm-tests', github.run_id))
+      || format('{0}-vm-tests', github.run_id)
+    }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
     build:
@@ -82,15 +94,6 @@ jobs:
             - name: Setup Docker Buildx
               uses: docker/setup-buildx-action@v3
 
-            - name: Build `base` stage
-              uses: docker/build-push-action@v5
-              with:
-                context: .
-                file: docker/Dockerfile
-                target: base
-                cache-from: type=gha,scope=base
-                cache-to: type=gha,scope=base,mode=max
-
             - name: Build `build_and_test_vm` stage
               uses: docker/build-push-action@v5
               with:
@@ -135,15 +138,6 @@ jobs:
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
-
-      - name: Build `base` stage
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: docker/Dockerfile
-          target: base
-          cache-from: type=gha,scope=base
-          cache-to: type=gha,scope=base,mode=max
 
       - name: Build `vm_fuzz` stage
         uses: docker/build-push-action@v5

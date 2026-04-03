@@ -13,21 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-#include <category/execution/ethereum/chain/chain.hpp>
-
-#include <category/core/config.hpp>
-#include <category/core/result.hpp>
-
-#include <boost/outcome/config.hpp>
-#include <boost/outcome/success_failure.hpp>
-
-MONAD_NAMESPACE_BEGIN
-
-using BOOST_OUTCOME_V2_NAMESPACE::success;
-
-Result<void> Chain::static_validate_header(BlockHeader const &) const
-{
-    return success();
-}
-
-MONAD_NAMESPACE_END
+#include <category/execution/ethereum/core/base_ctypes.h>
+#include <category/execution/ethereum/core/eth_ctypes.h>
+#include <category/execution/ethereum/event/exec_event_ctypes.h>
+#include <category/execution/ethereum/event/exec_iter_help.h>

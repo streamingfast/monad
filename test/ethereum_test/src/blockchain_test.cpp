@@ -25,6 +25,7 @@
 #include <category/core/event/event_iterator.h>
 #include <category/core/event/event_ring.h>
 #include <category/core/fiber/priority_pool.hpp>
+#include <category/core/hex.hpp>
 #include <category/core/int.hpp>
 #include <category/core/keccak.hpp>
 #include <category/core/result.hpp>
@@ -32,6 +33,7 @@
 #include <category/execution/ethereum/chain/ethereum_mainnet.hpp>
 #include <category/execution/ethereum/core/address.hpp>
 #include <category/execution/ethereum/core/block.hpp>
+#include <category/execution/ethereum/core/fmt/address_fmt.hpp>
 #include <category/execution/ethereum/core/fmt/bytes_fmt.hpp>
 #include <category/execution/ethereum/core/receipt.hpp>
 #include <category/execution/ethereum/core/rlp/block_rlp.hpp>
@@ -58,6 +60,7 @@
 #include <category/mpt/nibbles_view.hpp>
 #include <category/vm/evm/switch_traits.hpp>
 #include <category/vm/evm/traits.hpp>
+#include <category/vm/utils/evmc_utils.hpp>
 
 #include <monad/test/config.hpp>
 
@@ -85,6 +88,7 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <vector>
@@ -123,39 +127,6 @@ struct TraitsMainnet : MonadChain
         MONAD_ASSERT(false);
     }
 
-    virtual Result<void>
-    static_validate_header(BlockHeader const &header) const override
-    {
-        if constexpr (is_evm_trait_v<traits>) {
-            return EthereumMainnet{}.static_validate_header(header);
-        }
-        else {
-            return MonadMainnet{}.static_validate_header(header);
-        }
-    };
-
-    virtual Result<void> validate_transaction(
-        uint64_t const, uint64_t const, Transaction const &tx,
-        Address const &sender, State &state, uint256_t const &base_fee_per_gas,
-        std::span<std::optional<Address> const> const authorities)
-        const override
-    {
-        if constexpr (is_evm_trait_v<traits>) {
-            return ::monad::validate_transaction(
-                traits::evm_rev(), tx, sender, state);
-        }
-        else {
-            return validate_monad_transaction(
-                traits::monad_rev(),
-                traits::evm_rev(),
-                tx,
-                sender,
-                state,
-                base_fee_per_gas,
-                authorities);
-        }
-    }
-
     virtual GenesisState get_genesis_state() const override
     {
         if constexpr (is_evm_trait_v<traits>) {
@@ -180,7 +151,7 @@ BlockHeader read_genesis_blockheader(nlohmann::json const &genesis_json)
         genesis_json["difficulty"].get<std::string>());
 
     auto const extra_data =
-        evmc::from_hex(genesis_json["extraData"].get<std::string>());
+        from_hex(genesis_json["extraData"].get<std::string>());
     MONAD_ASSERT(extra_data.has_value());
     block_header.extra_data = extra_data.value();
 
@@ -188,7 +159,7 @@ BlockHeader read_genesis_blockheader(nlohmann::json const &genesis_json)
         std::stoull(genesis_json["gasLimit"].get<std::string>(), nullptr, 0);
 
     auto const mix_hash_byte_string =
-        evmc::from_hex(genesis_json["mixHash"].get<std::string>());
+        from_hex(genesis_json["mixHash"].get<std::string>());
     MONAD_ASSERT(mix_hash_byte_string.has_value());
     std::copy_n(
         mix_hash_byte_string.value().begin(),
@@ -200,7 +171,7 @@ BlockHeader read_genesis_blockheader(nlohmann::json const &genesis_json)
     intx::be::unsafe::store<uint64_t>(block_header.nonce.data(), nonce);
 
     auto const parent_hash_byte_string =
-        evmc::from_hex(genesis_json["parentHash"].get<std::string>());
+        from_hex(genesis_json["parentHash"].get<std::string>());
     MONAD_ASSERT(parent_hash_byte_string.has_value());
     std::copy_n(
         parent_hash_byte_string.value().begin(),
@@ -212,7 +183,7 @@ BlockHeader read_genesis_blockheader(nlohmann::json const &genesis_json)
 
     if (genesis_json.contains("coinbase")) {
         auto const coinbase =
-            evmc::from_hex(genesis_json["coinbase"].get<std::string>());
+            from_hex(genesis_json["coinbase"].get<std::string>());
         MONAD_ASSERT(coinbase.has_value());
         std::copy_n(
             coinbase.value().begin(),
@@ -236,8 +207,8 @@ BlockHeader read_genesis_blockheader(nlohmann::json const &genesis_json)
             genesis_json["excessBlobGas"].get<std::string>(), nullptr, 0);
     }
     if (genesis_json.contains("parentBeaconBlockRoot")) {
-        auto const parent_beacon_block_root = evmc::from_hex(
-            genesis_json["parentBeaconBlockRoot"].get<std::string>());
+        auto const parent_beacon_block_root =
+            from_hex(genesis_json["parentBeaconBlockRoot"].get<std::string>());
         MONAD_ASSERT(parent_beacon_block_root.has_value());
         auto &write_to =
             block_header.parent_beacon_block_root.emplace(bytes32_t{});
@@ -250,7 +221,7 @@ BlockHeader read_genesis_blockheader(nlohmann::json const &genesis_json)
     // Prague fork
     if (genesis_json.contains("requestsHash")) {
         auto const requests_hash =
-            evmc::from_hex(genesis_json["requestsHash"].get<std::string>());
+            from_hex(genesis_json["requestsHash"].get<std::string>());
         MONAD_ASSERT(requests_hash.has_value());
         auto &write_to = block_header.requests_hash.emplace(bytes32_t{});
         std::copy_n(
@@ -272,7 +243,11 @@ void validate_post_state(nlohmann::json const &json, nlohmann::json const &db)
         auto const hashed_account = to_bytes(keccak256(addr_bytes.bytes));
         auto const db_addr_key = fmt::format("{}", hashed_account);
 
-        ASSERT_TRUE(db.contains(db_addr_key)) << db_addr_key;
+        EXPECT_TRUE(db.contains(db_addr_key))
+            << fmt::format("{} ({})", db_addr_key, addr_bytes);
+        if (!db.contains(db_addr_key)) {
+            continue;
+        }
         auto const &db_account = db.at(db_addr_key);
 
         auto const expected_balance =
@@ -286,25 +261,42 @@ void validate_post_state(nlohmann::json const &json, nlohmann::json const &db)
             "0x{:02x}", fmt::join(std::as_bytes(std::span(code)), ""));
 
         EXPECT_EQ(db_account.at("balance").get<std::string>(), expected_balance)
-            << db_addr_key;
+            << fmt::format("{} ({})", db_addr_key, addr_bytes);
         EXPECT_EQ(db_account.at("nonce").get<std::string>(), expected_nonce)
-            << db_addr_key;
+            << fmt::format("{} ({})", db_addr_key, addr_bytes);
         EXPECT_EQ(db_account.at("code").get<std::string>(), expected_code)
-            << db_addr_key;
+            << fmt::format("{} ({})", db_addr_key, addr_bytes);
 
         auto const &db_storage = db_account.at("storage");
+        std::set<std::string> db_storage_keys_in_j;
+
         EXPECT_EQ(db_storage.size(), j_account.at("storage").size())
-            << db_addr_key;
+            << fmt::format("{} ({})", db_addr_key, addr_bytes);
         for (auto const &[key, j_value] : j_account.at("storage").items()) {
             nlohmann::json const key_json = key;
             auto const key_bytes = key_json.get<bytes32_t>();
             auto const db_storage_key =
                 fmt::format("{}", to_bytes(keccak256(key_bytes.bytes)));
-            ASSERT_TRUE(db_storage.contains(db_storage_key)) << db_storage_key;
-            auto const expected_value =
-                fmt::format("{}", j_value.get<bytes32_t>());
-            EXPECT_EQ(db_storage.at(db_storage_key).at("value"), expected_value)
-                << db_storage_key;
+            EXPECT_TRUE(db_storage.contains(db_storage_key))
+                << fmt::format("{} ({})", db_storage_key, key_bytes);
+            if (db_storage.contains(db_storage_key)) {
+                db_storage_keys_in_j.emplace(db_storage_key);
+                auto const expected_value =
+                    fmt::format("{}", j_value.get<bytes32_t>());
+                EXPECT_EQ(
+                    db_storage.at(db_storage_key).at("value"), expected_value)
+                    << fmt::format("{} ({})", db_storage_key, key_bytes);
+            }
+        }
+        for (auto const &[key, db_value] : db_account.at("storage").items()) {
+            auto const db_storage_value_bytes =
+                db_value.at("value").get<bytes32_t>();
+            // The previous loop has already checked for all key-value pairs of
+            // j_account whether there exists a corresponding pair in the db.
+            // So, it remains to check whether every db key has a corresponding
+            // entry in j_account.
+            EXPECT_TRUE(db_storage_keys_in_j.contains(key)) << fmt::format(
+                "Unexpected kv in db ({} => {})", key, db_storage_value_bytes);
         }
     }
 }
@@ -320,11 +312,11 @@ Result<BlockExecOutput> execute(
 {
     using namespace monad::test;
 
-    BOOST_OUTCOME_TRY(static_validate_block<traits>(block));
+    TraitsMainnet<traits> const chain{};
+    BOOST_OUTCOME_TRY(static_validate_block<traits>(chain, block));
 
     BlockState block_state(db, vm);
     BlockMetrics metrics;
-    TraitsMainnet<traits> const chain{};
     auto const recovered_senders = recover_senders(block.transactions, *pool_);
     auto const recovered_authorities =
         recover_authorities(block.transactions, *pool_);
@@ -355,21 +347,9 @@ Result<BlockExecOutput> execute(
     }
 
     senders_and_authorities_map[block.header.number] =
-        ankerl::unordered_dense::segmented_set<Address>{};
+        combine_senders_and_authorities(senders, recovered_authorities);
     auto &senders_and_authorities =
         senders_and_authorities_map[block.header.number];
-
-    for (Address const &sender : senders) {
-        senders_and_authorities.insert(sender);
-    }
-    for (std::vector<std::optional<Address>> const &authorities :
-         recovered_authorities) {
-        for (std::optional<Address> const &authority : authorities) {
-            if (authority.has_value()) {
-                senders_and_authorities.insert(authority.value());
-            }
-        }
-    }
 
     ChainContext<traits> chain_context = [&] {
         if constexpr (is_monad_trait_v<traits>) {
@@ -483,30 +463,28 @@ void process_test(
         auto header = read_genesis_blockheader(genesisJson);
         ASSERT_EQ(
             NULL_ROOT,
-            evmc::from_hex<bytes32_t>(
+            from_hex<bytes32_t>(
                 genesisJson.at("transactionsTrie").get<std::string>())
                 .value());
         ASSERT_EQ(
             NULL_ROOT,
-            evmc::from_hex<bytes32_t>(
+            from_hex<bytes32_t>(
                 genesisJson.at("receiptTrie").get<std::string>())
                 .value());
         ASSERT_EQ(
             NULL_LIST_HASH,
-            evmc::from_hex<bytes32_t>(
-                genesisJson.at("uncleHash").get<std::string>())
+            from_hex<bytes32_t>(genesisJson.at("uncleHash").get<std::string>())
                 .value());
         ASSERT_EQ(
             bytes32_t{},
-            evmc::from_hex<bytes32_t>(
-                genesisJson.at("parentHash").get<std::string>())
+            from_hex<bytes32_t>(genesisJson.at("parentHash").get<std::string>())
                 .value());
 
         std::optional<std::vector<Withdrawal>> withdrawals;
         if constexpr (traits::evm_rev() >= EVMC_SHANGHAI) {
             ASSERT_EQ(
                 NULL_ROOT,
-                evmc::from_hex<bytes32_t>(
+                from_hex<bytes32_t>(
                     genesisJson.at("withdrawalsRoot").get<std::string>())
                     .value());
             withdrawals.emplace(std::vector<Withdrawal>{});
@@ -529,7 +507,7 @@ void process_test(
         ASSERT_EQ(
             to_bytes(
                 keccak256(rlp::encode_block_header(tdb.read_eth_header()))),
-            evmc::from_hex<bytes32_t>(genesisJson.at("hash").get<std::string>())
+            from_hex<bytes32_t>(genesisJson.at("hash").get<std::string>())
                 .value());
     }
     auto db_post_state = tdb.to_json();
@@ -716,6 +694,11 @@ void process_test(
             }
         }
         else {
+            // Error case: if this test failed unexpectedly, then serialize the
+            // db state such that we can dump it for inspection.
+            if (!j_block.contains("expectException")) {
+                db_post_state = tdb.to_json();
+            }
             EXPECT_TRUE(j_block.contains("expectException"))
                 << name << "\n"
                 << result.error().message().c_str();

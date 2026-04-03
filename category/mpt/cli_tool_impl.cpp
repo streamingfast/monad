@@ -33,7 +33,7 @@
 
 #include <quill/Quill.h>
 
-#include <evmc/hex.hpp>
+#include <category/core/hex.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -491,12 +491,12 @@ public:
              << ".\n     It has been configured to retain no more than "
              << aux.version_history_length() << ".\n     Latest proposed is ("
              << aux.get_latest_proposed_version() << ", "
-             << evmc::hex(monad::byte_string_view(
+             << monad::to_hex(monad::byte_string_view(
                     aux.get_latest_proposed_block_id().bytes,
                     sizeof(monad::bytes32_t)))
              << ").\n     Latest voted is (" << aux.get_latest_voted_version()
              << ", "
-             << evmc::hex(monad::byte_string_view(
+             << monad::to_hex(monad::byte_string_view(
                     aux.get_latest_voted_block_id().bytes,
                     sizeof(monad::bytes32_t)))
              << ").\n     Latest finalized is "
@@ -729,7 +729,7 @@ public:
                     MONAD_ASYNC_NAMESPACE::AsyncIO::
                         MONAD_IO_BUFFERS_WRITE_SIZE);
             auto io = MONAD_ASYNC_NAMESPACE::AsyncIO{*pool, rwbuf};
-            MONAD_MPT_NAMESPACE::UpdateAux<> aux(io);
+            MONAD_MPT_NAMESPACE::UpdateAux aux(io);
             for (;;) {
                 auto const *item = aux.db_metadata()->fast_list_begin();
                 if (item == nullptr) {
@@ -974,7 +974,7 @@ public:
             2,
             MONAD_ASYNC_NAMESPACE::AsyncIO::MONAD_IO_BUFFERS_READ_SIZE);
         auto io = MONAD_ASYNC_NAMESPACE::AsyncIO{*pool, rwbuf};
-        MONAD_MPT_NAMESPACE::UpdateAux<> aux(io);
+        MONAD_MPT_NAMESPACE::UpdateAux aux(io);
         size_t slow_chunks_inserted = 0;
         size_t fast_chunks_inserted = 0;
         auto override_insertion_count =
@@ -1580,7 +1580,7 @@ opened.
                       MONAD_ASYNC_NAMESPACE::AsyncIO::
                           MONAD_IO_BUFFERS_READ_SIZE);
         auto io = MONAD_ASYNC_NAMESPACE::AsyncIO{*impl.pool, rwbuf};
-        MONAD_MPT_NAMESPACE::UpdateAux<> aux(io);
+        MONAD_MPT_NAMESPACE::UpdateAux aux(io);
 
         {
             cout << R"(MPT database on storages:

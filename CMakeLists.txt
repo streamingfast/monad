@@ -216,45 +216,42 @@ set(VM_DATA_DIR "${PROJECT_SOURCE_DIR}/test/vm/data")
 configure_file(cmake/test_resource_data.h.in test/test_resource_data.h @ONLY)
 
 set(TOP_CURRENT_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}")
-function(monad_add_test2 target)
-  add_executable(
-    ${target}
-    "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/test/unit/common/src/test/main.cpp"
-    ${ARGN})
+function(monad_add_test target)
+  cmake_parse_arguments(AT "NO_CUSTOM_MAIN" "" "PROPERTIES" ${ARGN})
+  if(AT_NO_CUSTOM_MAIN)
+    add_executable(${target} ${AT_UNPARSED_ARGUMENTS})
+  else()
+    add_executable(
+      ${target}
+      "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/test/unit/common/src/test/main.cpp"
+      ${AT_UNPARSED_ARGUMENTS})
+    target_include_directories(
+      ${target}
+      PRIVATE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/test/unit/common/include")
+  endif()
   monad_compile_options(${target})
   target_compile_options(${target} PUBLIC "-Wno-missing-field-initializers"
   )# TODO
-  target_include_directories(
-    ${target}
-    PRIVATE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/test/unit/common/include")
   target_include_directories(${target} PRIVATE "${TOP_CURRENT_BINARY_DIR}/test")
   target_link_libraries(${target} monad_execution GTest::GTest GTest::Main)
-  if("${target}" MATCHES "test_statesync")
-    gtest_discover_tests(
-      ${target} DISCOVERY_MODE PRE_TEST
-      PROPERTIES RUN_SERIAL
-                 TRUE
-                 ENVIRONMENT
-                 ASAN_OPTIONS=abort_on_error=1
-                 ENVIRONMENT
-                 UBSAN_OPTIONS=halt_on_error=1,print_stacktrace=1
-                 ENVIRONMENT
-                 TSAN_OPTIONS=external_symbolizer_path=/usr/bin/llvm-symbolizer)
-  else()
-    gtest_discover_tests(
-      ${target} DISCOVERY_MODE PRE_TEST
-      PROPERTIES ENVIRONMENT ASAN_OPTIONS=abort_on_error=1 ENVIRONMENT
-                 UBSAN_OPTIONS=halt_on_error=1,print_stacktrace=1 ENVIRONMENT
-                 TSAN_OPTIONS=external_symbolizer_path=/usr/bin/llvm-symbolizer)
-  endif()
+  gtest_discover_tests(
+    ${target} DISCOVERY_MODE PRE_TEST
+    PROPERTIES ENVIRONMENT ASAN_OPTIONS=abort_on_error=1 ENVIRONMENT
+               UBSAN_OPTIONS=halt_on_error=1,print_stacktrace=1 ENVIRONMENT
+               TSAN_OPTIONS=external_symbolizer_path=/usr/bin/llvm-symbolizer
+               ${AT_PROPERTIES})
 endfunction()
 
 function(monad_add_test_folder target)
+  cmake_parse_arguments(ATF "" "" "EXCLUDE" ${ARGN})
   file(GLOB_RECURSE test_files CONFIGURE_DEPENDS ${target}/test_*.cpp
        ${target}/*_test.cpp)
+  if(ATF_EXCLUDE)
+    list(REMOVE_ITEM test_files ${ATF_EXCLUDE})
+  endif()
   foreach(test_file ${test_files})
     get_filename_component(test_name ${test_file} NAME_WLE)
-    monad_add_test2(${test_name} ${test_file})
+    monad_add_test(${test_name} ${test_file})
   endforeach()
 endfunction()
 
