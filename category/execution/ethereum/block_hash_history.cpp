@@ -14,17 +14,19 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include <category/core/assert.h>
+#include <category/core/byte_string.hpp>
 #include <category/core/bytes.hpp>
 #include <category/core/hex.hpp>
 #include <category/core/int.hpp>
 #include <category/core/likely.h>
 #include <category/execution/ethereum/block_hash_history.hpp>
 #include <category/execution/ethereum/core/address.hpp>
+#include <category/execution/ethereum/core/block.hpp>
 #include <category/execution/ethereum/event/exec_event_ctypes.h>
 #include <category/execution/ethereum/event/exec_event_recorder.hpp>
 #include <category/execution/ethereum/event/record_block_events.hpp>
-#include <category/execution/ethereum/state2/block_state.hpp>
 #include <category/execution/ethereum/state3/state.hpp>
+#include <category/vm/evm/explicit_traits.hpp>
 
 #include <evmc/evmc.h>
 
@@ -46,40 +48,58 @@ MONAD_ANONYMOUS_NAMESPACE_END
 
 MONAD_NAMESPACE_BEGIN
 
-constexpr uint8_t BLOCK_HISTORY_CODE[] = {
-    0x33, 0x73, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe, 0x14, 0x60,
-    0x46, 0x57, 0x60, 0x20, 0x36, 0x03, 0x60, 0x42, 0x57, 0x5f, 0x35, 0x60,
-    0x01, 0x43, 0x03, 0x81, 0x11, 0x60, 0x42, 0x57, 0x61, 0x1f, 0xff, 0x81,
-    0x43, 0x03, 0x11, 0x60, 0x42, 0x57, 0x61, 0x1f, 0xff, 0x90, 0x06, 0x54,
-    0x5f, 0x52, 0x60, 0x20, 0x5f, 0xf3, 0x5b, 0x5f, 0x5f, 0xfd, 0x5b, 0x5f,
-    0x35, 0x61, 0x1f, 0xff, 0x60, 0x01, 0x43, 0x03, 0x06, 0x55, 0x00};
-
+template <Traits traits>
 void deploy_block_hash_history_contract(State &state)
 {
-    if (MONAD_LIKELY(state.account_exists(BLOCK_HISTORY_ADDRESS))) {
+    if constexpr (traits::evm_rev() < EVMC_PRAGUE) {
         return;
     }
 
-    bytes32_t const code_hash = to_bytes(keccak256(BLOCK_HISTORY_CODE));
+    // happy path: deploy contract if it doesn't exist
+    if (MONAD_UNLIKELY(!state.account_exists(BLOCK_HISTORY_ADDRESS))) {
+        state.create_contract(BLOCK_HISTORY_ADDRESS);
+        state.set_code(BLOCK_HISTORY_ADDRESS, BLOCK_HISTORY_CODE);
+        MONAD_ASSERT(
+            state.get_code_hash(BLOCK_HISTORY_ADDRESS) ==
+            BLOCK_HISTORY_CODE_HASH);
+        state.set_nonce(BLOCK_HISTORY_ADDRESS, 1);
+    }
 
-    state.create_contract(BLOCK_HISTORY_ADDRESS);
-    state.set_code_hash(BLOCK_HISTORY_ADDRESS, code_hash);
-    state.set_code(BLOCK_HISTORY_ADDRESS, BLOCK_HISTORY_CODE);
-    state.set_nonce(BLOCK_HISTORY_ADDRESS, 1);
+    if constexpr (is_monad_trait_v<traits>) {
+        if constexpr (traits::monad_rev() >= MONAD_SIX) {
+            if (MONAD_UNLIKELY(
+                    state.get_code_hash(BLOCK_HISTORY_ADDRESS) !=
+                    BLOCK_HISTORY_CODE_HASH)) {
+                state.set_code(BLOCK_HISTORY_ADDRESS, BLOCK_HISTORY_CODE);
+            }
+        }
+    }
 }
 
-void set_block_hash_history(BlockState &block_state, BlockHeader const &header)
+EXPLICIT_TRAITS(deploy_block_hash_history_contract);
+
+template <Traits traits>
+void set_block_hash_history(State &state, BlockHeader const &header)
 {
-    constexpr auto SYSTEM_ADDRESS{
-        0xfffffffffffffffffffffffffffffffffffffffe_address};
+    if constexpr (traits::evm_rev() < EVMC_PRAGUE) {
+        return;
+    }
+
+    // before MONAD_SIX, nothing was being written.
+    if constexpr (is_monad_trait_v<traits>) {
+        if constexpr (traits::monad_rev() < MONAD_SIX) {
+            return;
+        }
+    }
 
     if (MONAD_UNLIKELY(!header.number)) {
         return;
     }
 
-    State state{block_state, Incarnation{header.number, 0}};
     if (MONAD_LIKELY(state.account_exists(BLOCK_HISTORY_ADDRESS))) {
+        constexpr auto SYSTEM_ADDRESS{
+            0xfffffffffffffffffffffffffffffffffffffffe_address};
+
         if (ExecutionEventRecorder *const exec_recorder = g_exec_event_recorder.get()) {
             bytes32_t const &input_data = header.parent_hash;
             ReservedExecEvent const start_event =
@@ -103,9 +123,6 @@ void set_block_hash_history(BlockState &block_state, BlockHeader const &header)
         uint32_t const num_account_accesses =
             record_system_call_account_accesses(state, MONAD_ACCT_ACCESS_BLOCK_PROLOGUE);
 
-        MONAD_ASSERT(block_state.can_merge(state));
-        block_state.merge(state);
-
         if (ExecutionEventRecorder *const exec_recorder = g_exec_event_recorder.get()) {
             ReservedExecEvent const end_event =
                 exec_recorder->reserve_block_event<monad_exec_block_system_call_end>(
@@ -119,6 +136,8 @@ void set_block_hash_history(BlockState &block_state, BlockHeader const &header)
         }
     }
 }
+
+EXPLICIT_TRAITS(set_block_hash_history);
 
 // Note: EIP-2935 says the get on the block hash history contract should revert
 // if the block number is outside of the block history. However, current usage

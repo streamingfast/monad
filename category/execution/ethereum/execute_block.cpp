@@ -93,13 +93,12 @@ constexpr auto BEACON_ROOTS_ADDRESS{
     0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02_address};
 
 
-void set_beacon_root(BlockState &block_state, BlockHeader const &header)
+void set_beacon_root(State &state, BlockHeader const &header)
 {
     constexpr uint256_t HISTORY_BUFFER_LENGTH{8191};
     constexpr auto SYSTEM_ADDRESS{
         0xfffffffffffffffffffffffffffffffffffffffe_address};
 
-    State state{block_state, Incarnation{header.number, 0}};
     if (state.account_exists(BEACON_ROOTS_ADDRESS)) {
         if (ExecutionEventRecorder *const exec_recorder = g_exec_event_recorder.get()) {
             bytes32_t const &input_data = header.parent_beacon_block_root.value();
@@ -128,9 +127,6 @@ void set_beacon_root(BlockState &block_state, BlockHeader const &header)
 
         uint32_t const num_account_accesses =
             record_system_call_account_accesses(state, MONAD_ACCT_ACCESS_BLOCK_PROLOGUE);
-
-        MONAD_ASSERT(block_state.can_merge(state));
-        block_state.merge(state);
 
         if (ExecutionEventRecorder *const exec_recorder = g_exec_event_recorder.get()) {
             ReservedExecEvent const end_event =
@@ -219,37 +215,31 @@ template <Traits traits>
 void execute_block_header(
     Chain const &chain, BlockState &block_state, BlockHeader const &header)
 {
-    {
-        State state{block_state, Incarnation{header.number, 0}};
+    State state{block_state, Incarnation{header.number, 0}};
 
-        if constexpr (traits::evm_rev() >= EVMC_PRAGUE) {
-            deploy_block_hash_history_contract(state);
-        }
-
-
-        // Ethereum mainnet dao fork
-        if constexpr (traits::evm_rev() == EVMC_HOMESTEAD) {
-            if (MONAD_UNLIKELY(header.number == dao::dao_block_number)) {
-                if (chain.get_chain_id() == 1) {
-                    transfer_balance_dao(state);
-                }
-            }
-        }
-
-        // TODO: move to execute_monad_block eventually
-        if constexpr (is_monad_trait_v<traits>) {
-            staking::execute_block_prelude<traits>(state);
-        }
-
-        MONAD_ASSERT(block_state.can_merge(state));
-        block_state.merge(state);
-    }
-
-    set_block_hash_history(block_state, header);
+    deploy_block_hash_history_contract<traits>(state);
+    set_block_hash_history<traits>(state, header);
 
     if constexpr (traits::evm_rev() >= EVMC_CANCUN) {
-        set_beacon_root(block_state, header);
+        set_beacon_root(state, header);
     }
+
+    // Ethereum mainnet dao fork
+    if constexpr (traits::evm_rev() == EVMC_HOMESTEAD) {
+        if (MONAD_UNLIKELY(header.number == dao::dao_block_number)) {
+            if (chain.get_chain_id() == 1) {
+                transfer_balance_dao(state);
+            }
+        }
+    }
+
+    // TODO: move to execute_monad_block eventually
+    if constexpr (is_monad_trait_v<traits>) {
+        staking::execute_block_prelude<traits>(state);
+    }
+
+    MONAD_ASSERT(block_state.can_merge(state));
+    block_state.merge(state);
 }
 
 EXPLICIT_TRAITS(execute_block_header);

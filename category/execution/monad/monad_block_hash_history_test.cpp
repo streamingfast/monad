@@ -45,7 +45,7 @@ TYPED_TEST(MonadBlockHashHistoryFixture, noop_before_fork)
 {
     using Trait = TestFixture::Trait;
 
-    deploy_block_hash_history_contract(this->state);
+    deploy_block_hash_history_contract<Trait>(this->state);
     if constexpr (Trait::evm_rev() < EVMC_PRAGUE) {
         EXPECT_FALSE(this->state.account_exists(BLOCK_HISTORY_ADDRESS));
     }
@@ -54,8 +54,8 @@ TYPED_TEST(MonadBlockHashHistoryFixture, noop_before_fork)
     }
 
     for (size_t i = 1; i <= 128; ++i) {
-        set_block_hash_history(
-            this->block_state,
+        set_block_hash_history<Trait>(
+            this->state,
             BlockHeader{.parent_hash = bytes32_t{i - 1}, .number = i});
     }
 
@@ -81,7 +81,7 @@ TYPED_TEST(MonadBlockHashHistoryFixture, redeploy)
     auto const bad_code_hash = this->state.get_code_hash(BLOCK_HISTORY_ADDRESS);
 
     // redeploy
-    deploy_block_hash_history_contract(this->state);
+    deploy_block_hash_history_contract<Trait>(this->state);
 
     if constexpr (Trait::monad_rev() >= MONAD_SIX) {
         EXPECT_NE(
