@@ -464,6 +464,8 @@ impl ExecutedBlockBuilder {
                 None
             }
             ExecEvent::TxnEnd => None,
+            ExecEvent::BlockSystemCallStart { .. } => None,
+            ExecEvent::BlockSystemCallEnd { .. } => None,
             ExecEvent::EvmError(monad_exec_evm_error) => {
                 let state = self.state.as_mut()?;
 

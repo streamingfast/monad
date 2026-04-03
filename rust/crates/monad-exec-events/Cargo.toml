@@ -11,6 +11,7 @@ alloy-consensus = { workspace = true, optional = true }
 alloy-eips = { workspace = true, optional = true }
 alloy-primitives = { workspace = true, optional = true }
 alloy-rpc-types = { workspace = true, optional = true }
+hex = { workspace = true }
 itertools = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 strum = { workspace = true, features = ["derive"] }
@@ -26,7 +27,6 @@ chrono = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 criterion = { workspace = true }
 hex = { workspace = true }
-lazy_static = { workspace = true }
 ratatui = { workspace = true }
 serde_json = { workspace = true }
 strum = { workspace = true }
