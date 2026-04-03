@@ -75,6 +75,9 @@ function(monad_compile_options target)
   target_compile_options(
     ${target} PRIVATE $<$<CXX_COMPILER_ID:GNU>:-Wno-missing-field-initializers>)
 
+  target_compile_options(
+    ${target} PRIVATE $<$<AND:$<CXX_COMPILER_ID:GNU>,$<CONFIG:Release>>:-Wno-maybe-uninitialized>)
+
   target_compile_definitions(${target} PUBLIC QUILL_ROOT_LOGGER_ONLY)
 
   if(MONAD_COMPILER_TESTING)
