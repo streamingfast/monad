@@ -38,32 +38,12 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <memory>
 #include <optional>
 #include <span>
 #include <utility>
 
 using namespace monad;
-
-// tracer logging macro for event sequence tracking
-#define TRACER_LOG(fmt, ...) \
-    std::fprintf(stderr, "[TRACER] " fmt "\n", ##__VA_ARGS__)
-
-// helper function to convert address bytes to hex string
-inline std::string addr_to_hex(Address const &addr)
-{
-    char buf[41];
-    snprintf(
-        buf, sizeof(buf),
-        "%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
-        addr.bytes[0], addr.bytes[1], addr.bytes[2], addr.bytes[3], addr.bytes[4],
-        addr.bytes[5], addr.bytes[6], addr.bytes[7], addr.bytes[8], addr.bytes[9],
-        addr.bytes[10], addr.bytes[11], addr.bytes[12], addr.bytes[13],
-        addr.bytes[14], addr.bytes[15], addr.bytes[16], addr.bytes[17],
-        addr.bytes[18], addr.bytes[19]);
-    return std::string(buf);
-}
 
 MONAD_ANONYMOUS_NAMESPACE_BEGIN
 
@@ -197,14 +177,6 @@ void record_storage_events(
         storage_access.event->content_ext[MONAD_FLOW_ACCOUNT_INDEX] =
             account_index;
         exec_recorder->commit(storage_access);
-        TRACER_LOG("EVENT[SEQNO=%lu] STORAGE_ACCESS txn=%s acct_idx=%u addr=%s modified=%d transient=%d slot_idx=%zu",
-            storage_access.seqno,
-            opt_txn_num.has_value() ? std::to_string(*opt_txn_num).c_str() : "BLOCK",
-            account_index,
-            addr_to_hex(*address).c_str(),
-            is_modified,
-            is_transient,
-            index);
         ++index;
     }
 }
@@ -250,16 +222,6 @@ void record_account_events(
         .transient_count = static_cast<uint32_t>(
             size(account_info.prestate->transient_storage_))};
     exec_recorder->commit(account_access);
-    TRACER_LOG("EVENT[SEQNO=%lu] ACCOUNT_ACCESS txn=%s idx=%u addr=%s balance_mod=%d nonce_mod=%d ctx=%u prebal=%lu modbal=%lu",
-        account_access.seqno,
-        opt_txn_num.has_value() ? std::to_string(*opt_txn_num).c_str() : "BLOCK",
-        index,
-        addr_to_hex(*account_info.address).c_str(),
-        is_balance_modified,
-        is_nonce_modified,
-        static_cast<unsigned>(ctx),
-        static_cast<unsigned long>(initial_state.balance),
-        static_cast<unsigned long>(modified_balance));
 
     auto const *const post_state_storage_map =
         account_info.is_read_only_access()
@@ -307,11 +269,6 @@ void record_account_access_events_internal(
         .entry_count = static_cast<uint32_t>(prestate_map.size()),
         .access_context = ctx};
     exec_recorder->commit(list_header);
-    TRACER_LOG("EVENT[SEQNO=%lu] ACCOUNT_ACCESS_LIST_HEADER txn=%s count=%zu ctx=%u",
-        list_header.seqno,
-        opt_txn_num.has_value() ? std::to_string(*opt_txn_num).c_str() : "BLOCK",
-        prestate_map.size(),
-        static_cast<unsigned>(ctx));
 
     auto const &current_state_map = state.current();
     for (uint32_t index = 0; auto const &[address, prestate] : prestate_map) {
@@ -353,15 +310,6 @@ void record_txn_header_events(
             as_bytes(std::span{transaction.blob_versioned_hashes}));
     init_txn_header_start(transaction, sender, txn_header_start.payload);
     exec_recorder->commit(txn_header_start);
-    TRACER_LOG("EVENT[SEQNO=%lu] TXN_HEADER_START txn=%u from=%s to=%s value=%lu gas=%lu gasprice=%lu nonce=%lu",
-        txn_header_start.seqno,
-        txn_num,
-        addr_to_hex(sender).c_str(),
-        transaction.to ? addr_to_hex(*transaction.to).c_str() : "CONTRACT_CREATE",
-        static_cast<unsigned long>(transaction.value),
-        transaction.gas_limit,
-        static_cast<unsigned long>(transaction.max_fee_per_gas),
-        transaction.nonce);
 
     // TXN_ACCESS_LIST_ENTRY
     for (uint32_t index = 0; AccessEntry const &e : transaction.access_list) {
@@ -376,11 +324,6 @@ void record_txn_header_events(
                 .address = e.a,
                 .storage_key_count = static_cast<uint32_t>(e.keys.size())}};
         exec_recorder->commit(access_list_entry);
-        TRACER_LOG("EVENT[SEQNO=%lu] TXN_ACCESS_LIST_ENTRY txn=%u idx=%u keys=%u",
-            access_list_entry.seqno,
-            txn_num,
-            index,
-            static_cast<uint32_t>(e.keys.size()));
         ++index;
     }
 
@@ -404,17 +347,11 @@ void record_txn_header_events(
             .authority = authorities[index].value_or({}),
             .is_valid_authority = authorities[index].has_value()};
         exec_recorder->commit(auth_list_entry);
-        TRACER_LOG("EVENT[SEQNO=%lu] TXN_AUTH_LIST_ENTRY txn=%u idx=%u valid=%d",
-            auth_list_entry.seqno,
-            txn_num,
-            index,
-            authorities[index].has_value());
         ++index;
     }
 
     // TXN_HEADER_END
     exec_recorder->record_txn_marker_event(MONAD_EXEC_TXN_HEADER_END, txn_num);
-    TRACER_LOG("TXN_HEADER_END txn=%u", txn_num);
 }
 
 void record_txn_output_events(
@@ -452,13 +389,6 @@ void record_txn_output_events(
             .topic_count = static_cast<uint8_t>(log.topics.size()),
             .data_length = static_cast<uint32_t>(log.data.size())};
         exec_recorder->commit(txn_log);
-        TRACER_LOG("EVENT[SEQNO=%lu] TXN_LOG txn=%u idx=%u addr=%s topics=%zu data_len=%zu",
-            txn_log.seqno,
-            txn_num,
-            index,
-            addr_to_hex(log.address).c_str(),
-            log.topics.size(),
-            log.data.size());
         ++index;
     }
 
@@ -490,17 +420,6 @@ void record_txn_output_events(
             .return_length = call_frame.output.size(),
         };
         exec_recorder->commit(txn_call_frame);
-        TRACER_LOG("EVENT[SEQNO=%lu] TX_CALL_FRAME txn=%u idx=%u depth=%lu opcode=0x%02x gas=%lu status=%d caller=%s target=%s value=%lu",
-            txn_call_frame.seqno,
-            txn_num,
-            index,
-            static_cast<unsigned long>(call_frame.depth),
-            txn_call_frame.payload->opcode,
-            call_frame.gas,
-            txn_call_frame.payload->evmc_status,
-            addr_to_hex(call_frame.from).c_str(),
-            call_frame.to.has_value() ? addr_to_hex(*call_frame.to).c_str() : "CREATE",
-            static_cast<unsigned long>(call_frame.value));
         ++index;
     }
 
