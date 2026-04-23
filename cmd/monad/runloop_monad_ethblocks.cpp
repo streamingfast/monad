@@ -26,6 +26,7 @@
 #include <category/execution/ethereum/core/rlp/block_rlp.hpp>
 #include <category/execution/ethereum/db/block_db.hpp>
 #include <category/execution/ethereum/db/db.hpp>
+#include <category/execution/ethereum/event/record_block_events.hpp>
 #include <category/execution/ethereum/execute_block.hpp>
 #include <category/execution/ethereum/execute_transaction.hpp>
 #include <category/execution/ethereum/metrics/block_metrics.hpp>
@@ -184,6 +185,19 @@ Result<void> process_monad_block(
     block.header.parent_hash =
         to_bytes(keccak256(rlp::encode_block_header(db.read_eth_header())));
 
+    // block_round, epoch, author and monad_block_input not available in replay mode
+    record_block_start(
+        block_id,
+        chain.get_chain_id(),
+        block.header,
+        block.header.parent_hash,
+        0,
+        0,
+        static_cast<uint128_t>(block.header.timestamp) * 1'000'000'000,
+        block.transactions.size(),
+        std::nullopt,
+        std::nullopt);
+
     BlockMetrics block_metrics;
     BlockState block_state(db, vm);
     BOOST_OUTCOME_TRY(
@@ -233,6 +247,10 @@ Result<void> process_monad_block(
     auto const eth_block_hash =
         to_bytes(keccak256(rlp::encode_block_header(output_header)));
     block_hash_buffer.set(block.header.number, eth_block_hash);
+
+    record_block_result(BlockExecOutput{
+        .eth_header = output_header,
+        .eth_block_hash = eth_block_hash});
 
     // Emit the block metrics log line
     [[maybe_unused]] auto const block_time =
