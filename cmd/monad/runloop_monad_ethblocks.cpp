@@ -288,11 +288,7 @@ Result<void> process_monad_block(
         to_bytes(keccak256(rlp::encode_block_header(exec_output.eth_header)));
     block_hash_buffer.set(
         exec_output.eth_header.number, exec_output.eth_block_hash);
-    (void)record_block_result(exec_output);
-
-    BOOST_OUTCOME_TRY(record_block_result(BlockExecOutput{
-        .eth_header = output_header,
-        .eth_block_hash = eth_block_hash}));
+    BOOST_OUTCOME_TRY(record_block_result(exec_output));
 
     // Emit the block metrics log line
     [[maybe_unused]] auto const block_time =
