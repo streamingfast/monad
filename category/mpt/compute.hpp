@@ -40,13 +40,20 @@ namespace detail
 
         void keccak_inplace_to_root_hash()
         {
-            MONAD_DEBUG_ASSERT(len <= KECCAK256_SIZE);
+            MONAD_ASSERT(len <= KECCAK256_SIZE);
             if (len < KECCAK256_SIZE) {
                 keccak256(buffer, len, buffer);
                 len = KECCAK256_SIZE;
             }
         }
     };
+
+    constexpr unsigned calc_branch_rlp_max_size(unsigned const leaf_data_size)
+    {
+        return static_cast<unsigned>(rlp::list_length(
+            rlp::list_length(KECCAK256_SIZE) * 16 +
+            rlp::list_length(leaf_data_size)));
+    }
 }
 
 std::span<unsigned char> encode_empty_string(std::span<unsigned char> result);
@@ -57,9 +64,16 @@ encode_16_children(std::span<ChildData>, std::span<unsigned char> result);
 std::span<unsigned char>
 encode_16_children(Node const &, std::span<unsigned char> result);
 
-unsigned encode_two_pieces(
+byte_string encode_two_pieces(
+    NibblesView path, byte_string_view second, bool has_value = false);
+
+[[gnu::always_inline]] inline unsigned encode_two_pieces_reference(
     unsigned char *const dest, NibblesView const path,
-    byte_string_view const second, bool const has_value = false);
+    byte_string_view const second, bool const has_value = false)
+{
+    auto const rlp = encode_two_pieces(path, second, has_value);
+    return to_node_reference({rlp.data(), rlp.size()}, dest);
+}
 
 struct Compute
 {
@@ -125,7 +139,7 @@ struct MerkleComputeBase : Compute
         NibblesView /*path*/,
         std::optional<byte_string_view> const value) override
     {
-        MONAD_DEBUG_ASSERT(mask);
+        MONAD_ASSERT(mask);
         if (!value.has_value()) {
             // no intermediate data for non-leaf node
             return 0;
@@ -136,9 +150,7 @@ struct MerkleComputeBase : Compute
                 children, [](ChildData const &item) constexpr {
                     return item.is_valid();
                 });
-            MONAD_DEBUG_ASSERT(it != children.end());
-            MONAD_DEBUG_ASSERT(it->branch < 16);
-            MONAD_DEBUG_ASSERT(it->ptr);
+            MONAD_ASSERT(it != children.end());
             compute_hash_with_extra_nibble_to_state_(*it);
             // root data of a subtrie is always a hash
             state.keccak_inplace_to_root_hash();
@@ -151,11 +163,11 @@ struct MerkleComputeBase : Compute
         result = encode_empty_string(result);
         auto const concat_len =
             static_cast<size_t>(result.data() - branch_str_rlp);
-        MONAD_DEBUG_ASSERT(concat_len <= max_branch_rlp_size);
+        MONAD_ASSERT(concat_len <= max_branch_rlp_size);
 
         // encode list
         auto const rlp_len = rlp::list_length(concat_len);
-        MONAD_DEBUG_ASSERT(rlp_len <= max_branch_rlp_size);
+        MONAD_ASSERT(rlp_len <= max_branch_rlp_size);
         unsigned char branch_rlp[max_branch_rlp_size];
         rlp::encode_list(
             branch_rlp, byte_string_view{branch_str_rlp, concat_len});
@@ -185,17 +197,17 @@ struct MerkleComputeBase : Compute
     compute(unsigned char *const buffer, Node const &node) override
     {
         if (node.has_value()) {
-            return encode_two_pieces(
+            return encode_two_pieces_reference(
                 buffer,
                 node.path_nibble_view(),
                 LeafValueProcessor::process(node), // processed leaf data
                 true);
         }
-        MONAD_DEBUG_ASSERT(node.number_of_children() > 1);
+        MONAD_ASSERT(node.number_of_children() > 1);
         if (node.has_path()) {
             unsigned char reference[KECCAK256_SIZE];
-            unsigned len = compute_branch_reference_(reference, node);
-            return encode_two_pieces(
+            unsigned const len = compute_branch_reference_(reference, node);
+            return encode_two_pieces_reference(
                 buffer, node.path_nibble_view(), {reference, len}, false);
         }
         return compute_branch_reference_(buffer, node);
@@ -207,9 +219,9 @@ private:
     unsigned compute_hash_with_extra_nibble_to_state_(ChildData &single_child)
     {
         Node *const node = single_child.ptr.get();
-        MONAD_DEBUG_ASSERT(node);
+        MONAD_ASSERT(node);
 
-        return state.len = encode_two_pieces(
+        return state.len = encode_two_pieces_reference(
                 state.buffer,
                 concat(single_child.branch, node->path_nibble_view()),
                 (node->has_value()
@@ -238,7 +250,7 @@ private:
             static_cast<size_t>(result.data() - branch_str_rlp);
         MONAD_ASSERT(concat_len <= max_branch_rlp_size);
         auto const branch_rlp_len = rlp::list_length(concat_len);
-        MONAD_DEBUG_ASSERT(branch_rlp_len <= max_branch_rlp_size);
+        MONAD_ASSERT(branch_rlp_len <= max_branch_rlp_size);
 
         unsigned char branch_rlp[max_branch_rlp_size];
         rlp::encode_list(
@@ -262,15 +274,25 @@ struct NoopProcessor
 };
 
 template <leaf_processor LeafValueProcessor = NoopProcessor>
+byte_string encode_branch(Node const &node)
+{
+    MONAD_ASSERT(node.number_of_children());
+    byte_string branch_str_rlp(
+        detail::calc_branch_rlp_max_size(node.value_len), 0);
+    auto result = encode_16_children(node, branch_str_rlp);
+    result = (node.has_value() && node.value_len)
+                 ? rlp::encode_string(result, LeafValueProcessor::process(node))
+                 : encode_empty_string(result);
+    auto const concat_len =
+        static_cast<size_t>(result.data() - branch_str_rlp.data());
+    byte_string branch_rlp(rlp::list_length(concat_len), 0);
+    rlp::encode_list(branch_rlp, {branch_str_rlp.data(), concat_len});
+    return branch_rlp;
+}
+
+template <leaf_processor LeafValueProcessor = NoopProcessor>
 struct VarLenMerkleCompute : Compute
 {
-    static constexpr auto calc_rlp_max_size =
-        [](unsigned const leaf_data_size) -> unsigned {
-        return static_cast<unsigned>(rlp::list_length(
-            rlp::list_length(KECCAK256_SIZE) * 16 +
-            rlp::list_length(leaf_data_size)));
-    };
-
     // Compute the intermediate branch data to the internal state.
     // For variable length merkle trie, we store branch node data inline in
     // nodes that have at least one child and non-empty path.
@@ -289,7 +311,7 @@ struct VarLenMerkleCompute : Compute
     }
 
     virtual unsigned
-    set_node_data(unsigned char *buffer, unsigned const max_size) override
+    set_node_data(unsigned char *const buffer, unsigned const max_size) override
     {
         // copy from internal state
         if (state.len == 0) {
@@ -304,12 +326,13 @@ struct VarLenMerkleCompute : Compute
         return len;
     }
 
-    virtual unsigned compute(unsigned char *buffer, Node const &node) override
+    virtual unsigned
+    compute(unsigned char *const buffer, Node const &node) override
     {
         // Ethereum leaf: leaf node hash without child
         if (node.number_of_children() == 0) {
             MONAD_ASSERT(node.has_value());
-            return encode_two_pieces(
+            return encode_two_pieces_reference(
                 buffer,
                 node.path_nibble_view(),
                 LeafValueProcessor::process(node),
@@ -319,7 +342,7 @@ struct VarLenMerkleCompute : Compute
         // rlp(encoded path, inline branch hash)
         if (node.has_path()) { // extension node, rlp encode with path too
             MONAD_ASSERT(node.bitpacked.data_len);
-            return encode_two_pieces(
+            return encode_two_pieces_reference(
                 buffer, node.path_nibble_view(), node.data(), node.has_value());
         }
         // Ethereum branch
@@ -334,7 +357,7 @@ protected:
         std::optional<byte_string_view> const value)
     {
         // compute branch node data to internal state
-        unsigned const branch_str_max_len = calc_rlp_max_size(
+        unsigned const branch_str_max_len = detail::calc_branch_rlp_max_size(
             (unsigned)value.transform(&byte_string_view::size).value_or(0));
 
         byte_string branch_str_rlp(branch_str_max_len, 0);
@@ -354,23 +377,11 @@ protected:
         return state.len;
     }
 
-    unsigned compute_branch_reference_(unsigned char *buffer, Node const &node)
+    unsigned
+    compute_branch_reference_(unsigned char *const buffer, Node const &node)
     {
-        MONAD_ASSERT(node.number_of_children());
-        // compute branch node hash
-        byte_string branch_str_rlp(calc_rlp_max_size(node.value_len), 0);
-        auto result = encode_16_children(node, branch_str_rlp);
-        // encode vt
-        result =
-            (node.has_value() && node.value_len)
-                ? rlp::encode_string(result, LeafValueProcessor::process(node))
-                : encode_empty_string(result);
-        auto const concat_len =
-            static_cast<size_t>(result.data() - branch_str_rlp.data());
-        byte_string branch_rlp(rlp::list_length(concat_len), 0);
-        rlp::encode_list(branch_rlp, {branch_str_rlp.data(), concat_len});
-        return to_node_reference(
-            {branch_rlp.data(), branch_rlp.size()}, buffer);
+        auto const rlp = encode_branch<LeafValueProcessor>(node);
+        return to_node_reference({rlp.data(), rlp.size()}, buffer);
     }
 };
 
@@ -387,7 +398,7 @@ struct RootVarLenMerkleCompute : public VarLenMerkleCompute<LeafValueProcessor>
     }
 
     virtual unsigned compute_node_data_len(
-        std::span<ChildData> const children, uint16_t mask, NibblesView,
+        std::span<ChildData> const children, uint16_t const mask, NibblesView,
         std::optional<byte_string_view> const value) override
     {
         MONAD_ASSERT(mask);
@@ -396,9 +407,7 @@ struct RootVarLenMerkleCompute : public VarLenMerkleCompute<LeafValueProcessor>
                 children, [](ChildData const &item) constexpr {
                     return item.is_valid();
                 });
-            MONAD_DEBUG_ASSERT(it != children.end());
-            MONAD_DEBUG_ASSERT(it->branch < 16);
-            MONAD_DEBUG_ASSERT(it->ptr);
+            MONAD_ASSERT(it != children.end());
             compute_hash_with_extra_nibble_to_state_(*it);
         }
         else {
@@ -410,7 +419,7 @@ struct RootVarLenMerkleCompute : public VarLenMerkleCompute<LeafValueProcessor>
     }
 
     virtual unsigned
-    set_node_data(unsigned char *buffer, unsigned const max_size) override
+    set_node_data(unsigned char *const buffer, unsigned const max_size) override
     {
         return Base::set_node_data(buffer, max_size);
     }
@@ -419,9 +428,9 @@ private:
     unsigned compute_hash_with_extra_nibble_to_state_(ChildData &single_child)
     {
         Node *const node = single_child.ptr.get();
-        MONAD_DEBUG_ASSERT(node);
+        MONAD_ASSERT(node != nullptr);
 
-        return state.len = encode_two_pieces(
+        return state.len = encode_two_pieces_reference(
                    state.buffer,
                    concat(single_child.branch, node->path_nibble_view()),
                    /* second: branch hash or leaf value */

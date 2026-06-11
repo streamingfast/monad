@@ -15,7 +15,8 @@
 
 #pragma once
 
-#include <category/vm/core/cases.hpp>
+#include <category/core/address.hpp>
+#include <category/core/cases.hpp>
 #include <category/vm/evm/traits.hpp>
 #include <category/vm/utils/evm-as/builder.hpp>
 #include <category/vm/utils/evm-as/instruction.hpp>
@@ -40,34 +41,33 @@ namespace monad::vm::utils::evm_as
                 continue;
             }
 
-            offset =
-                offset +
-                std::visit(
-                    Cases{
-                        [&](PushLabelI const &) -> size_t {
-                            return 1; // optimistically assume a 1 byte
-                                      // encoding.
-                        },
-                        [&label_offsets,
-                         offset](JumpdestI const &jumpdest) -> size_t {
-                            auto const [it, _] =
-                                label_offsets.insert({jumpdest.label, offset});
-                            MONAD_VM_ASSERT(it != label_offsets.end());
-                            return 1; // 1 byte encoding.
-                        },
-                        [](PushI const &push) -> size_t {
-                            return 1 + push.n(); // 1 + N byte encoding.
-                        },
-                        [](PushAddressI const &) -> size_t {
-                            return 21; // 1 byte for opcode + 20 bytes for the
-                                       // address
-                        },
-                        [](PlainI const &) -> size_t {
-                            return 1; // 1 byte encoding
-                        },
-                        [](InvalidI const &) -> size_t { return 1; },
-                        [](auto const &) -> size_t { MONAD_VM_ASSERT(false); }},
-                    ins);
+            offset = offset +
+                     std::visit(
+                         Cases{
+                             [&](PushLabelI const &) -> size_t {
+                                 return 1; // optimistically assume a 1 byte
+                                           // encoding.
+                             },
+                             [&label_offsets,
+                              offset](JumpdestI const &jumpdest) -> size_t {
+                                 auto const [it, _] = label_offsets.insert(
+                                     {jumpdest.label, offset});
+                                 MONAD_ASSERT(it != label_offsets.end());
+                                 return 1; // 1 byte encoding.
+                             },
+                             [](PushI const &push) -> size_t {
+                                 return 1 + push.n(); // 1 + N byte encoding.
+                             },
+                             [](PushAddressI const &) -> size_t {
+                                 return 21; // 1 byte for opcode + 20 bytes for
+                                            // the address
+                             },
+                             [](PlainI const &) -> size_t {
+                                 return 1; // 1 byte encoding
+                             },
+                             [](InvalidI const &) -> size_t { return 1; },
+                             [](auto const &) -> size_t { MONAD_ABORT(); }},
+                         ins);
         }
 
         // Second pass: keep refining label offset estimates until
@@ -98,6 +98,15 @@ namespace monad::vm::utils::evm_as
                                 size_t const n =
                                     offset == 0 ? 0 : byte_width(offset);
 
+                                if constexpr (
+                                    traits::evm_rev() < EVMC_SHANGHAI) {
+                                    if (n == 0) {
+                                        // Special case for zero offset before
+                                        // Shanghai, as PUSH0 is not available.
+                                        return 2; // PUSH1 0x00
+                                    }
+                                }
+
                                 // Expand to either PUSH0 or
                                 // PUSHn.
                                 return 1 + n;
@@ -106,7 +115,7 @@ namespace monad::vm::utils::evm_as
                                 JumpdestI const &jumpdest) -> size_t {
                                 auto const it =
                                     label_offsets.find(jumpdest.label);
-                                MONAD_VM_ASSERT(it != label_offsets.end());
+                                MONAD_ASSERT(it != label_offsets.end());
 
                                 // Check whether our estimated position of
                                 // this jumpdest has changed, if so update
@@ -124,7 +133,7 @@ namespace monad::vm::utils::evm_as
                                 // The compiler always emits the smallest
                                 // possible PUSH opcode.
                                 static constexpr size_t addr_size =
-                                    sizeof(evmc::address);
+                                    sizeof(Address);
                                 size_t const least_n =
                                     addr_size - countl(push.address);
                                 if (traits::evm_rev() < EVMC_SHANGHAI &&
@@ -138,9 +147,7 @@ namespace monad::vm::utils::evm_as
                                 return 1; // 1 byte encoding
                             },
                             [](InvalidI const &) -> size_t { return 1; },
-                            [](auto const &) -> size_t {
-                                MONAD_VM_ASSERT(false);
-                            }},
+                            [](auto const &) -> size_t { MONAD_ABORT(); }},
                         ins);
 
                 // Overflow check. If the below assertion triggers,
@@ -152,7 +159,7 @@ namespace monad::vm::utils::evm_as
                 // `std::numeric_limits<size_t>::max()` amount of
                 // instructions, which ought to have triggered an
                 // out of memory error by now.
-                MONAD_VM_ASSERT(offset >= prev_offset);
+                MONAD_ASSERT(offset >= prev_offset);
                 prev_offset = offset;
             }
         }

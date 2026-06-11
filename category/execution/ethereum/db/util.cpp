@@ -19,8 +19,10 @@
 #include <category/core/config.hpp>
 #include <category/core/int.hpp>
 #include <category/core/likely.h>
+#include <category/core/log.hpp>
 #include <category/core/result.hpp>
-#include <category/core/unaligned.hpp>
+#include <category/core/rlp/decode_error.hpp>
+#include <category/core/runtime/unaligned.hpp>
 #include <category/execution/ethereum/core/account.hpp>
 #include <category/execution/ethereum/core/block.hpp>
 #include <category/execution/ethereum/core/receipt.hpp>
@@ -34,7 +36,6 @@
 #include <category/execution/ethereum/core/transaction.hpp>
 #include <category/execution/ethereum/db/util.hpp>
 #include <category/execution/ethereum/rlp/decode.hpp>
-#include <category/execution/ethereum/rlp/decode_error.hpp>
 #include <category/execution/ethereum/rlp/encode2.hpp>
 #include <category/mpt/compute.hpp>
 #include <category/mpt/db.hpp>
@@ -51,9 +52,6 @@
 #include <boost/outcome/try.hpp>
 
 #include <nlohmann/json_fwd.hpp>
-
-#include <quill/Quill.h> // NOLINT
-#include <quill/detail/LogMacros.h>
 
 #include <algorithm>
 #include <chrono>
@@ -107,7 +105,8 @@ namespace
 
     public:
         BinaryDbLoader(
-            ::monad::mpt::Db &db, size_t buf_size, uint64_t const block_id)
+            ::monad::mpt::Db &db, size_t const buf_size,
+            uint64_t const block_id)
             : db_{db}
             , buf_size_{buf_size}
             , buf_{std::make_unique_for_overwrite<unsigned char[]>(buf_size)}
@@ -197,8 +196,8 @@ namespace
 
         void load(
             std::istream &input,
-            std::function<size_t(byte_string_view, UpdateList &)> fparse,
-            std::function<void(UpdateList)> fwrite)
+            std::function<size_t(byte_string_view, UpdateList &)> const fparse,
+            std::function<void(UpdateList)> const fwrite)
         {
             UpdateList updates;
             size_t total_processed = 0;
@@ -294,7 +293,7 @@ namespace
             return total_processed;
         }
 
-        Update handle_account(byte_string_view curr)
+        Update handle_account(byte_string_view const curr)
         {
             constexpr auto balance_offset = sizeof(bytes32_t);
             constexpr auto nonce_offset = balance_offset + sizeof(uint256_t);
@@ -338,43 +337,6 @@ namespace
                 in = in.substr(storage_entry_size);
             }
             return storage_updates;
-        }
-    };
-
-    struct AccountLeafProcessor
-    {
-        static byte_string process(mpt::Node const &node)
-        {
-            MONAD_ASSERT(node.has_value());
-
-            // this is the block number leaf
-            if (MONAD_UNLIKELY(node.value().empty())) {
-                return {};
-            }
-
-            auto encoded_account = node.value();
-            auto const acct = decode_account_db_ignore_address(encoded_account);
-            MONAD_ASSERT(!acct.has_error());
-            MONAD_ASSERT(encoded_account.empty());
-            bytes32_t storage_root = NULL_ROOT;
-            if (node.number_of_children()) {
-                MONAD_ASSERT(node.data().size() == sizeof(bytes32_t));
-                std::copy_n(
-                    node.data().data(), sizeof(bytes32_t), storage_root.bytes);
-            }
-            return rlp::encode_account(acct.value(), storage_root);
-        }
-    };
-
-    struct StorageLeafProcessor
-    {
-        static byte_string process(mpt::Node const &node)
-        {
-            MONAD_ASSERT(node.has_value());
-            auto encoded_storage = node.value();
-            auto const storage = decode_storage_db_ignore_slot(encoded_storage);
-            MONAD_ASSERT(!storage.has_error());
-            return rlp::encode_string2(storage.value());
         }
     };
 
@@ -425,7 +387,7 @@ namespace
         compute(unsigned char *const buffer, Node const &node) override
         {
             MONAD_ASSERT(node.has_value());
-            return encode_two_pieces(
+            return encode_two_pieces_reference(
                 buffer,
                 node.path_nibble_view(),
                 AccountLeafProcessor::process(node),
@@ -541,48 +503,13 @@ void MachineBase::down(unsigned char const nibble)
     MONAD_ASSERT(trie_section != TrieType::Undefined);
     auto const prefix_length = prefix_len();
     MONAD_ASSERT(depth <= max_depth(prefix_length));
-    MONAD_ASSERT(
-        (nibble == STATE_NIBBLE || nibble == CODE_NIBBLE ||
-         nibble == RECEIPT_NIBBLE || nibble == CALL_FRAME_NIBBLE ||
-         nibble == TRANSACTION_NIBBLE || nibble == BLOCKHEADER_NIBBLE ||
-         nibble == WITHDRAWAL_NIBBLE || nibble == OMMER_NIBBLE ||
-         nibble == TX_HASH_NIBBLE || nibble == BLOCK_HASH_NIBBLE) ||
-        depth != prefix_length);
     if (MONAD_UNLIKELY(depth == prefix_length)) {
         MONAD_ASSERT(table == TableType::Prefix);
-        if (nibble == STATE_NIBBLE) {
-            table = TableType::State;
-        }
-        else if (nibble == RECEIPT_NIBBLE) {
-            table = TableType::Receipt;
-        }
-        else if (nibble == TRANSACTION_NIBBLE) {
-            table = TableType::Transaction;
-        }
-        else if (nibble == CODE_NIBBLE) {
-            table = TableType::Code;
-        }
-        else if (nibble == WITHDRAWAL_NIBBLE) {
-            table = TableType::Withdrawal;
-        }
-        else if (nibble == TX_HASH_NIBBLE) {
-            table = TableType::TxHash;
-        }
-        else if (nibble == BLOCK_HASH_NIBBLE) {
-            table = TableType::BlockHash;
-        }
-        else if (nibble == BLOCKHEADER_NIBBLE) {
-            table = TableType::BlockHeader;
-        }
-        else if (nibble == OMMER_NIBBLE) {
-            table = TableType::Ommer;
-        }
-        else if (nibble == CALL_FRAME_NIBBLE) {
-            table = TableType::CallFrame;
-        }
-        else {
-            MONAD_ABORT_PRINTF("Invalid nibble %u", (unsigned)nibble);
-        }
+        MONAD_ASSERT_PRINTF(
+            nibble <= CALL_FRAME_NIBBLE,
+            "Invalid nibble %u",
+            static_cast<unsigned>(nibble));
+        table = static_cast<TableType>(nibble + 1);
     }
 }
 
@@ -737,6 +664,36 @@ Result<byte_string_view> decode_storage_db_ignore_slot(byte_string_view &enc)
     return res.second;
 };
 
+byte_string AccountLeafProcessor::process(mpt::Node const &node)
+{
+    MONAD_ASSERT(node.has_value());
+
+    // this is the block number leaf
+    if (MONAD_UNLIKELY(node.value().empty())) {
+        return {};
+    }
+
+    auto encoded_account = node.value();
+    auto const acct = decode_account_db_ignore_address(encoded_account);
+    MONAD_ASSERT(!acct.has_error());
+    MONAD_ASSERT(encoded_account.empty());
+    bytes32_t storage_root = NULL_ROOT;
+    if (node.number_of_children()) {
+        MONAD_ASSERT(node.data().size() == sizeof(bytes32_t));
+        std::copy_n(node.data().data(), sizeof(bytes32_t), storage_root.bytes);
+    }
+    return rlp::encode_account(acct.value(), storage_root);
+}
+
+byte_string StorageLeafProcessor::process(mpt::Node const &node)
+{
+    MONAD_ASSERT(node.has_value());
+    auto encoded_storage = node.value();
+    auto const storage = decode_storage_db_ignore_slot(encoded_storage);
+    MONAD_ASSERT(!storage.has_error());
+    return rlp::encode_string2(storage.value());
+}
+
 void write_to_file(
     nlohmann::json const &j, std::filesystem::path const &root_path,
     uint64_t const block_number)
@@ -860,7 +817,8 @@ get_proposal_block_ids(mpt::Db &db, uint64_t const block_number)
             path_ = path_view.substr(0, prefix_size);
         }
 
-        virtual bool should_visit(Node const &, unsigned char branch) override
+        virtual bool
+        should_visit(Node const &, unsigned char const branch) override
         {
             if (path_.nibble_size() == 0) {
                 return branch == PROPOSAL_NIBBLE;

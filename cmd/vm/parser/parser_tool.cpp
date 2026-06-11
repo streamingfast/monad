@@ -122,7 +122,7 @@ void do_binary(
     std::cout << show_opcodes(opcodes) << '\n';
 }
 
-int main(int argc, char **argv)
+int main(int const argc, char **const argv)
 {
     auto args = parse_args(argc, argv);
 
@@ -139,7 +139,7 @@ int main(int argc, char **argv)
         if (args.binary) {
             do_binary(config, "<stdin>", opcodes);
         }
-        MONAD_VM_ASSERT(opcodes.size() <= *code_size_t::max());
+        MONAD_ASSERT(opcodes.size() <= *code_size_t::max());
         if (args.compile) {
             auto rt = asmjit::JitRuntime{};
             monad::vm::compiler::native::compile<

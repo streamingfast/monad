@@ -13,26 +13,19 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/core/address.hpp>
 #include <category/core/byte_string.hpp>
 #include <category/core/bytes.hpp>
 #include <category/core/int.hpp>
+#include <category/core/runtime/uint256.hpp>
 #include <category/execution/ethereum/chain/ethereum_mainnet.hpp>
-#include <category/execution/ethereum/core/account.hpp>
-#include <category/execution/ethereum/core/address.hpp>
 #include <category/execution/ethereum/core/block.hpp>
 #include <category/execution/ethereum/core/transaction.hpp>
-#include <category/execution/ethereum/dao.hpp>
 #include <category/execution/ethereum/db/trie_db.hpp>
 #include <category/execution/ethereum/db/util.hpp>
-#include <category/execution/ethereum/state2/block_state.hpp>
-#include <category/execution/ethereum/state3/state.hpp>
 #include <category/execution/ethereum/test/test_traits_state.hpp>
-#include <category/execution/ethereum/types/incarnation.hpp>
 #include <category/execution/ethereum/validate_block.hpp>
 #include <category/execution/ethereum/validate_transaction.hpp>
-#include <category/mpt/db.hpp>
-#include <category/vm/evm/traits.hpp>
-#include <category/vm/vm.hpp>
 #include <monad/test/traits_test.hpp>
 
 #include <evmc/evmc.h>
@@ -40,18 +33,17 @@
 
 #include <gtest/gtest.h>
 
-#include <intx/intx.hpp>
-
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <type_traits>
 
 using namespace monad;
 
 namespace
 {
     using namespace ::monad::literals;
-    using intx::operator""_u256;
 
     static constexpr auto r{
         0x5fd883bb01a10915ebc06621b925bd6d624cb6768976b73c0d468b31f657d15b_u256};
@@ -70,6 +62,8 @@ namespace
 
 TYPED_TEST(TraitsTest, validate_enough_gas)
 {
+    static_assert(TestFixture::Trait::evm_rev() > EVMC_FRONTIER);
+
     static Transaction const t{
         .sc = {.r = r, .s = s},
         .max_fee_per_gas = 29'443'849'433,
@@ -80,14 +74,8 @@ TYPED_TEST(TraitsTest, validate_enough_gas)
         static_validate_transaction<typename TestFixture::Trait>(
             t, 0, std::nullopt, 1);
 
-    if constexpr (TestFixture::Trait::evm_rev() == EVMC_FRONTIER) {
-        EXPECT_TRUE(result.has_value());
-    }
-    else {
-        ASSERT_TRUE(result.has_error());
-        EXPECT_EQ(
-            result.error(), TransactionError::IntrinsicGasGreaterThanLimit);
-    }
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(result.error(), TransactionError::IntrinsicGasGreaterThanLimit);
 }
 
 TYPED_TEST(TraitsTest, validate_floor_gas)
@@ -285,37 +273,31 @@ TYPED_TEST(InMemoryStateTraitsTest, insufficent_balance_overflow)
 // EIP-3860
 TYPED_TEST(TraitsTest, init_code_exceed_limit)
 {
-    // Before Spurious Dragon, max_code_size is uncapped
-    if constexpr (TestFixture::Trait::evm_rev() >= EVMC_SPURIOUS_DRAGON) {
-        byte_string long_data;
-        for (auto i = 0u; i <= 2 * TestFixture::Trait::max_code_size(); ++i) {
-            long_data += {0xc0};
-        }
-        // exceed EIP-3860 limit
+    static_assert(TestFixture::Trait::evm_rev() > EVMC_TANGERINE_WHISTLE);
 
-        static Transaction const t{
-            .sc = {.r = r, .s = s},
-            .max_fee_per_gas = 0,
-            .gas_limit = 20'000'000,
-            .value = 0,
-            .data = long_data};
+    byte_string long_data;
+    for (auto i = 0u; i <= 2 * TestFixture::Trait::max_code_size(); ++i) {
+        long_data += {0xc0};
+    }
+    // exceed EIP-3860 limit
 
-        auto const result =
-            static_validate_transaction<typename TestFixture::Trait>(
-                t, 0, std::nullopt, 1);
-        // init codesize validation since EIP-3860
-        if constexpr (TestFixture::Trait::evm_rev() >= EVMC_SHANGHAI) {
-            ASSERT_TRUE(result.has_error());
-            EXPECT_EQ(result.error(), TransactionError::InitCodeLimitExceeded);
-        }
-        else {
-            EXPECT_TRUE(result.has_value());
-        }
+    static Transaction const t{
+        .sc = {.r = r, .s = s},
+        .max_fee_per_gas = 0,
+        .gas_limit = 20'000'000,
+        .value = 0,
+        .data = long_data};
+
+    auto const result =
+        static_validate_transaction<typename TestFixture::Trait>(
+            t, 0, std::nullopt, 1);
+    // init codesize validation since EIP-3860
+    if constexpr (TestFixture::Trait::evm_rev() >= EVMC_SHANGHAI) {
+        ASSERT_TRUE(result.has_error());
+        EXPECT_EQ(result.error(), TransactionError::InitCodeLimitExceeded);
     }
     else {
-        static_assert(
-            TestFixture::Trait::max_code_size() ==
-            std::numeric_limits<size_t>::max());
+        EXPECT_TRUE(result.has_value());
     }
 }
 
@@ -327,19 +309,6 @@ TYPED_TEST(TraitsTest, invalid_gas_limit)
         static_validate_header<typename TestFixture::Trait>(header);
     ASSERT_TRUE(result.has_error());
     EXPECT_EQ(result.error(), BlockError::InvalidGasLimit);
-}
-
-TYPED_TEST(EvmTraitsTest, wrong_dao_extra_data)
-{
-    static BlockHeader const header{
-        .number = dao::dao_block_number + 5,
-        .gas_limit = 10000,
-        .extra_data = {0x00, 0x01, 0x02}};
-
-    auto const result =
-        static_validate_header<typename TestFixture::Trait>(header);
-    ASSERT_TRUE(result.has_error());
-    EXPECT_EQ(result.error(), BlockError::WrongDaoExtraData);
 }
 
 #define TEST_OPTIONAL_FIELD(f, default_val, REV)                               \

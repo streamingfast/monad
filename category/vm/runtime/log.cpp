@@ -13,8 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/core/likely.h>
 #include <category/core/runtime/uint256.hpp>
-#include <category/vm/core/assert.h>
 #include <category/vm/evm/explicit_traits.hpp>
 #include <category/vm/evm/traits.hpp>
 #include <category/vm/runtime/bin.hpp>
@@ -34,7 +34,7 @@ namespace monad::vm::runtime
         Context *ctx, uint256_t const &offset_word, uint256_t const &size_word,
         std::span<evmc::bytes32 const> topics)
     {
-        if (MONAD_VM_UNLIKELY(ctx->env.evmc_flags & EVMC_STATIC)) {
+        if (MONAD_UNLIKELY(ctx->env.evmc_flags & EVMC_STATIC)) {
             ctx->exit(StatusCode::Error);
         }
 
@@ -77,7 +77,7 @@ namespace monad::vm::runtime
             *offset_ptr,
             *size_ptr,
             {{
-                bytes32_from_uint256(*topic1_ptr),
+                static_cast<evmc::bytes32>(bytes32_from_uint256(*topic1_ptr)),
             }});
     }
 
@@ -93,8 +93,8 @@ namespace monad::vm::runtime
             *offset_ptr,
             *size_ptr,
             {{
-                bytes32_from_uint256(*topic1_ptr),
-                bytes32_from_uint256(*topic2_ptr),
+                static_cast<evmc::bytes32>(bytes32_from_uint256(*topic1_ptr)),
+                static_cast<evmc::bytes32>(bytes32_from_uint256(*topic2_ptr)),
             }});
     }
 
@@ -111,9 +111,9 @@ namespace monad::vm::runtime
             *offset_ptr,
             *size_ptr,
             {{
-                bytes32_from_uint256(*topic1_ptr),
-                bytes32_from_uint256(*topic2_ptr),
-                bytes32_from_uint256(*topic3_ptr),
+                static_cast<evmc::bytes32>(bytes32_from_uint256(*topic1_ptr)),
+                static_cast<evmc::bytes32>(bytes32_from_uint256(*topic2_ptr)),
+                static_cast<evmc::bytes32>(bytes32_from_uint256(*topic3_ptr)),
             }});
     }
 
@@ -130,10 +130,10 @@ namespace monad::vm::runtime
             *offset_ptr,
             *size_ptr,
             {{
-                bytes32_from_uint256(*topic1_ptr),
-                bytes32_from_uint256(*topic2_ptr),
-                bytes32_from_uint256(*topic3_ptr),
-                bytes32_from_uint256(*topic4_ptr),
+                static_cast<evmc::bytes32>(bytes32_from_uint256(*topic1_ptr)),
+                static_cast<evmc::bytes32>(bytes32_from_uint256(*topic2_ptr)),
+                static_cast<evmc::bytes32>(bytes32_from_uint256(*topic3_ptr)),
+                static_cast<evmc::bytes32>(bytes32_from_uint256(*topic4_ptr)),
             }});
     }
 

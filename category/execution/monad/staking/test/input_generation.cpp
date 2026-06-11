@@ -13,13 +13,26 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/core/address.hpp>
+#include <category/core/assert.h>
+#include <category/core/byte_string.hpp>
+#include <category/core/bytes.hpp>
+#include <category/core/int.hpp>
 #include <category/execution/ethereum/core/contract/abi_encode.hpp>
+#include <category/execution/ethereum/core/contract/big_endian.hpp>
 #include <category/execution/monad/staking/test/input_generation.hpp>
 #include <category/execution/monad/staking/util/secp256k1.hpp>
 
 #include <category/core/blake3.hpp>
 
+#include <blst.h>
+#include <secp256k1.h>
+
+#include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <tuple>
+#include <utility>
 
 namespace
 {
@@ -32,7 +45,7 @@ namespace
 
 namespace monad::staking::test
 {
-    std::pair<blst_p1, blst_scalar> gen_bls_keypair(bytes32_t secret)
+    std::pair<blst_p1, blst_scalar> gen_bls_keypair(bytes32_t const secret)
     {
         blst_scalar secret_key;
         blst_p1 public_key;
@@ -42,7 +55,8 @@ namespace monad::staking::test
         return {public_key, secret_key};
     }
 
-    std::pair<secp256k1_pubkey, bytes32_t> gen_secp_keypair(bytes32_t secret)
+    std::pair<secp256k1_pubkey, bytes32_t>
+    gen_secp_keypair(bytes32_t const secret)
     {
         secp256k1_pubkey public_key;
 
@@ -130,7 +144,7 @@ namespace monad::staking::test
     std::tuple<byte_string, byte_string, byte_string, Address>
     craft_add_validator_input_raw(
         Address const &auth_address, uint256_t const &stake,
-        uint256_t const &commission, bytes32_t secret)
+        uint256_t const &commission, bytes32_t const secret)
     {
         auto const [bls_pubkey, bls_seckey] = gen_bls_keypair(secret);
         auto const [secp_pubkey, secp_seckey] = gen_secp_keypair(secret);
@@ -149,7 +163,7 @@ namespace monad::staking::test
         message += to_byte_string_view(secp_pubkey_serialized);
         message += to_byte_string_view(bls_pubkey_serialized);
         message += to_byte_string_view(auth_address.bytes);
-        message += to_byte_string_view(intx::be::store<bytes32_t>(stake).bytes);
+        message += to_byte_string_view(store_be_as<bytes32_t>(stake).bytes);
         message += to_byte_string_view(u256_be{commission}.bytes);
 
         // sign with both keys
@@ -163,7 +177,7 @@ namespace monad::staking::test
 
     std::pair<byte_string, Address> craft_add_validator_input(
         Address const &auth_address, uint256_t const &stake,
-        uint256_t const &commission, bytes32_t secret)
+        uint256_t const &commission, bytes32_t const secret)
     {
         auto const [message, secp_sig, bls_sig, sign_address] =
             craft_add_validator_input_raw(

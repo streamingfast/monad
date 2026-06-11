@@ -210,14 +210,14 @@ TEST(BlockHashBufferTest, init_from_db)
         return dbname;
     }();
 
-    OnDiskMachine machine;
     mpt::Db db{
-        machine, mpt::OnDiskDbConfig{.append = false, .dbname_paths = {path}}};
+        std::make_unique<OnDiskMachine>(),
+        mpt::OnDiskDbConfig{.append = false, .dbname_paths = {path}}};
     TrieDb tdb{db};
 
     BlockHashBufferFinalized expected;
     for (uint64_t i = 0; i < 256; ++i) {
-        commit_sequential(tdb, {}, {}, BlockHeader{.number = i});
+        commit_sequential(tdb, sd({}), {}, BlockHeader{.number = i});
         expected.set(
             i,
             to_bytes(

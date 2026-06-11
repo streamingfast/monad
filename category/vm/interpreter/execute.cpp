@@ -33,8 +33,7 @@
  */
 extern "C" void monad_vm_interpreter_trampoline(
     void *, ::monad::vm::runtime::Context *,
-    ::monad::vm::interpreter::Intercode const *,
-    ::monad::vm::runtime::uint256_t *, void *);
+    ::monad::vm::interpreter::Intercode const *, monad::uint256_t *, void *);
 
 namespace monad::vm::interpreter
 {
@@ -43,7 +42,7 @@ namespace monad::vm::interpreter
         template <Traits traits>
         void core_loop(
             void *, runtime::Context *ctx, Intercode const *analysis,
-            runtime::uint256_t *stack_ptr, void *)
+            uint256_t *stack_ptr, void *)
         {
             static_assert(
                 utils::same_signature(
@@ -71,14 +70,13 @@ namespace monad::vm::interpreter
 
     template <Traits traits>
     void execute(
-        runtime::Context &ctx, Intercode const &analysis,
-        std::uint8_t *stack_ptr)
+        runtime::Context &ctx, Intercode const &analysis, uint8_t *stack_ptr)
     {
         monad_vm_interpreter_trampoline(
             static_cast<void *>(&ctx.exit_stack_ptr),
             &ctx,
             &analysis,
-            reinterpret_cast<runtime::uint256_t *>(stack_ptr),
+            reinterpret_cast<uint256_t *>(stack_ptr),
             reinterpret_cast<void *>(core_loop<traits>));
     }
 

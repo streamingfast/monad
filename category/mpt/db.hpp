@@ -15,8 +15,6 @@
 
 #pragma once
 
-#include <memory>
-
 #include <category/async/concepts.hpp>
 #include <category/async/config.hpp>
 #include <category/async/io.hpp>
@@ -34,6 +32,8 @@
 #include <category/mpt/trie.hpp>
 #include <category/mpt/update.hpp>
 
+#include <memory>
+
 MONAD_MPT_NAMESPACE_BEGIN
 
 struct OnDiskDbConfig;
@@ -41,6 +41,11 @@ struct ReadOnlyOnDiskDbConfig;
 struct StateMachine;
 struct TraverseMachine;
 struct AsyncContext;
+
+namespace test
+{
+    struct DbAccessor;
+}
 
 struct AsyncIOContext
 {
@@ -93,8 +98,8 @@ private:
     std::unique_ptr<Impl> impl_;
 
 public:
-    explicit Db(StateMachine &); // In-memory mode
-    Db(StateMachine &, OnDiskDbConfig const &);
+    explicit Db(std::unique_ptr<StateMachine>); // In-memory mode
+    Db(std::unique_ptr<StateMachine>, OnDiskDbConfig const &);
     explicit Db(AsyncIOContext &);
 
     Db(Db const &) = delete;
@@ -146,6 +151,21 @@ public:
     // Blocking traverse never wait on a fiber future.
     bool
     traverse_blocking(NodeCursor const &, TraverseMachine &, uint64_t block_id);
+
+    // Variant that lets the caller supply a `children_of(mask) -> range`
+    // factory controlling the order in which a node's children are visited.
+    // The factory is invoked once per node; its returned range must own its
+    // storage so the recursive descent below cannot clobber it.
+    template <class ChildrenVisitRange>
+    bool traverse_blocking(
+        NodeCursor const &cursor, TraverseMachine &machine,
+        uint64_t const block_id, ChildrenVisitRange children_of)
+    {
+        MONAD_ASSERT(cursor.is_valid());
+        return preorder_traverse_blocking(
+            aux(), *cursor.node, machine, block_id, std::move(children_of));
+    }
+
     uint64_t get_latest_version() const;
     uint64_t get_earliest_version() const;
     uint64_t get_history_length() const;
@@ -161,6 +181,11 @@ public:
 
     bool is_on_disk() const;
     bool is_read_only() const;
+
+private:
+    friend struct test::DbAccessor;
+    UpdateAux const &aux() const;
+    UpdateAux &aux();
 };
 
 // The following are not threadsafe. Please use async get from the RODb owning
@@ -225,7 +250,7 @@ namespace detail
         }
 
         constexpr DbGetSender(
-            AsyncContext &context_, op_t const op_type_, NodeCursor cur_,
+            AsyncContext &context_, op_t const op_type_, NodeCursor const cur_,
             NibblesView const n, uint64_t const block_id_)
             : context(context_)
             , op_type(op_type_)
@@ -239,7 +264,7 @@ namespace detail
         }
 
         async::result<void>
-        operator()(async::erased_connected_operation *io_state) noexcept;
+        operator()(async::erased_connected_operation *io_state);
 
         result_type completed(
             async::erased_connected_operation *,

@@ -15,11 +15,9 @@
 
 #pragma once
 
-#include <category/vm/core/assert.h>
+#include <category/core/assert.h>
 #include <category/vm/runtime/transmute.hpp>
 #include <category/vm/runtime/types.hpp>
-
-#include <evmc/evmc.hpp>
 
 #include <cstdint>
 
@@ -31,10 +29,11 @@ namespace monad::vm::runtime
     template <Traits traits>
     void sstore(
         Context *ctx, uint256_t const *key_ptr, uint256_t const *value_ptr,
-        std::int64_t remaining_block_base_gas);
+        int64_t remaining_block_base_gas);
 
-    inline void
-    tload(Context *ctx, uint256_t *result_ptr, uint256_t const *key_ptr)
+    inline void tload(
+        Context *const ctx, uint256_t *const result_ptr,
+        uint256_t const *const key_ptr)
     {
         auto key = bytes32_from_uint256(*key_ptr);
 
@@ -44,10 +43,11 @@ namespace monad::vm::runtime
         *result_ptr = uint256_from_bytes32(value);
     }
 
-    inline void
-    tstore(Context *ctx, uint256_t const *key_ptr, uint256_t const *val_ptr)
+    inline void tstore(
+        Context *const ctx, uint256_t const *const key_ptr,
+        uint256_t const *const val_ptr)
     {
-        if (MONAD_VM_UNLIKELY(ctx->env.evmc_flags & evmc_flags::EVMC_STATIC)) {
+        if (MONAD_UNLIKELY(ctx->env.evmc_flags & evmc_flags::EVMC_STATIC)) {
             ctx->exit(StatusCode::Error);
         }
 

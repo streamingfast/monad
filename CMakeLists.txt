@@ -39,7 +39,6 @@ endif()
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-option(MONAD_COMPILER_LLVM "Build llvm backend" OFF)
 option(MONAD_COMPILER_COVERAGE "Build with coverage" OFF)
 option(MONAD_COMPILER_TESTING "Build compiler tests" OFF)
 option(MONAD_COMPILER_BENCHMARKS "Build compiler benchmarks" OFF)
@@ -78,10 +77,13 @@ function(monad_compile_options target)
   target_compile_options(
     ${target} PRIVATE $<$<AND:$<CXX_COMPILER_ID:GNU>,$<CONFIG:Release>>:-Wno-maybe-uninitialized>)
 
+  target_compile_options(${target} PRIVATE $<$<CONFIG:Debug>:-Og>)
+
   target_compile_definitions(${target} PUBLIC QUILL_ROOT_LOGGER_ONLY)
 
   if(MONAD_COMPILER_TESTING)
     target_compile_definitions(${target} PUBLIC "MONAD_COMPILER_TESTING=1")
+    target_compile_definitions(${target} PUBLIC "MONAD_CORE_FORCE_DEBUG_ASSERT=1")
   endif()
 
   if(MONAD_COMPILER_STATS)
@@ -103,7 +105,7 @@ function(monad_compile_options target)
   target_compile_definitions(${target} PUBLIC "JSON_HAS_RANGES=0")
 endfunction()
 
-find_package(Boost REQUIRED COMPONENTS fiber json CONFIG)
+find_package(Boost REQUIRED COMPONENTS context filesystem json CONFIG)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(brotli REQUIRED IMPORTED_TARGET libbrotlienc libbrotlidec)
 pkg_check_modules(crypto++ REQUIRED IMPORTED_TARGET libcrypto++)
@@ -140,6 +142,21 @@ add_subdirectory("third_party/cthash")
 set(ETHASH_TESTING NO)
 add_subdirectory("third_party/ethash")
 
+# fiber (boost)
+# Boost.Fiber's CMakeLists.txt expects granular Boost targets from the
+# superproject build. The system-installed Boost only provides Boost::headers
+# for header-only libs. Create shim targets so fiber can link them.
+foreach(_boost_hdr_lib assert config core intrusive predef smart_ptr algorithm format)
+  if(NOT TARGET Boost::${_boost_hdr_lib})
+    add_library(boost_${_boost_hdr_lib} INTERFACE)
+    target_link_libraries(boost_${_boost_hdr_lib} INTERFACE Boost::headers)
+    add_library(Boost::${_boost_hdr_lib} ALIAS boost_${_boost_hdr_lib})
+  endif()
+endforeach()
+add_subdirectory("third_party/fiber" SYSTEM)
+# Boost.Fiber triggers warnings under C++23 strict flags.
+target_compile_options(boost_fiber PRIVATE -Wno-deprecated-declarations -Wno-conversion)
+
 # immer
 option(immer_BUILD_TESTS OFF)
 option(immer_BUILD_EXAMPLES OFF)
@@ -161,19 +178,6 @@ endif()
 # komihash
 add_library(komihash INTERFACE)
 target_include_directories(komihash INTERFACE "third_party/komihash")
-
-# LLVM
-# Because LLVM is a large dependency, we only try to find it if it's
-# explicitly enabled as part of the VM build: regular client builds don't need
-# to use it.
-if(UTILS_CLANG_TIDY_AUTO_CONST OR MONAD_COMPILER_LLVM)
-  include(cmake/LinkLLVM.cmake)
-  find_package(LLVM 19.1.7 REQUIRED CONFIG)
-endif()
-
-if(MONAD_COMPILER_LLVM)
-  add_definitions(-DMONAD_COMPILER_LLVM)
-endif()
 
 # magic_enum
 add_subdirectory("third_party/magic_enum")
@@ -309,7 +313,6 @@ target_link_libraries(
          monad_rpc
          monad_statesync
          monad-vm
-         monad-vm-core
          monad-vm-compiler
          monad-vm-evm
          monad-vm-interpreter
@@ -326,6 +329,7 @@ add_subdirectory(${PROJECT_SOURCE_DIR}/cmd)
 # unit tests
 # ##############################################################################
 
+add_subdirectory(${PROJECT_SOURCE_DIR}/test/utils)
 add_subdirectory(${PROJECT_SOURCE_DIR}/test/ethereum_test)
 add_subdirectory(${PROJECT_SOURCE_DIR}/test/unit/common)
 add_subdirectory(${PROJECT_SOURCE_DIR}/test/vm)

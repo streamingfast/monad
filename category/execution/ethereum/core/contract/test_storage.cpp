@@ -13,8 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/core/address.hpp>
 #include <category/core/bytes.hpp>
-#include <category/execution/ethereum/core/address.hpp>
+#include <category/core/runtime/uint256.hpp>
+#include <category/execution/ethereum/core/account.hpp>
 #include <category/execution/ethereum/core/contract/big_endian.hpp>
 #include <category/execution/ethereum/core/contract/storage_array.hpp>
 #include <category/execution/ethereum/core/contract/storage_variable.hpp>
@@ -23,23 +25,27 @@
 #include <category/execution/ethereum/state2/block_state.hpp>
 #include <category/execution/ethereum/state2/state_deltas.hpp>
 #include <category/execution/ethereum/state3/state.hpp>
+#include <category/mpt/db.hpp>
 #include <category/vm/vm.hpp>
 
 #include <test_resource_data.h>
 
+#include <evmc/evmc.hpp>
 #include <gtest/gtest.h>
+
+#include <cstdint>
+#include <optional>
+#include <ostream>
 
 using namespace monad;
 using namespace monad::test;
-using namespace intx::literals;
 
 struct Storage : public ::testing::Test
 {
     static constexpr auto ADDRESS{
         0x36928500bc1dcd7af6a2b4008875cc336b927d57_address};
-    OnDiskMachine machine;
     vm::VM vm;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<OnDiskMachine>()};
     TrieDb tdb{db};
     BlockState bs{tdb, vm};
     State state{bs, Incarnation{0, 0}};
@@ -48,11 +54,11 @@ struct Storage : public ::testing::Test
     {
         commit_sequential(
             tdb,
-            StateDeltas{
-                {ADDRESS,
-                 StateDelta{
-                     .account =
-                         {std::nullopt, Account{.balance = 1, .nonce = 1}}}}},
+            sd(
+                {{ADDRESS,
+                  StateDelta{
+                      .account =
+                          {std::nullopt, Account{.balance = 1, .nonce = 1}}}}}),
             Code{},
             BlockHeader{});
         state.touch(ADDRESS);

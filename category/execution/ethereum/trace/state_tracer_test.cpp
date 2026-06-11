@@ -21,13 +21,27 @@
 #include <category/execution/ethereum/trace/state_tracer.hpp>
 #include <monad/test/traits_test.hpp>
 
+#include <category/core/address.hpp>
+#include <category/core/bytes.hpp>
+#include <category/core/int.hpp>
+#include <category/execution/ethereum/chain/chain.hpp>
+#include <category/execution/ethereum/db/trie_db.hpp>
+#include <category/execution/ethereum/db/util.hpp>
+#include <category/execution/ethereum/state2/state_deltas.hpp>
+#include <category/mpt/db.hpp>
+#include <category/vm/evm/monad/revision.h>
+#include <category/vm/evm/traits.hpp>
+#include <category/vm/vm.hpp>
+#include <evmc/evmc.h>
+#include <evmc/evmc.hpp>
+
 #include <gtest/gtest.h>
-#include <intx/intx.hpp>
 #include <nlohmann/json.hpp>
 
 #include <test_resource_data.h>
 
-#include <bit>
+#include <optional>
+#include <vector>
 
 using namespace monad;
 using namespace monad::test;
@@ -83,16 +97,12 @@ TEST(PrestateTracer, pre_state_to_json)
     prestate.emplace(ADDR_A, as);
 
     // The State setup is only used to get code
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
     commit_sequential(
-        tdb,
-        StateDeltas{},
-        Code{{A_CODE_HASH, A_ICODE}},
-        BlockHeader{.number = 0});
+        tdb, sd({}), Code{{A_CODE_HASH, A_ICODE}}, BlockHeader{.number = 0});
 
     BlockState bs(tdb, vm);
     State s(bs, Incarnation{0, 0});
@@ -126,12 +136,11 @@ TEST(PrestateTracer, zero_nonce)
     prestate.emplace(ADDR_A, as);
 
     // The State setup is only used to get code
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
-    commit_sequential(tdb, StateDeltas{}, Code{}, BlockHeader{.number = 0});
+    commit_sequential(tdb, sd({}), Code{}, BlockHeader{.number = 0});
 
     BlockState bs(tdb, vm);
     State s(bs, Incarnation{0, 0});
@@ -153,8 +162,7 @@ TEST(PrestateTracer, state_deltas_to_json)
 {
     Account a{.balance = 500, .code_hash = A_CODE_HASH, .nonce = 1};
 
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
@@ -169,7 +177,7 @@ TEST(PrestateTracer, state_deltas_to_json)
 
     commit_sequential(
         tdb,
-        state_deltas,
+        sd(state_deltas),
         Code{{A_CODE_HASH, A_ICODE}},
         BlockHeader{.number = 0});
 
@@ -200,8 +208,7 @@ TEST(PrestateTracer, statediff_account_creation)
 {
     Account a{.balance = 500, .code_hash = A_CODE_HASH, .nonce = 1};
 
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
@@ -210,7 +217,7 @@ TEST(PrestateTracer, statediff_account_creation)
 
     commit_sequential(
         tdb,
-        state_deltas,
+        sd(state_deltas),
         Code{{A_CODE_HASH, A_ICODE}},
         BlockHeader{.number = 0});
 
@@ -240,8 +247,7 @@ TEST(PrestateTracer, statediff_balance_nonce_update)
     b.nonce += 1;
     b.balance -= 100;
 
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
@@ -250,7 +256,7 @@ TEST(PrestateTracer, statediff_balance_nonce_update)
 
     commit_sequential(
         tdb,
-        state_deltas,
+        sd(state_deltas),
         Code{{A_CODE_HASH, A_ICODE}},
         BlockHeader{.number = 0});
 
@@ -285,8 +291,7 @@ TEST(PrestateTracer, statediff_delete_storage)
     b.nonce += 1;
     b.balance -= 100;
 
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
@@ -302,11 +307,11 @@ TEST(PrestateTracer, statediff_delete_storage)
 
     commit_sequential(
         tdb,
-        state_deltas1,
+        sd(state_deltas1),
         Code{{A_CODE_HASH, A_ICODE}},
         BlockHeader{.number = 0});
 
-    commit_sequential(tdb, state_deltas2, Code{}, BlockHeader{.number = 1});
+    commit_sequential(tdb, sd(state_deltas2), Code{}, BlockHeader{.number = 1});
 
     BlockState bs(tdb, vm);
     State s(bs, Incarnation{0, 0});
@@ -341,8 +346,7 @@ TEST(PrestateTracer, statediff_multiple_fields_update)
     Account a{.balance = 500, .code_hash = A_CODE_HASH, .nonce = 1};
     Account b{.balance = 42, .code_hash = B_CODE_HASH, .nonce = 2};
 
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
@@ -359,7 +363,7 @@ TEST(PrestateTracer, statediff_multiple_fields_update)
 
     commit_sequential(
         tdb,
-        state_deltas,
+        sd(state_deltas),
         Code{{A_CODE_HASH, A_ICODE}, {B_CODE_HASH, B_ICODE}},
         BlockHeader{.number = 0});
 
@@ -400,8 +404,7 @@ TEST(PrestateTracer, statediff_account_deletion)
 {
     Account a{.balance = 32, .code_hash = NULL_HASH, .nonce = 1};
 
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
@@ -409,13 +412,13 @@ TEST(PrestateTracer, statediff_account_deletion)
         {ADDR_A, StateDelta{.account = {std::nullopt, a}, .storage = {}}},
     };
 
-    commit_sequential(tdb, state_deltas1, Code{}, BlockHeader{.number = 0});
+    commit_sequential(tdb, sd(state_deltas1), Code{}, BlockHeader{.number = 0});
 
     StateDeltas state_deltas2{
         {ADDR_A, StateDelta{.account = {a, std::nullopt}, .storage = {}}},
     };
 
-    commit_sequential(tdb, state_deltas2, Code{}, BlockHeader{.number = 1});
+    commit_sequential(tdb, sd(state_deltas2), Code{}, BlockHeader{.number = 1});
 
     BlockState bs(tdb, vm);
     State s(bs, Incarnation{0, 0});
@@ -453,7 +456,7 @@ TEST(PrestateTracer, geth_example_prestate)
         .balance = 0x7a48734599f7284, .code_hash = NULL_HASH, .nonce = 1133};
     OriginalAccountState bs{b};
     Account const c{
-        .balance = intx::from_string<uint256_t>("0x2638035a26d133809"),
+        .balance = uint256_t::from_string("0x2638035a26d133809"),
         .code_hash = NULL_HASH,
         .nonce = 0};
     OriginalAccountState cs{c};
@@ -467,16 +470,12 @@ TEST(PrestateTracer, geth_example_prestate)
     prestate.emplace(addr4, as);
 
     // The State setup is only used to get code
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
     commit_sequential(
-        tdb,
-        StateDeltas{},
-        Code{{A_CODE_HASH, A_ICODE}},
-        BlockHeader{.number = 0});
+        tdb, sd({}), Code{{A_CODE_HASH, A_ICODE}}, BlockHeader{.number = 0});
 
     BlockState bs0(tdb, vm);
     State s(bs0, Incarnation{0, 0});
@@ -523,12 +522,11 @@ TEST(PrestateTracer, geth_example_statediff)
     };
 
     // The State setup is only used to get code
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
-    commit_sequential(tdb, state_deltas, Code{}, BlockHeader{.number = 0});
+    commit_sequential(tdb, sd(state_deltas), Code{}, BlockHeader{.number = 0});
 
     BlockState bs0(tdb, vm);
     State s(bs0, Incarnation{0, 0});
@@ -557,12 +555,11 @@ TEST(PrestateTracer, prestate_empty)
     trace::Map<Address, OriginalAccountState> prestate{};
 
     // The State setup is only used to get code
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
-    commit_sequential(tdb, {}, Code{}, BlockHeader{.number = 0});
+    commit_sequential(tdb, sd({}), Code{}, BlockHeader{.number = 0});
 
     BlockState bs(tdb, vm);
     State s(bs, Incarnation{0, 0});
@@ -578,12 +575,11 @@ TEST(PrestateTracer, statediff_empty)
     StateDeltas state_deltas{};
 
     // The State setup is only used to get code
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
-    commit_sequential(tdb, state_deltas, Code{}, BlockHeader{.number = 0});
+    commit_sequential(tdb, sd(state_deltas), Code{}, BlockHeader{.number = 0});
 
     BlockState bs(tdb, vm);
     State s(bs, Incarnation{0, 0});
@@ -604,12 +600,11 @@ TYPED_TEST(TraitsTest, access_list_empty)
 {
     StateDeltas state_deltas{};
 
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
-    commit_sequential(tdb, state_deltas, Code{}, BlockHeader{.number = 0});
+    commit_sequential(tdb, sd(state_deltas), Code{}, BlockHeader{.number = 0});
 
     BlockState bs(tdb, vm);
     State s(bs, Incarnation{0, 0});
@@ -622,16 +617,112 @@ TYPED_TEST(TraitsTest, access_list_empty)
     EXPECT_EQ(storage, nlohmann::json::parse("[]"));
 }
 
+TYPED_TEST(TraitsTest, access_list_state_view_excludes_rejected_frame)
+{
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
+    TrieDb tdb{db};
+    vm::VM vm;
+
+    commit_sequential(tdb, sd({}), Code{}, BlockHeader{.number = 0});
+
+    BlockState bs(tdb, vm);
+    State s(bs, Incarnation{0, 0});
+
+    s.push();
+    s.access_storage(addr4, key4);
+    s.pop_reject();
+
+    nlohmann::json storage;
+    auto const authorities = std::vector<std::optional<Address>>{};
+    AccessListTracer tracer{storage, addr1, addr2, std::nullopt, authorities};
+    tracer.encode<typename TestFixture::Trait>(s);
+
+    // Rejected frames must not leak accessed storage back into State. RPC
+    // access-list observability needs to be handled by tracer-specific capture.
+    EXPECT_EQ(storage, nlohmann::json::parse("[]"));
+}
+
+TYPED_TEST(TraitsTest, access_list_records_rejected_frame_storage)
+{
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
+    TrieDb tdb{db};
+    vm::VM vm;
+
+    commit_sequential(tdb, sd({}), Code{}, BlockHeader{.number = 0});
+
+    BlockState bs(tdb, vm);
+    State s(bs, Incarnation{0, 0});
+
+    nlohmann::json storage;
+    auto const authorities = std::vector<std::optional<Address>>{};
+    StateTracer tracer =
+        AccessListTracer{storage, addr1, addr2, std::nullopt, authorities};
+
+    s.push();
+    s.access_storage(addr4, key4);
+    on_frame_reject(tracer, s);
+    s.pop_reject();
+
+    run_tracer<typename TestFixture::Trait>(tracer, s);
+
+    auto const json_str = R"(
+        [
+            {
+                "address" : "0xc8ba32cab1757528daf49033e3673fae77dcf05d",
+                "storageKeys": [
+                    "0x0000000000000000000000000000000000000000000000000000000000000000"
+                ]
+            }
+        ]
+    )";
+
+    EXPECT_EQ(storage, nlohmann::json::parse(json_str));
+}
+
+TYPED_TEST(TraitsTest, access_list_records_rejected_frame_regular_account)
+{
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
+    TrieDb tdb{db};
+    vm::VM vm;
+
+    commit_sequential(tdb, sd({}), Code{}, BlockHeader{.number = 0});
+
+    BlockState bs(tdb, vm);
+    State s(bs, Incarnation{0, 0});
+
+    nlohmann::json storage;
+    auto const authorities = std::vector<std::optional<Address>>{};
+    StateTracer tracer =
+        AccessListTracer{storage, addr1, addr2, std::nullopt, authorities};
+
+    s.push();
+    s.access_account(addr4);
+    on_frame_reject(tracer, s);
+    s.pop_reject();
+
+    run_tracer<typename TestFixture::Trait>(tracer, s);
+
+    auto const json_str = R"(
+        [
+            {
+                "address" : "0xc8ba32cab1757528daf49033e3673fae77dcf05d",
+                "storageKeys": []
+            }
+        ]
+    )";
+
+    EXPECT_EQ(storage, nlohmann::json::parse(json_str));
+}
+
 TYPED_TEST(TraitsTest, access_list_write)
 {
     StateDeltas state_deltas{};
 
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
-    commit_sequential(tdb, state_deltas, Code{}, BlockHeader{.number = 0});
+    commit_sequential(tdb, sd(state_deltas), Code{}, BlockHeader{.number = 0});
 
     BlockState bs(tdb, vm);
     State s(bs, Incarnation{0, 0});
@@ -673,14 +764,11 @@ TYPED_TEST(TraitsTest, access_list_write)
 
 TYPED_TEST(TraitsTest, access_list_regular_account)
 {
-    StateDeltas state_deltas{};
-
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
-    commit_sequential(tdb, state_deltas, Code{}, BlockHeader{.number = 0});
+    commit_sequential(tdb, sd({}), Code{}, BlockHeader{.number = 0});
 
     BlockState bs(tdb, vm);
 
@@ -745,14 +833,11 @@ TYPED_TEST(TraitsTest, access_list_regular_account)
 
 TYPED_TEST(TraitsTest, access_list_sender)
 {
-    StateDeltas state_deltas{};
-
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
-    commit_sequential(tdb, state_deltas, Code{}, BlockHeader{.number = 0});
+    commit_sequential(tdb, sd({}), Code{}, BlockHeader{.number = 0});
 
     BlockState bs(tdb, vm);
 
@@ -806,14 +891,11 @@ TYPED_TEST(TraitsTest, access_list_sender)
 
 TYPED_TEST(TraitsTest, access_list_beneficiary)
 {
-    StateDeltas state_deltas{};
-
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
-    commit_sequential(tdb, state_deltas, Code{}, BlockHeader{.number = 0});
+    commit_sequential(tdb, sd({}), Code{}, BlockHeader{.number = 0});
 
     BlockState bs(tdb, vm);
 
@@ -867,14 +949,11 @@ TYPED_TEST(TraitsTest, access_list_beneficiary)
 
 TYPED_TEST(TraitsTest, access_list_recipient)
 {
-    StateDeltas state_deltas{};
-
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
-    commit_sequential(tdb, state_deltas, Code{}, BlockHeader{.number = 0});
+    commit_sequential(tdb, sd({}), Code{}, BlockHeader{.number = 0});
 
     BlockState bs(tdb, vm);
 
@@ -928,14 +1007,11 @@ TYPED_TEST(TraitsTest, access_list_recipient)
 
 TYPED_TEST(TraitsTest, access_list_authorities)
 {
-    StateDeltas state_deltas{};
-
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
-    commit_sequential(tdb, state_deltas, Code{}, BlockHeader{.number = 0});
+    commit_sequential(tdb, sd({}), Code{}, BlockHeader{.number = 0});
 
     BlockState bs(tdb, vm);
 
@@ -1002,14 +1078,11 @@ TYPED_TEST(TraitsTest, access_list_authorities)
 
 TYPED_TEST(TraitsTest, access_list_precompiles)
 {
-    StateDeltas state_deltas{};
-
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
-    commit_sequential(tdb, state_deltas, Code{}, BlockHeader{.number = 0});
+    commit_sequential(tdb, sd({}), Code{}, BlockHeader{.number = 0});
 
     BlockState bs(tdb, vm);
 
@@ -1057,8 +1130,7 @@ TYPED_TEST(TraitsTest, access_list_precompiles)
 TEST(PrestateTracer, prestate_access_storage)
 {
     // Setup matter
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
@@ -1067,13 +1139,13 @@ TEST(PrestateTracer, prestate_access_storage)
     // Block 0
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ADDR_A,
-             StateDelta{
-                 .account = {std::nullopt, a},
-                 .storage = {StorageDeltas{
-                     {key1, {bytes32_t{}, value1}},
-                     {key2, {bytes32_t{}, value2}}}}}}},
+        sd(
+            {{ADDR_A,
+              StateDelta{
+                  .account = {std::nullopt, a},
+                  .storage = {StorageDeltas{
+                      {key1, {bytes32_t{}, value1}},
+                      {key2, {bytes32_t{}, value2}}}}}}}),
         {},
         BlockHeader{.number = 0});
 
@@ -1129,8 +1201,7 @@ TEST(PrestateTracer, prestate_access_storage)
 TEST(PrestateTracer, prestate_retain_beneficiary_set_storage)
 {
     // Setup matter
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
@@ -1139,8 +1210,7 @@ TEST(PrestateTracer, prestate_retain_beneficiary_set_storage)
     // Block 0
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ADDR_A, StateDelta{.account = {std::nullopt, a}, .storage = {}}}},
+        sd({{ADDR_A, StateDelta{.account = {std::nullopt, a}, .storage = {}}}}),
         {},
         BlockHeader{.number = 0});
 
@@ -1199,8 +1269,7 @@ TEST(PrestateTracer, prestate_retain_beneficiary_set_storage)
 TEST(PrestateTracer, prestate_retain_beneficiary_modified_storage)
 {
     // Setup matter
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
@@ -1209,11 +1278,11 @@ TEST(PrestateTracer, prestate_retain_beneficiary_modified_storage)
     // Block 0
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ADDR_A,
-             StateDelta{
-                 .account = {std::nullopt, a},
-                 .storage = {{key1, {bytes32_t{}, value1}}}}}},
+        sd(
+            {{ADDR_A,
+              StateDelta{
+                  .account = {std::nullopt, a},
+                  .storage = {{key1, {bytes32_t{}, value1}}}}}}),
         {},
         BlockHeader{.number = 0});
 
@@ -1277,8 +1346,7 @@ TEST(PrestateTracer, prestate_retain_beneficiary_modified_storage)
 TEST(PrestateTracer, prestate_retain_beneficiary_modified_balance)
 {
     // Setup matter
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
@@ -1287,8 +1355,7 @@ TEST(PrestateTracer, prestate_retain_beneficiary_modified_balance)
     // Block 0
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ADDR_A, StateDelta{.account = {std::nullopt, a}, .storage = {}}}},
+        sd({{ADDR_A, StateDelta{.account = {std::nullopt, a}, .storage = {}}}}),
         {},
         BlockHeader{.number = 0});
 
@@ -1349,8 +1416,7 @@ TEST(PrestateTracer, prestate_retain_beneficiary_modified_balance)
 TEST(PrestateTracer, prestate_retain_beneficiary_modified_nonce)
 {
     // Setup matter
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
@@ -1359,8 +1425,7 @@ TEST(PrestateTracer, prestate_retain_beneficiary_modified_nonce)
     // Block 0
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ADDR_A, StateDelta{.account = {std::nullopt, a}, .storage = {}}}},
+        sd({{ADDR_A, StateDelta{.account = {std::nullopt, a}, .storage = {}}}}),
         {},
         BlockHeader{.number = 0});
 
@@ -1417,8 +1482,7 @@ TEST(PrestateTracer, prestate_retain_beneficiary_modified_nonce)
 TEST(PrestateTracer, prestate_retain_beneficiary_modified_code_hash)
 {
     // Setup matter
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
@@ -1427,8 +1491,7 @@ TEST(PrestateTracer, prestate_retain_beneficiary_modified_code_hash)
     // Block 0
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ADDR_A, StateDelta{.account = {std::nullopt, a}, .storage = {}}}},
+        sd({{ADDR_A, StateDelta{.account = {std::nullopt, a}, .storage = {}}}}),
         Code{{A_CODE_HASH, A_ICODE}},
         BlockHeader{.number = 0});
 
@@ -1488,8 +1551,7 @@ TEST(PrestateTracer, prestate_retain_beneficiary_modified_code_hash)
 TEST(PrestateTracer, prestate_retain_beneficiary_access_storage)
 {
     // Setup matter
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
@@ -1498,13 +1560,13 @@ TEST(PrestateTracer, prestate_retain_beneficiary_access_storage)
     // Block 0
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ADDR_A,
-             StateDelta{
-                 .account = {std::nullopt, a},
-                 .storage = {StorageDeltas{
-                     {key1, {bytes32_t{}, value1}},
-                     {key2, {bytes32_t{}, value2}}}}}}},
+        sd(
+            {{ADDR_A,
+              StateDelta{
+                  .account = {std::nullopt, a},
+                  .storage = {StorageDeltas{
+                      {key1, {bytes32_t{}, value1}},
+                      {key2, {bytes32_t{}, value2}}}}}}}),
         {},
         BlockHeader{.number = 0});
 
@@ -1560,8 +1622,7 @@ TEST(PrestateTracer, prestate_retain_beneficiary_access_storage)
 TEST(PrestateTracer, prestate_omit_beneficiary)
 {
     // Setup matter
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
@@ -1570,8 +1631,7 @@ TEST(PrestateTracer, prestate_omit_beneficiary)
     // Block 0
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ADDR_A, StateDelta{.account = {std::nullopt, a}, .storage = {}}}},
+        sd({{ADDR_A, StateDelta{.account = {std::nullopt, a}, .storage = {}}}}),
         {},
         BlockHeader{.number = 0});
 
@@ -1615,8 +1675,7 @@ TEST(PrestateTracer, prestate_omit_beneficiary)
 TEST(PrestateTracer, prestate_empty_block_no_reward)
 {
     // Setup matter
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
@@ -1624,7 +1683,7 @@ TEST(PrestateTracer, prestate_empty_block_no_reward)
     Block const block{header, {}, {}};
 
     // Block 0
-    commit_sequential(tdb, {}, {}, header);
+    commit_sequential(tdb, sd({}), {}, header);
 
     BlockState bs(tdb, vm);
     State s(bs, Incarnation{0, 0});

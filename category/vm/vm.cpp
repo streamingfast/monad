@@ -13,10 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/core/assert.h>
+#include <category/core/bytes.hpp>
+#include <category/core/likely.h>
+#include <category/core/log.hpp>
 #include <category/vm/code.hpp>
 #include <category/vm/compiler/ir/x86.hpp>
 #include <category/vm/compiler/ir/x86/types.hpp>
-#include <category/vm/core/assert.h>
 #include <category/vm/evm/explicit_traits.hpp>
 #include <category/vm/evm/traits.hpp>
 #include <category/vm/host.hpp>
@@ -27,24 +30,34 @@
 #include <evmc/evmc.h>
 #include <evmc/evmc.hpp>
 
+#include <quill/Quill.h>
+
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
+#include <string>
 
 namespace monad::vm
 {
     using namespace monad::vm::utils;
 
-    VM::VM(bool enable_async)
-        : compiler_{enable_async}
+    VM::VM(Mode const mode)
+        : mode_{mode}
+        , compiler_{mode == Dual}
         , stack_allocator_{}
         , memory_pool_{8 * 1024 * 1024}
     {
+        if (MONAD_UNLIKELY(mode == CompilerOnly)) {
+            compiler_.enable_always_cold_cache();
+        }
     }
 
     template <Traits traits>
     evmc::Result VM::execute(
-        Host &host, evmc_message const *msg, evmc::bytes32 const &code_hash,
+        Host &host, evmc_message const *msg, bytes32_t const &code_hash,
         SharedVarcode const &vcode)
     {
         auto const *const host_itf = &host.get_interface();
@@ -97,24 +110,22 @@ namespace monad::vm
 
     template <Traits traits>
     evmc::Result VM::execute_raw(
-        runtime::Context &rt_ctx, evmc::bytes32 const &code_hash,
+        runtime::Context &rt_ctx, bytes32_t const &code_hash,
         SharedVarcode const &vcode)
     {
         auto const &icode = vcode->intercode();
         auto const &ncode = vcode->nativecode();
         auto const msg_gas = rt_ctx.gas_remaining;
-        if (MONAD_VM_LIKELY(ncode != nullptr)) {
+        if (MONAD_LIKELY(ncode != nullptr)) {
             // The bytecode is compiled.
-            if (MONAD_VM_UNLIKELY(ncode->chain_id() != traits::id())) {
+            if (MONAD_UNLIKELY(ncode->chain_id() != traits::id())) {
                 // Revision change. The bytecode was compiled pre revision
-                // change, so start async compilation immediately for the
-                // new revision. Execute with interpreter in the meantime.
-                compiler_.async_compile<traits>(
-                    code_hash, icode, compiler_config_);
-                return execute_intercode_raw<traits>(rt_ctx, icode);
+                // change. Start compilation immediately for the new revision.
+                return cached_compile_and_execute_raw<traits>(
+                    rt_ctx, code_hash, icode);
             }
             auto const entry = ncode->entrypoint();
-            if (MONAD_VM_UNLIKELY(entry == nullptr)) {
+            if (MONAD_UNLIKELY(entry == nullptr)) {
                 // Compilation has failed in this revision, so just execute
                 // with interpreter.
                 return execute_intercode_raw<traits>(rt_ctx, icode);
@@ -124,10 +135,11 @@ namespace monad::vm
             return execute_native_entrypoint_raw<traits>(rt_ctx, entry);
         }
         if (!compiler_.is_varcode_cache_warm()) {
-            // If cache is not warm then start async compilation
-            // immediately, and execute with interpreter in the meantime.
-            compiler_.async_compile<traits>(code_hash, icode, compiler_config_);
-            return execute_intercode_raw<traits>(rt_ctx, icode);
+            // If cache is not warm then start compilation immediately.
+            // In CompilerOnly mode, the cache is always cold, so this
+            // branch is always taken in CompilerOnly mode.
+            return cached_compile_and_execute_raw<traits>(
+                rt_ctx, code_hash, icode);
         }
         // Execute with interpreter. We will start async compilation when
         // the accumulated execution gas spent by interpreter on the
@@ -135,8 +147,8 @@ namespace monad::vm
         auto result = execute_intercode_raw<traits>(rt_ctx, icode);
         auto const bound = compiler::native::max_code_size(
             compiler_config_.max_code_size_offset, icode->code_size());
-        MONAD_VM_DEBUG_ASSERT(result.gas_left >= 0);
-        MONAD_VM_DEBUG_ASSERT(msg_gas >= result.gas_left);
+        MONAD_DEBUG_ASSERT(result.gas_left >= 0);
+        MONAD_DEBUG_ASSERT(msg_gas >= result.gas_left);
         uint64_t const gas_used =
             static_cast<uint64_t>(msg_gas - result.gas_left);
         // Note that execution gas is counted for the second time via the
@@ -148,6 +160,29 @@ namespace monad::vm
     }
 
     EXPLICIT_TRAITS_MEMBER(VM::execute_raw);
+
+    template <Traits traits>
+    evmc::Result VM::cached_compile_and_execute_raw(
+        runtime::Context &rt_ctx, bytes32_t const &code_hash,
+        SharedIntercode const &icode)
+    {
+        if (MONAD_UNLIKELY(mode_ == CompilerOnly)) {
+            auto const ncode = compiler_.cached_compile<traits>(
+                code_hash, icode, compiler_config_);
+            auto const entry = ncode->entrypoint();
+            if (MONAD_LIKELY(entry != nullptr)) {
+                return execute_native_entrypoint_raw<traits>(rt_ctx, entry);
+            }
+            LOG_WARNING("WARNING: VM: fallback to interpreter: "
+                        "compilation failed in CompilerOnly mode.");
+        }
+        else {
+            compiler_.async_compile<traits>(code_hash, icode, compiler_config_);
+        }
+        return execute_intercode_raw<traits>(rt_ctx, icode);
+    }
+
+    EXPLICIT_TRAITS_MEMBER(VM::cached_compile_and_execute_raw);
 
     template <Traits traits>
     evmc::Result VM::execute_bytecode_raw(
@@ -190,4 +225,40 @@ namespace monad::vm
     }
 
     EXPLICIT_TRAITS_MEMBER(VM::execute_native_entrypoint_raw);
+
+    std::string VM::mode_to_string(Mode const mode)
+    {
+        switch (mode) {
+        case Dual:
+            return "Dual";
+        case CompilerOnly:
+            return "CompilerOnly";
+        case InterpreterOnly:
+            return "InterpreterOnly";
+        }
+        MONAD_ABORT();
+    }
+
+    std::optional<VM::Mode> VM::mode_from_string(std::string s)
+    {
+        std::transform(s.begin(), s.end(), s.begin(), [](auto const c) {
+            return std::tolower(c);
+        });
+        if (s == "dual") {
+            return Dual;
+        }
+        if (s == "compileronly") {
+            return CompilerOnly;
+        }
+        if (s == "interpreteronly") {
+            return InterpreterOnly;
+        }
+        return std::nullopt;
+    }
+
+    std::array<VM::Mode, 3> const VM::all_modes{
+        Dual, CompilerOnly, InterpreterOnly};
+
+    std::array<std::string, 3> const VM::all_mode_names{
+        "Dual", "CompilerOnly", "InterpreterOnly"};
 }

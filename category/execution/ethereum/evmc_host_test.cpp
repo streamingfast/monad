@@ -17,28 +17,29 @@
 #include <category/core/bytes.hpp>
 #include <category/core/int.hpp>
 #include <category/execution/ethereum/block_hash_buffer.hpp>
+#include <category/execution/ethereum/chain/chain.hpp>
 #include <category/execution/ethereum/chain/ethereum_mainnet.hpp>
 #include <category/execution/ethereum/core/block.hpp>
 #include <category/execution/ethereum/core/transaction.hpp>
 #include <category/execution/ethereum/db/trie_db.hpp>
+#include <category/execution/ethereum/db/util.hpp>
 #include <category/execution/ethereum/evmc_host.hpp>
 #include <category/execution/ethereum/state2/block_state.hpp>
 #include <category/execution/ethereum/state3/state.hpp>
+#include <category/execution/ethereum/trace/call_tracer.hpp>
 #include <category/execution/ethereum/tx_context.hpp>
 #include <category/execution/monad/chain/monad_chain.hpp>
+#include <category/vm/vm.hpp>
 
 #include <monad/test/traits_test.hpp>
 
 #include <evmc/evmc.h>
 #include <evmc/evmc.hpp>
 
-#include <intx/intx.hpp>
-
 #include <gtest/gtest.h>
 
 #include <cstdint>
 #include <cstring>
-#include <optional>
 
 using namespace monad;
 
@@ -106,9 +107,9 @@ TYPED_TEST(TraitsTest, get_tx_context)
         .block_gas_limit = 50'000,
         .block_prev_randao = evmc::uint256be{10'000'000u},
     };
-    intx::be::store(ctx.chain_id.bytes, uint256_t{chain_id});
-    intx::be::store(ctx.tx_gas_price.bytes, gas_cost);
-    intx::be::store(ctx.block_base_fee.bytes, base_fee_per_gas);
+    ctx.chain_id = store_be_as<evmc::uint256be>(uint256_t{chain_id});
+    ctx.tx_gas_price = store_be_as<evmc::uint256be>(gas_cost);
+    ctx.block_base_fee = store_be_as<evmc::uint256be>(base_fee_per_gas);
     EXPECT_EQ(result, ctx);
 
     hdr.difficulty = 0;
@@ -129,11 +130,10 @@ TYPED_TEST(TraitsTest, emit_log)
         0x1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c_bytes32};
     static constexpr auto topic1{
         0x0000000000000000000000000000000000000000000000000000000000000007_bytes32};
-    static constexpr bytes32_t topics[] = {topic0, topic1};
+    static constexpr evmc::bytes32 topics[] = {topic0, topic1};
     static byte_string const data = {0x00, 0x01, 0x02, 0x03, 0x04};
 
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     db_t tdb{db};
     vm::VM vm;
     BlockState bs{tdb, vm};
@@ -144,8 +144,10 @@ TYPED_TEST(TraitsTest, emit_log)
     auto const chain_ctx =
         ChainContext<typename TestFixture::Trait>::debug_empty();
     uint256_t base_fee{0};
+    trace::StateTracer noop_state_tracer = std::monostate{};
     EvmcHost<typename TestFixture::Trait> host{
         call_tracer,
+        noop_state_tracer,
         EMPTY_TX_CONTEXT,
         block_hash_buffer,
         state,
@@ -154,12 +156,7 @@ TYPED_TEST(TraitsTest, emit_log)
         0,
         chain_ctx};
 
-    host.emit_log(
-        from,
-        data.data(),
-        data.size(),
-        topics,
-        sizeof(topics) / sizeof(bytes32_t));
+    host.emit_log(from, data.data(), data.size(), topics, std::size(topics));
 
     auto const logs = state.logs();
     EXPECT_EQ(logs.size(), 1);
@@ -172,8 +169,7 @@ TYPED_TEST(TraitsTest, emit_log)
 
 TYPED_TEST(TraitsTest, access_precompile)
 {
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     db_t tdb{db};
     vm::VM vm;
     BlockState bs{tdb, vm};
@@ -184,8 +180,10 @@ TYPED_TEST(TraitsTest, access_precompile)
     auto const chain_ctx =
         ChainContext<typename TestFixture::Trait>::debug_empty();
     uint256_t base_fee{0};
+    trace::StateTracer noop_state_tracer = std::monostate{};
     EvmcHost<typename TestFixture::Trait> host{
         call_tracer,
+        noop_state_tracer,
         EMPTY_TX_CONTEXT,
         block_hash_buffer,
         state,

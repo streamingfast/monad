@@ -33,7 +33,7 @@ include("cmake/find_our_dependency.cmake")
 
 find_package(
   Boost CONFIG REQUIRED
-  COMPONENTS context fiber stacktrace_basic
+  COMPONENTS context stacktrace_basic
   OPTIONAL_COMPONENTS stacktrace_backtrace)
 
 function(check_if_boost_fiber_needs_ucontext_macro)
@@ -70,8 +70,10 @@ add_library(
   # config
   "config.hpp"
   # core
+  "address.hpp"
   "assert.c"
   "assert.h"
+  "assume.h"
   "backtrace.cpp"
   "backtrace.hpp"
   "basic_formatter.hpp"
@@ -79,6 +81,7 @@ add_library(
   "byte_string.hpp"
   "bytes.hpp"
   "bytes_hash_compare.hpp"
+  "cases.hpp"
   "cleanup.h"
   "cleanup.c"
   "cpu_relax.h"
@@ -94,6 +97,8 @@ add_library(
   "keccak.h"
   "keccak.hpp"
   "likely.h"
+  "log.cpp"
+  "log.hpp"
   "log_ffi.cpp"
   "log_ffi.h"
   "math.hpp"
@@ -109,7 +114,7 @@ add_library(
   "srcloc.h"
   "tl_tid.c"
   "tl_tid.h"
-  "unaligned.hpp"
+  "detail/start_lifetime_as_polyfill.hpp"
   "lru/lru_cache.hpp"
   "lru/static_lru_cache.hpp"
   "mem/batch_mem_pool.hpp"
@@ -148,10 +153,13 @@ add_library(
   "mem/align.h"
   # rlp
   "rlp/config.hpp"
+  "rlp/decode_error.cpp"
+  "rlp/decode_error.hpp"
   "rlp/encode.hpp"
   # runtime
   "runtime/non_temporal_memory.hpp"
   "runtime/uint256.hpp"
+  "runtime/unaligned.hpp"
   # test
   "test_util/gtest_signal_stacktrace_printer.hpp"
   # util
@@ -212,7 +220,6 @@ target_link_libraries(monad_core PUBLIC komihash)
 target_link_libraries(monad_core PUBLIC blake3)
 target_link_libraries(monad_core PUBLIC ethash::keccak)
 target_link_libraries(monad_core PUBLIC evmc)
-target_link_libraries(monad_core PUBLIC intx)
 target_link_libraries(monad_core PUBLIC quill)
 target_link_libraries(monad_core PUBLIC unordered_dense)
 target_link_libraries(monad_core PUBLIC PkgConfig::zstd)

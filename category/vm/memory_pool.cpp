@@ -13,8 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/core/assert.h>
 #include <category/core/runtime/non_temporal_memory.hpp>
-#include <category/vm/core/assert.h>
 #include <category/vm/memory_pool.hpp>
 
 #include <cstdint>
@@ -25,12 +25,12 @@
 
 namespace monad::vm
 {
-    MemoryPool::MemoryPool(std::uint32_t alloc_capacity)
+    MemoryPool::MemoryPool(uint32_t const alloc_capacity)
         : empty_head_{.next = &empty_head_}
         , head_{&empty_head_}
         , alloc_capacity_{alloc_capacity}
     {
-        MONAD_VM_ASSERT((alloc_capacity & 31) == 0);
+        MONAD_ASSERT((alloc_capacity & 31) == 0);
     }
 
     MemoryPool::~MemoryPool()
@@ -43,7 +43,7 @@ namespace monad::vm
         }
     }
 
-    std::uint8_t *MemoryPool::alloc()
+    uint8_t *MemoryPool::alloc()
     {
         Node *old_head;
         {
@@ -54,19 +54,19 @@ namespace monad::vm
 
         if (old_head == &empty_head_) {
             void *const p = std::aligned_alloc(32, alloc_capacity_);
-            MONAD_VM_ASSERT(p);
+            MONAD_ASSERT(p);
             runtime::non_temporal_bzero(p, alloc_capacity_);
-            return reinterpret_cast<std::uint8_t *>(p);
+            return reinterpret_cast<uint8_t *>(p);
         }
 
         // This clears the memory buffer:
         std::memset(static_cast<void *>(&old_head->next), 0, sizeof(Node *));
-        return reinterpret_cast<std::uint8_t *>(old_head);
+        return reinterpret_cast<uint8_t *>(old_head);
     }
 
-    void MemoryPool::dealloc(std::uint8_t *p)
+    void MemoryPool::dealloc(uint8_t *const p)
     {
-        MONAD_VM_DEBUG_ASSERT((reinterpret_cast<uintptr_t>(p) & 31) == 0);
+        MONAD_DEBUG_ASSERT((reinterpret_cast<uintptr_t>(p) & 31) == 0);
         static_assert(alignof(Node) <= 32);
         Node *const new_head = reinterpret_cast<Node *>(p);
         {
@@ -89,9 +89,9 @@ namespace monad::vm
         return true;
     }
 
-    std::size_t MemoryPool::debug_get_cache_size() const
+    size_t MemoryPool::debug_get_cache_size() const
     {
-        std::size_t x = 0;
+        size_t x = 0;
         Node *n = head_;
         while (n != &empty_head_) {
             ++x;

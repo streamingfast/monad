@@ -20,8 +20,8 @@
 #include <category/core/likely.h>
 #include <category/core/result.hpp>
 #include <category/core/rlp/config.hpp>
+#include <category/core/rlp/decode_error.hpp>
 #include <category/execution/ethereum/rlp/decode.hpp>
-#include <category/execution/ethereum/rlp/decode_error.hpp>
 #include <category/execution/ethereum/rlp/encode2.hpp>
 
 #include <boost/outcome/try.hpp>
@@ -34,13 +34,13 @@ inline byte_string encode_unsigned(unsigned_integral auto const &n)
 }
 
 template <unsigned_integral T>
-constexpr Result<T> decode_unsigned(byte_string_view &enc)
+inline Result<T> decode_unsigned(byte_string_view &enc)
 {
     BOOST_OUTCOME_TRY(auto const payload, parse_string_metadata(enc));
     return decode_raw_num<T>(payload);
 }
 
-constexpr Result<bool> decode_bool(byte_string_view &enc)
+inline Result<bool> decode_bool(byte_string_view &enc)
 {
     BOOST_OUTCOME_TRY(auto const i, decode_unsigned<uint64_t>(enc));
 

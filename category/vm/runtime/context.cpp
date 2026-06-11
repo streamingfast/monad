@@ -13,10 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/core/address.hpp>
+#include <category/core/assert.h>
+#include <category/core/bytes.hpp>
+#include <category/core/cases.hpp>
+#include <category/core/likely.h>
 #include <category/core/runtime/non_temporal_memory.hpp>
 #include <category/core/runtime/uint256.hpp>
-#include <category/vm/core/assert.h>
-#include <category/vm/core/cases.hpp>
 #include <category/vm/evm/explicit_traits.hpp>
 #include <category/vm/evm/traits.hpp>
 #include <category/vm/runtime/bin.hpp>
@@ -41,10 +44,10 @@ static_assert(alignof(Bin<31>) == alignof(uint32_t));
 static_assert(std::is_standard_layout_v<Bin<31>>);
 
 extern "C" void monad_vm_runtime_increase_capacity(
-    Context *ctx, uint32_t old_size, Bin<30> new_size)
+    Context *const ctx, uint32_t const old_size, Bin<30> const new_size)
 {
-    MONAD_VM_DEBUG_ASSERT((*new_size & 31) == 0);
-    MONAD_VM_DEBUG_ASSERT(old_size < *new_size);
+    MONAD_DEBUG_ASSERT((*new_size & 31) == 0);
+    MONAD_DEBUG_ASSERT(old_size < *new_size);
 
     Bin<30> const parent_total_size = ctx->memory.parent_total_size();
 
@@ -52,15 +55,15 @@ extern "C" void monad_vm_runtime_increase_capacity(
         parent_total_size + Bin<30>::unsafe_from(old_size);
     Bin<31> const new_total_size = parent_total_size + new_size;
 
-    MONAD_VM_DEBUG_ASSERT((*new_total_size & 31) == 0);
+    MONAD_DEBUG_ASSERT((*new_total_size & 31) == 0);
 
     Bin<32> const new_total_capacity = shl<1>(new_total_size);
 
-    MONAD_VM_DEBUG_ASSERT((*new_total_capacity & 31) == 0);
+    MONAD_DEBUG_ASSERT((*new_total_capacity & 31) == 0);
 
     auto *const new_handle =
         static_cast<uint8_t *>(std::aligned_alloc(32, *new_total_capacity));
-    MONAD_VM_ASSERT(new_handle);
+    MONAD_ASSERT(new_handle);
 
     non_temporal_memcpy(new_handle, ctx->memory.data_handle, *old_total_size);
     non_temporal_bzero(
@@ -76,16 +79,17 @@ namespace monad::vm::runtime
 {
     namespace
     {
-        void release_result(evmc_result const *result)
+        void release_result(evmc_result const *const result)
         {
-            MONAD_VM_DEBUG_ASSERT(result);
-            std::free(const_cast<std::uint8_t *>(result->output_data));
+            MONAD_DEBUG_ASSERT(result);
+            std::free(const_cast<uint8_t *>(result->output_data));
         }
     }
 
     Context Context::from(
-        evmc_host_interface const *host, evmc_host_context *context,
-        evmc_message const *msg, std::span<std::uint8_t const> code) noexcept
+        evmc_host_interface const *const host, evmc_host_context *const context,
+        evmc_message const *const msg,
+        std::span<uint8_t const> const code) noexcept
     {
         return Context{
             .host = host,
@@ -98,14 +102,13 @@ namespace monad::vm::runtime
                     .depth = msg->depth,
                     .recipient = msg->recipient,
                     .sender = msg->sender,
-                    .value = msg->value,
-                    .create2_salt = msg->create2_salt,
+                    .value = static_cast<bytes32_t>(msg->value),
+                    .create2_salt = static_cast<bytes32_t>(msg->create2_salt),
                     .input_data = msg->input_data,
                     .code = code.data(),
                     .return_data = {},
-                    .input_data_size =
-                        static_cast<std::uint32_t>(msg->input_size),
-                    .code_size = static_cast<std::uint32_t>(code.size()),
+                    .input_data_size = static_cast<uint32_t>(msg->input_size),
+                    .code_size = static_cast<uint32_t>(code.size()),
                     .return_data_size = 0,
                     .tx_context = host->get_tx_context(context),
                 },
@@ -116,8 +119,7 @@ namespace monad::vm::runtime
     }
 
     Context Context::empty(
-        std::uint8_t *const memory_handle,
-        std::uint32_t memory_capacity) noexcept
+        uint8_t *const memory_handle, uint32_t const memory_capacity) noexcept
     {
         return Context{
             .host = nullptr,
@@ -128,10 +130,10 @@ namespace monad::vm::runtime
                 {
                     .evmc_flags = 0,
                     .depth = 0,
-                    .recipient = evmc::address{},
-                    .sender = evmc::address{},
-                    .value = evmc::bytes32{},
-                    .create2_salt = evmc::bytes32{},
+                    .recipient = Address{},
+                    .sender = Address{},
+                    .value = bytes32_t{},
+                    .create2_salt = bytes32_t{},
                     .input_data = nullptr,
                     .code = {},
                     .return_data = {},
@@ -145,7 +147,8 @@ namespace monad::vm::runtime
         };
     }
 
-    void Context::increase_capacity(uint32_t old_size, Bin<30> new_size)
+    void
+    Context::increase_capacity(uint32_t const old_size, Bin<30> const new_size)
     {
         monad_vm_runtime_increase_capacity(this, old_size, new_size);
     }
@@ -165,7 +168,7 @@ namespace monad::vm::runtime
     }
 
     template <Traits traits>
-    std::variant<std::span<std::uint8_t const>, evmc_status_code>
+    std::variant<std::span<uint8_t const>, evmc_status_code>
     Context::copy_result_data()
     {
         if (gas_remaining < 0) {
@@ -180,7 +183,7 @@ namespace monad::vm::runtime
         auto const size =
             Memory::Offset::unsafe_from(static_cast<uint32_t>(size_word));
         if (*size == 0) {
-            return std::span<std::uint8_t const>({});
+            return std::span<uint8_t const>({});
         }
 
         auto const offset_word = std::bit_cast<uint256_t>(result.offset);
@@ -200,9 +203,9 @@ namespace monad::vm::runtime
         // deduplicate the two cases in which we need to allocate an output
         // buffer (when the memory is already big enough, and when we've paid
         // the cost of a necessary expansion).
-        std::uint8_t *output_buf = nullptr;
+        uint8_t *output_buf = nullptr;
         auto allocate_output_buf = [size] {
-            return reinterpret_cast<std::uint8_t *>(std::malloc(*size));
+            return reinterpret_cast<uint8_t *>(std::malloc(*size));
         };
 
         if (*memory_end <= memory.size) {
@@ -210,8 +213,7 @@ namespace monad::vm::runtime
             std::memcpy(output_buf, memory.data + *offset, *size);
         }
         else {
-            if (MONAD_VM_UNLIKELY(
-                    !is_memory_size_in_bound<traits>(memory_end))) {
+            if (MONAD_UNLIKELY(!is_memory_size_in_bound<traits>(memory_end))) {
                 // Return out-of-gas error code, similar to when an
                 // `is_bounded_by_bits` check fails.
                 return EVMC_OUT_OF_GAS;
@@ -248,20 +250,19 @@ namespace monad::vm::runtime
     {
         using enum StatusCode;
 
-        if (MONAD_VM_UNLIKELY(result.status == Error)) {
+        if (MONAD_UNLIKELY(result.status == Error)) {
             return evmc_error_result(EVMC_FAILURE);
         }
-        if (MONAD_VM_UNLIKELY(result.status == OutOfGas)) {
+        if (MONAD_UNLIKELY(result.status == OutOfGas)) {
             return evmc_error_result(EVMC_OUT_OF_GAS);
         }
 
-        MONAD_VM_DEBUG_ASSERT(
-            result.status == Success || result.status == Revert);
+        MONAD_DEBUG_ASSERT(result.status == Success || result.status == Revert);
 
         return std::visit(
             Cases{
                 [](evmc_status_code ec) { return evmc_error_result(ec); },
-                [this](std::span<std::uint8_t const> output) {
+                [this](std::span<uint8_t const> output) {
                     return evmc::Result{evmc_result{
                         .status_code = result.status == Success ? EVMC_SUCCESS
                                                                 : EVMC_REVERT,

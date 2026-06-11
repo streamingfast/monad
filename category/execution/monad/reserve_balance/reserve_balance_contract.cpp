@@ -13,15 +13,25 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-#include <category/execution/ethereum/core/contract/abi_decode.hpp>
+#include <category/core/byte_string.hpp>
+#include <category/core/config.hpp>
+#include <category/core/int.hpp>
+#include <category/core/likely.h>
+#include <category/core/result.hpp>
 #include <category/execution/ethereum/core/contract/abi_encode.hpp>
 #include <category/execution/ethereum/core/contract/abi_signatures.hpp>
-#include <category/execution/ethereum/core/contract/events.hpp>
-#include <category/execution/ethereum/core/contract/storage_variable.hpp>
 #include <category/execution/ethereum/reserve_balance.hpp>
+#include <category/execution/ethereum/trace/call_tracer.hpp>
 #include <category/execution/monad/reserve_balance/reserve_balance_contract.hpp>
 #include <category/execution/monad/reserve_balance/reserve_balance_error.hpp>
 #include <category/vm/evm/explicit_traits.hpp>
+
+#include <category/vm/evm/traits.hpp>
+#include <evmc/evmc.h>
+
+#include <algorithm>
+#include <cstdint>
+#include <utility>
 
 #include <boost/outcome/success_failure.hpp>
 #include <boost/outcome/try.hpp>
@@ -64,11 +74,11 @@ ReserveBalanceContract::ReserveBalanceContract(
     state_.add_to_balance(RESERVE_BALANCE_CA, 0);
 }
 
-Result<void> function_not_payable(evmc_uint256be const &value)
+Result<void> function_not_payable(uint256_be_t const &value)
 {
     bool const all_zero = std::all_of(
         value.bytes,
-        value.bytes + sizeof(evmc_uint256be),
+        value.bytes + sizeof(uint256_be_t),
         [](uint8_t const byte) { return byte == 0; });
 
     if (MONAD_UNLIKELY(!all_zero)) {
@@ -85,8 +95,7 @@ ReserveBalanceContract::precompile_dispatch(byte_string_view &input)
         return {&ReserveBalanceContract::precompile_fallback, FALLBACK_COST};
     }
 
-    auto const signature =
-        intx::be::unsafe::load<uint32_t>(input.substr(0, 4).data());
+    auto const signature = load_be_unsafe<uint32_t>(input.substr(0, 4).data());
     input.remove_prefix(4);
 
     switch (signature) {
@@ -103,8 +112,7 @@ EXPLICIT_MONAD_TRAITS(ReserveBalanceContract::precompile_dispatch);
 
 template <Traits traits>
 Result<byte_string> ReserveBalanceContract::precompile_dipped_into_reserve(
-    byte_string_view input, evmc_address const &,
-    evmc_uint256be const &msg_value)
+    byte_string_view input, Address const &, uint256_be_t const &msg_value)
 {
     BOOST_OUTCOME_TRY(function_not_payable(msg_value));
 
@@ -120,7 +128,7 @@ EXPLICIT_MONAD_TRAITS_MEMBER(
     ReserveBalanceContract::precompile_dipped_into_reserve);
 
 Result<byte_string> ReserveBalanceContract::precompile_fallback(
-    byte_string_view, evmc_address const &, evmc_uint256be const &)
+    byte_string_view, Address const &, uint256_be_t const &)
 {
     return ReserveBalanceError::MethodNotSupported;
 }

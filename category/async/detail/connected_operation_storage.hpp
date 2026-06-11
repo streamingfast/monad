@@ -51,7 +51,7 @@ namespace detail
         }
 
         bool if_within_completions_add_to_pending_initiations(
-            erased_connected_operation *op)
+            erased_connected_operation *const op)
         {
             erased_connected_operation::rbtree_node_traits::set_parent(
                 op,
@@ -149,8 +149,8 @@ namespace detail
         Sender sender_;
         Receiver receiver_;
 
-        virtual initiation_result
-        do_possibly_deferred_initiate_(bool never_defer, bool is_retry) override
+        virtual initiation_result do_possibly_deferred_initiate_(
+            bool const never_defer, bool const is_retry) override
         {
             (void)
                 is_retry; // useful to know how this initiation is coming about
@@ -207,6 +207,11 @@ namespace detail
                 }
             }
             if (thisio != nullptr) {
+                // 1. assumes this is acting as an `else` branch for the `if`
+                // 2. if `sender_(...)` returns `success` the operation is
+                //    in progress and `thisio`/`this` haven't been deleted
+                //    yet.
+                // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDelete)
                 thisio->notify_operation_initiation_success_(this);
             }
             return initiation_result::initiation_success;

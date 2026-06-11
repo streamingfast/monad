@@ -43,7 +43,7 @@ namespace
     // Returns a socket path unique per process to avoid bind() collisions when
     // tests run in parallel. Assumes TMPDIR is short enough that the full path
     // stays within sun_path (108 bytes).
-    std::filesystem::path unique_socket_path(std::string_view name)
+    std::filesystem::path unique_socket_path(std::string_view const name)
     {
         return std::filesystem::temp_directory_path() /
                (std::string(name) + "_" + std::to_string(::getpid()) + ".sock");
@@ -66,11 +66,10 @@ namespace
             MONAD_ASSERT(
                 -1 !=
                 ::ftruncate(fd, static_cast<off_t>(8ULL * 1024 * 1024 * 1024)));
-            monad::OnDiskMachine machine;
             // Initialize the on-disk DB format; the Db object is not needed
             // after this point.
             (void)monad::mpt::Db{
-                machine,
+                std::make_unique<monad::OnDiskMachine>(),
                 monad::mpt::OnDiskDbConfig{
                     .append = false, .dbname_paths = {path}}};
         }

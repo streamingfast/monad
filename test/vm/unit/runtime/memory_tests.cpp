@@ -45,7 +45,7 @@ namespace
         {
         }
 
-        void call(std::function<void(Context &)> continuation)
+        void call(std::function<void(Context &)> const continuation)
         {
             evmc_message msg{};
             if (prev_rt_ctx_) {
@@ -53,7 +53,7 @@ namespace
                 msg.memory = m.data + m.size;
                 msg.memory_handle = m.data_handle;
                 msg.memory_capacity = m.capacity - m.size;
-                MONAD_VM_ASSERT(m.size <= m.capacity);
+                MONAD_ASSERT(m.size <= m.capacity);
             }
             else {
                 // init_memory = std::make_optional<vm::test::TestMemory>();
@@ -97,7 +97,7 @@ namespace
             2 * (parent_total_size + capacity_before + 32) - parent_total_size);
     }
 
-    void set_memory(Context &ctx, uint8_t depth, bool full)
+    void set_memory(Context &ctx, uint8_t const depth, bool const full)
     {
         if (full) {
             ctx.memory.size = ctx.memory.capacity;
@@ -109,7 +109,7 @@ namespace
         std::memset(ctx.memory.data, depth, ctx.memory.size);
     }
 
-    void invariant_check(Context &ctx, uint8_t depth)
+    void invariant_check(Context &ctx, uint8_t const depth)
     {
         uint8_t const *const data_handle = ctx.memory.data_handle;
         uint8_t const *const data = ctx.memory.data;
@@ -125,7 +125,7 @@ namespace
         }
         for (uint8_t const *p = data + size; p < data + ctx.memory.capacity;
              ++p) {
-            MONAD_VM_ASSERT(*p == 0);
+            MONAD_ASSERT(*p == 0);
             ASSERT_EQ(*p, 0);
         }
     }
@@ -135,8 +135,8 @@ namespace
         Context &ctx, MemoryTestMachine<traits> &machine,
         MemoryTestMachineConfig config)
     {
-        MONAD_VM_ASSERT(config.pre_calls.size() == config.depth);
-        MONAD_VM_ASSERT(config.post_calls.size() == config.depth);
+        MONAD_ASSERT(config.pre_calls.size() == config.depth);
+        MONAD_ASSERT(config.post_calls.size() == config.depth);
         if (config.depth == 0) {
             return;
         }
@@ -146,11 +146,11 @@ namespace
 
         auto const [n_pre, full_pre] = config.pre_calls.back();
         config.pre_calls.pop_back();
-        MONAD_VM_ASSERT(n_pre <= 2);
+        MONAD_ASSERT(n_pre <= 2);
 
         auto const [n_post, full_post] = config.post_calls.back();
         config.post_calls.pop_back();
-        MONAD_VM_ASSERT(n_post <= 2);
+        MONAD_ASSERT(n_post <= 2);
 
         for (uint8_t i = 0; i < n_pre; ++i) {
             increase_capacity<traits>(ctx);

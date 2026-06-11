@@ -22,7 +22,7 @@
 #include <category/core/math.hpp>
 #include <category/core/mem/allocators.hpp>
 #include <category/core/rlp/encode.hpp>
-#include <category/core/unaligned.hpp>
+#include <category/core/runtime/unaligned.hpp>
 #include <category/mpt/detail/unsigned_20.hpp>
 #include <category/mpt/util.hpp>
 
@@ -51,7 +51,7 @@ struct node_disk_pages_spare_15
         uint16_t value;
 
         // NOLINTNEXTLINE(google-explicit-constructor)
-        constexpr spare_dual(uint16_t v)
+        constexpr spare_dual(uint16_t const v)
             : value(v)
         {
         }
@@ -214,7 +214,7 @@ public:
     template <class... Args>
     static UniquePtr make(size_t bytes, Args &&...args)
     {
-        MONAD_DEBUG_ASSERT(bytes <= Node::max_size);
+        MONAD_ASSERT(bytes <= Node::max_size);
         return allocators::allocate_aliasing_unique<
             &allocators::aliasing_allocator_pair<Node>>(
             bytes,
@@ -237,19 +237,26 @@ public:
     unsigned number_of_children() const noexcept;
 
     //! fnext array that stores physical chunk offset of each child
+    std::span<unaligned_t<chunk_offset_t>> child_fnext_data() noexcept;
+    std::span<unaligned_t<chunk_offset_t> const>
+    child_fnext_data() const noexcept;
     chunk_offset_t const fnext(unsigned index) const noexcept;
     void set_fnext(unsigned index, chunk_offset_t) noexcept;
 
     //! fastlist min_offset array
-    unsigned char *child_min_offset_fast_data() noexcept;
-    unsigned char const *child_min_offset_fast_data() const noexcept;
+    std::span<unaligned_t<compact_virtual_chunk_offset_t>>
+    child_min_offset_fast_data() noexcept;
+    std::span<unaligned_t<compact_virtual_chunk_offset_t> const>
+    child_min_offset_fast_data() const noexcept;
     compact_virtual_chunk_offset_t
     min_offset_fast(unsigned index) const noexcept;
     void set_min_offset_fast(
         unsigned index, compact_virtual_chunk_offset_t) noexcept;
     //! slowlist min_offset array
-    unsigned char *child_min_offset_slow_data() noexcept;
-    unsigned char const *child_min_offset_slow_data() const noexcept;
+    std::span<unaligned_t<compact_virtual_chunk_offset_t>>
+    child_min_offset_slow_data() noexcept;
+    std::span<unaligned_t<compact_virtual_chunk_offset_t> const>
+    child_min_offset_slow_data() const noexcept;
     compact_virtual_chunk_offset_t
     min_offset_slow(unsigned index) const noexcept;
     void set_min_offset_slow(
@@ -259,14 +266,15 @@ public:
     void set_min_offsets(unsigned index, compact_offset_pair) noexcept;
 
     //! subtrie min version array
-    unsigned char *child_min_version_data() noexcept;
-    unsigned char const *child_min_version_data() const noexcept;
+    std::span<unaligned_t<int64_t>> child_min_version_data() noexcept;
+    std::span<unaligned_t<int64_t> const>
+    child_min_version_data() const noexcept;
     int64_t subtrie_min_version(unsigned index) const noexcept;
     void set_subtrie_min_version(unsigned index, int64_t version) noexcept;
 
     //! data_offset array
-    unsigned char *child_off_data() noexcept;
-    unsigned char const *child_off_data() const noexcept;
+    std::span<unaligned_t<uint16_t>> child_off_data() noexcept;
+    std::span<unaligned_t<uint16_t> const> child_off_data() const noexcept;
     uint16_t child_data_offset(unsigned index) const noexcept;
 
     unsigned child_data_len(unsigned index) const;
@@ -302,6 +310,9 @@ public:
     void set_child_data(unsigned index, byte_string_view data) noexcept;
 
     //! next pointers
+    std::span<SharedPtr> child_next_data() noexcept;
+    std::span<SharedPtr const> child_next_data() const noexcept;
+
 private:
     unsigned char *next_data() noexcept;
     unsigned char const *next_data() const noexcept;
@@ -321,7 +332,7 @@ public:
 
     void set_next(unsigned index, SharedPtr p) noexcept;
 
-    SharedPtr move_next(unsigned const index) noexcept;
+    SharedPtr move_next(unsigned index) noexcept;
 };
 
 static_assert(std::is_standard_layout_v<Node>, "required by offsetof");
@@ -400,8 +411,8 @@ void serialize_node_to_buffer(
     unsigned char *write_pos, unsigned bytes_to_write, Node const &,
     uint32_t disk_size, unsigned offset = 0);
 
-inline Node::SharedPtr
-deserialize_node_from_buffer(unsigned char const *read_pos, size_t max_bytes)
+inline Node::SharedPtr deserialize_node_from_buffer(
+    unsigned char const *read_pos, size_t const max_bytes)
 {
     for (size_t n = 0; n < max_bytes; n += 64) {
         __builtin_prefetch(read_pos + n, 0, 0);
@@ -420,8 +431,9 @@ deserialize_node_from_buffer(unsigned char const *read_pos, size_t max_bytes)
                             number_of_children * sizeof(Node::SharedPtr);
     auto node = Node::make_shared(alloc_size);
     std::copy_n(read_pos, base_size, (unsigned char *)node.get());
-    for (unsigned i = 0; i < node->number_of_children(); ++i) {
-        new (node->child_ptr(i)) Node::SharedPtr();
+    auto const sp = node->child_next_data();
+    for (size_t i = 0; i < sp.size(); ++i) {
+        new (sp.data() + i) Node::SharedPtr();
     }
     MONAD_ASSERT(alloc_size == node->get_mem_size());
     return node;
@@ -442,13 +454,13 @@ public:
     {
     public:
         using value_type = std::pair<uint8_t, unsigned char>;
-        using difference_type = std::ptrdiff_t;
+        using difference_type = ptrdiff_t;
         using iterator_category = std::input_iterator_tag;
         using pointer = void;
         using reference = value_type;
 
         // NOLINTNEXTLINE(google-explicit-constructor)
-        iterator(uint16_t mask)
+        iterator(uint16_t const mask)
             : index_(0)
             , mask_(mask)
         {
@@ -476,7 +488,7 @@ public:
         uint16_t mask_;
     };
 
-    explicit NodeChildrenRange(uint16_t mask)
+    explicit NodeChildrenRange(uint16_t const mask)
         : mask_(mask)
     {
     }

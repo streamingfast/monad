@@ -89,14 +89,14 @@ namespace monad::vm::compiler::native
 
             asmjit::Label const &label() const;
 
-            std::vector<runtime::uint256_t> const &data() const;
+            std::vector<uint256_t> const &data() const;
 
             asmjit::x86::Mem add_literal(Literal const &);
 
             template <typename F>
             asmjit::x86::Mem add_external_function(F);
 
-            asmjit::x86::Mem add32(runtime::uint256_t const &);
+            asmjit::x86::Mem add32(uint256_t const &);
             asmjit::x86::Mem add16(uint64_t, uint64_t);
             asmjit::x86::Mem add8(uint64_t);
             asmjit::x86::Mem add4(uint32_t);
@@ -110,7 +110,7 @@ namespace monad::vm::compiler::native
             asmjit::Label label_;
             int32_t partial_index_{};
             int32_t partial_sub_index_{32};
-            std::vector<runtime::uint256_t> data_;
+            std::vector<uint256_t> data_;
             RoSubdata<32> sub32_;
             RoSubdata<16> sub16_;
             RoSubdata<8> sub8_;
@@ -188,13 +188,13 @@ namespace monad::vm::compiler::native
         {
         public:
             Runtime(
-                Emitter *e, int64_t remaining_base_gas, bool spill_avx,
-                void (*f)(Args...))
+                Emitter *const e, int64_t const remaining_base_gas,
+                bool const spill_avx, void (*f)(Args...))
                 : RuntimeImpl(e, remaining_base_gas, spill_avx, f)
             {
             }
 
-            Runtime(Emitter *e, bool spill_avx, void (*f)(Args...))
+            Runtime(Emitter *const e, bool const spill_avx, void (*f)(Args...))
                 : Runtime(e, 0, spill_avx, f)
             {
             }
@@ -760,7 +760,7 @@ namespace monad::vm::compiler::native
         void error_block(asmjit::Label &, runtime::StatusCode);
         void return_with_status_code(runtime::StatusCode);
 
-        static constexpr size_t div64_ceil(size_t x)
+        static constexpr size_t div64_ceil(size_t const x)
         {
             return (x >> 6) + ((x & 63) != 0);
         }

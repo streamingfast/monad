@@ -29,12 +29,6 @@ MONAD_TEST_NAMESPACE_BEGIN
 inline std::unordered_map<
     std::string, std::variant<evmc_revision, monad_revision>> const
     revision_map = {
-        {"Frontier", EVMC_FRONTIER},
-        {"Homestead", EVMC_HOMESTEAD},
-        {"EIP150", EVMC_TANGERINE_WHISTLE},
-        {"TangerineWhistle", EVMC_TANGERINE_WHISTLE},
-        {"EIP158", EVMC_SPURIOUS_DRAGON},
-        {"SpuriousDragon", EVMC_SPURIOUS_DRAGON},
         {"Byzantium", EVMC_BYZANTIUM},
         {"Constantinople", EVMC_CONSTANTINOPLE},
         {"ConstantinopleFix", EVMC_PETERSBURG},

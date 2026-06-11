@@ -15,16 +15,11 @@
 
 #pragma once
 
+#include <category/core/address.hpp>
 #include <category/core/basic_formatter.hpp>
-#include <category/execution/ethereum/core/address.hpp>
+#include <category/core/log.hpp>
 
-#include <quill/Quill.h>
-#include <quill/bundled/fmt/format.h>
-
-template <>
-struct quill::copy_loggable<monad::Address> : std::true_type
-{
-};
+MONAD_LOG_LOGGABLE(monad::Address);
 
 template <>
 struct fmt::formatter<monad::Address> : public monad::BasicFormatter

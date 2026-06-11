@@ -16,16 +16,11 @@
 # Subcomponents
 
 add_subdirectory(compiler)
-add_subdirectory(core)
 add_subdirectory(evm)
 add_subdirectory(fuzzing)
 add_subdirectory(interpreter)
 add_subdirectory(runtime)
 add_subdirectory(utils)
-
-if(MONAD_COMPILER_LLVM)
-    add_subdirectory(llvm)
-endif()
 
 # Main VM library (execution's entry point)
 
@@ -51,13 +46,11 @@ target_include_directories(monad-vm
 
 target_link_libraries(monad-vm
     PUBLIC TBB::tbb
-    PUBLIC intx::intx
     PUBLIC evmc::evmc
     PUBLIC asmjit::asmjit
     PUBLIC quill::quill
     PUBLIC monad-vm::monad-vm-compiler
     PUBLIC monad-vm::monad-vm-interpreter
-    PRIVATE monad-vm::monad-vm-core
     PRIVATE monad-vm::monad-vm-runtime
     PRIVATE monad-vm::monad-vm-utils
 )

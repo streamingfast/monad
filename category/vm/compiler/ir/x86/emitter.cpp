@@ -13,13 +13,15 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/core/assert.h>
+#include <category/core/cases.hpp>
+#include <category/core/likely.h>
 #include <category/core/runtime/uint256.hpp>
 #include <category/vm/compiler/ir/basic_blocks.hpp>
 #include <category/vm/compiler/ir/x86/emitter.hpp>
 #include <category/vm/compiler/ir/x86/types.hpp>
 #include <category/vm/compiler/ir/x86/virtual_stack.hpp>
 #include <category/vm/compiler/types.hpp>
-#include <category/vm/core/assert.h>
 #include <category/vm/interpreter/intercode.hpp>
 #include <category/vm/runtime/math.hpp>
 #include <category/vm/runtime/storage.hpp>
@@ -61,13 +63,14 @@
 namespace runtime = monad::vm::runtime;
 namespace x86 = asmjit::x86;
 
-using monad::vm::Cases;
+using monad::Cases;
 
 static_assert(ASMJIT_ARCH_X86 == 64);
 
 namespace
 {
     using namespace monad::vm::compiler::native;
+    using monad::uint256_t;
 
     constexpr auto reg_context = x86::rbx;
     constexpr auto reg_stack = x86::rbp;
@@ -108,32 +111,33 @@ namespace
             x86::qword_ptr(x86::rbp, offset.offset * 32 + 24)};
     }
 
-    x86::Mem stack_offset_to_mem(StackOffset offset)
+    x86::Mem stack_offset_to_mem(StackOffset const offset)
     {
         return x86::qword_ptr(x86::rbp, offset.offset * 32);
     }
 
-    x86::Ymm avx_reg_to_ymm(AvxReg reg)
+    x86::Ymm avx_reg_to_ymm(AvxReg const reg)
     {
-        MONAD_VM_DEBUG_ASSERT(reg.reg < 32);
+        MONAD_DEBUG_ASSERT(reg.reg < 32);
         return x86::Ymm(reg.reg);
     }
 
-    x86::Xmm avx_reg_to_xmm(AvxReg reg)
+    x86::Xmm avx_reg_to_xmm(AvxReg const reg)
     {
-        MONAD_VM_DEBUG_ASSERT(reg.reg < 32);
+        MONAD_DEBUG_ASSERT(reg.reg < 32);
         return x86::Xmm(reg.reg);
     }
 
     void runtime_print_gas_remaining_impl(
-        char const *msg, runtime::Context const *ctx)
+        char const *const msg, runtime::Context const *const ctx)
     {
         std::cout << msg << ": gas remaining: " << ctx->gas_remaining
                   << std::endl;
     }
 
     void runtime_print_input_stack_impl(
-        char const *msg, runtime::uint256_t *stack, uint64_t stack_size)
+        char const *const msg, uint256_t *const stack,
+        uint64_t const stack_size)
     {
         std::cout << msg << ": stack: ";
         for (size_t i = 0; i < stack_size; ++i) {
@@ -143,22 +147,24 @@ namespace
     }
 
     uint64_t runtime_store_input_stack_impl(
-        runtime::Context const *ctx, runtime::uint256_t *stack,
-        uint64_t stack_size, uint64_t offset, uint64_t base_offset)
+        runtime::Context const *const ctx, uint256_t *const stack,
+        uint64_t const stack_size, uint64_t const offset,
+        uint64_t const base_offset)
     {
         return runtime::debug_tstore_stack(
             ctx, stack, stack_size, offset, base_offset);
     }
 
     void runtime_print_top2_impl(
-        char const *msg, runtime::uint256_t const *x,
-        runtime::uint256_t const *y)
+        char const *const msg, uint256_t const *const x,
+        uint256_t const *const y)
     {
         std::cout << msg << ": " << x->to_string() << " and " << y->to_string()
                   << std::endl;
     }
 
-    void runtime_print_top1_impl(char const *msg, runtime::uint256_t const *x)
+    void
+    runtime_print_top1_impl(char const *const msg, uint256_t const *const x)
     {
         std::cout << msg << ": " << x->to_string() << std::endl;
     }
@@ -221,13 +227,13 @@ namespace monad::vm::compiler::native
     {
     }
 
-    Emitter::Error::Error(char const *msg)
+    Emitter::Error::Error(char const *const msg)
         : std::runtime_error{msg}
     {
     }
 
     void Emitter::EmitErrorHandler::handleError(
-        asmjit::Error, char const *msg, asmjit::BaseEmitter *)
+        asmjit::Error, char const *const msg, asmjit::BaseEmitter *)
     {
         throw Emitter::Error(std::format("x86 emitter error: {}", msg));
     }
@@ -260,7 +266,7 @@ namespace monad::vm::compiler::native
         return true;
     }
 
-    char const *Emitter::location_type_to_string(LocationType loc)
+    char const *Emitter::location_type_to_string(LocationType const loc)
     {
         switch (loc) {
         case Emitter::LocationType::AvxReg:
@@ -300,7 +306,7 @@ namespace monad::vm::compiler::native
         }
     }
 
-    Emitter::RoData::RoData(asmjit::Label lbl)
+    Emitter::RoData::RoData(asmjit::Label const lbl)
         : label_{lbl}
     {
     }
@@ -332,7 +338,7 @@ namespace monad::vm::compiler::native
     {
         // We need `data_` size upper bounded to not overflow `int32_t`,
         // i.e. estimate_size() < std::numeric_limits<int32_t>::max()
-        if (MONAD_VM_UNLIKELY(data_.size() >= (1 << 26))) {
+        if (MONAD_UNLIKELY(data_.size() >= (1 << 26))) {
             throw Nativecode::SizeEstimateOutOfBounds{estimate_size()};
         }
 
@@ -347,7 +353,8 @@ namespace monad::vm::compiler::native
         return x86::qword_ptr(label_, offset);
     }
 
-    asmjit::x86::Mem Emitter::RoData::add16(uint64_t x0, uint64_t x1)
+    asmjit::x86::Mem
+    Emitter::RoData::add16(uint64_t const x0, uint64_t const x1)
     {
         std::array<uint8_t, 16> x;
         std::memcpy(x.data(), &x0, 8);
@@ -355,14 +362,14 @@ namespace monad::vm::compiler::native
         return add<16>(x);
     }
 
-    asmjit::x86::Mem Emitter::RoData::add8(uint64_t x0)
+    asmjit::x86::Mem Emitter::RoData::add8(uint64_t const x0)
     {
         std::array<uint8_t, 8> x;
         std::memcpy(x.data(), &x0, 8);
         return add<8>(x);
     }
 
-    asmjit::x86::Mem Emitter::RoData::add4(uint32_t x0)
+    asmjit::x86::Mem Emitter::RoData::add4(uint32_t const x0)
     {
         std::array<uint8_t, 4> x;
         std::memcpy(x.data(), &x0, 4);
@@ -376,7 +383,7 @@ namespace monad::vm::compiler::native
     {
         // We need `data_` size upper bounded to not overflow `int32_t`
         // i.e. estimate_size() < std::numeric_limits<int32_t>::max()
-        if (MONAD_VM_UNLIKELY(data_.size() >= (1 << 26))) {
+        if (MONAD_UNLIKELY(data_.size() >= (1 << 26))) {
             throw Nativecode::SizeEstimateOutOfBounds{estimate_size()};
         }
 
@@ -414,7 +421,7 @@ namespace monad::vm::compiler::native
             if (next_partial_sub_index == 0) {
                 data_.emplace_back();
             }
-            MONAD_VM_DEBUG_ASSERT(
+            MONAD_DEBUG_ASSERT(
                 static_cast<size_t>(next_partial_index) < data_.size());
             static_assert(sizeof(size_t) >= sizeof(next_partial_index));
             auto &a = data_[static_cast<size_t>(next_partial_index)];
@@ -442,14 +449,14 @@ namespace monad::vm::compiler::native
 
     void Emitter::RuntimeImpl::call_impl()
     {
-        MONAD_VM_ASSERT(
+        MONAD_ASSERT(
             explicit_args_.size() + implicit_arg_count() == arg_count_);
-        MONAD_VM_DEBUG_ASSERT(arg_count_ <= MAX_RUNTIME_ARGS);
-        MONAD_VM_DEBUG_ASSERT(
+        MONAD_DEBUG_ASSERT(arg_count_ <= MAX_RUNTIME_ARGS);
+        MONAD_DEBUG_ASSERT(
             !context_arg_.has_value() || context_arg_ != result_arg_);
-        MONAD_VM_DEBUG_ASSERT(
+        MONAD_DEBUG_ASSERT(
             !context_arg_.has_value() || context_arg_ != remaining_gas_arg_);
-        MONAD_VM_DEBUG_ASSERT(
+        MONAD_DEBUG_ASSERT(
             !result_arg_.has_value() || result_arg_ != remaining_gas_arg_);
 
         for (size_t a = 0, i = 0; i < arg_count_; ++i) {
@@ -463,7 +470,7 @@ namespace monad::vm::compiler::native
                 mov_arg(i, stack_offset_to_mem(*elem->stack_offset()));
             }
             else {
-                MONAD_VM_DEBUG_ASSERT(elem->literal().has_value());
+                MONAD_DEBUG_ASSERT(elem->literal().has_value());
                 auto const m = em_->rodata_.add_literal(*elem->literal());
                 mov_arg(i, m);
             }
@@ -502,7 +509,7 @@ namespace monad::vm::compiler::native
 
     size_t Emitter::RuntimeImpl::explicit_arg_count()
     {
-        MONAD_VM_DEBUG_ASSERT(arg_count_ >= implicit_arg_count());
+        MONAD_DEBUG_ASSERT(arg_count_ >= implicit_arg_count());
         return arg_count_ - implicit_arg_count();
     }
 
@@ -511,7 +518,7 @@ namespace monad::vm::compiler::native
         return spill_avx_;
     }
 
-    void Emitter::RuntimeImpl::mov_arg(size_t arg_index, RuntimeArg &&arg)
+    void Emitter::RuntimeImpl::mov_arg(size_t const arg_index, RuntimeArg &&arg)
     {
         static_assert(MAX_RUNTIME_ARGS == 12);
         switch (arg_index) {
@@ -552,7 +559,7 @@ namespace monad::vm::compiler::native
             mov_stack_arg(sp_offset_arg6, std::move(arg));
             break;
         default:
-            MONAD_VM_ASSERT(false);
+            MONAD_ABORT();
         }
     }
 
@@ -568,8 +575,8 @@ namespace monad::vm::compiler::native
             arg);
     }
 
-    void
-    Emitter::RuntimeImpl::mov_stack_arg(int32_t sp_offset, RuntimeArg &&arg)
+    void Emitter::RuntimeImpl::mov_stack_arg(
+        int32_t const sp_offset, RuntimeArg &&arg)
     {
         std::visit(
             Cases{
@@ -588,7 +595,7 @@ namespace monad::vm::compiler::native
     }
 
     Emitter::Emitter(
-        asmjit::JitRuntime const &rt, interpreter::code_size_t codesize,
+        asmjit::JitRuntime const &rt, interpreter::code_size_t const codesize,
         CompilerConfig const &config)
         : runtime_debug_trace_{config.runtime_debug_trace}
         , as_{init_code_holder(rt, config.asm_log_path)}
@@ -612,7 +619,7 @@ namespace monad::vm::compiler::native
     {
         if (debug_logger_.file()) {
             int const err = fclose(debug_logger_.file());
-            MONAD_VM_ASSERT(err == 0);
+            MONAD_ASSERT(err == 0);
         }
     }
 
@@ -620,7 +627,7 @@ namespace monad::vm::compiler::native
     {
         if (debug_logger_.file()) {
             int const err = fflush(debug_logger_.file());
-            MONAD_VM_ASSERT(err == 0);
+            MONAD_ASSERT(err == 0);
         }
     }
 
@@ -651,7 +658,7 @@ namespace monad::vm::compiler::native
                 int64_t const x = std::bit_cast<int64_t>(
                     code_holder_.labelOffset(error_label_) -
                     code_holder_.labelOffset(jump_table_label_.value()));
-                MONAD_VM_DEBUG_ASSERT(
+                MONAD_DEBUG_ASSERT(
                     x <= std::numeric_limits<int32_t>::max() &&
                     x >= std::numeric_limits<int32_t>::min());
                 return static_cast<int32_t>(x);
@@ -713,12 +720,12 @@ namespace monad::vm::compiler::native
     }
 
     asmjit::CodeHolder *Emitter::init_code_holder(
-        asmjit::JitRuntime const &rt, char const *log_path)
+        asmjit::JitRuntime const &rt, char const *const log_path)
     {
         code_holder_.setErrorHandler(&error_handler_);
         if (log_path) {
             FILE *log_file = fopen(log_path, "w");
-            MONAD_VM_ASSERT(log_file);
+            MONAD_ASSERT(log_file);
             debug_logger_.setFile(log_file);
             code_holder_.setLogger(&debug_logger_);
         }
@@ -808,7 +815,7 @@ namespace monad::vm::compiler::native
      * stack's min_delta, which ensures that we don't save stale values that
      * might have been modified by the current block.
      */
-    void Emitter::runtime_store_input_stack(uint64_t base_offset)
+    void Emitter::runtime_store_input_stack(uint64_t const base_offset)
     {
         if (!utils::is_fuzzing_monad_vm) {
             return;
@@ -941,8 +948,8 @@ namespace monad::vm::compiler::native
 
     void Emitter::swap_general_regs(StackElem &x, StackElem &y)
     {
-        MONAD_VM_ASSERT(x.general_reg().has_value());
-        MONAD_VM_ASSERT(y.general_reg().has_value());
+        MONAD_ASSERT(x.general_reg().has_value());
+        MONAD_ASSERT(y.general_reg().has_value());
         auto xg = general_reg_to_gpq256(*x.general_reg());
         auto yg = general_reg_to_gpq256(*y.general_reg());
         for (size_t i = 0; i < 4; ++i) {
@@ -953,10 +960,11 @@ namespace monad::vm::compiler::native
         stack_.swap_general_regs(x, y);
     }
 
-    void Emitter::swap_general_reg_indices(GeneralReg r, uint8_t i, uint8_t j)
+    void Emitter::swap_general_reg_indices(
+        GeneralReg const r, uint8_t const i, uint8_t const j)
     {
-        MONAD_VM_ASSERT(i < 4);
-        MONAD_VM_ASSERT(j < 4);
+        MONAD_ASSERT(i < 4);
+        MONAD_ASSERT(j < 4);
         if (i == j) {
             return;
         }
@@ -970,7 +978,7 @@ namespace monad::vm::compiler::native
         }
     }
 
-    void Emitter::fail_with_error(asmjit::Error e)
+    void Emitter::fail_with_error(asmjit::Error const e)
     {
         as_.reportError(e);
         std::unreachable();
@@ -993,13 +1001,13 @@ namespace monad::vm::compiler::native
                rodata_.estimate_size() + (*bytecode_size_ << 2);
     }
 
-    void Emitter::add_jump_dest(byte_offset d)
+    void Emitter::add_jump_dest(byte_offset const d)
     {
         char name[2 * sizeof(byte_offset) + 2];
         static_assert(sizeof(byte_offset) <= sizeof(long));
         auto const isize = snprintf(name, sizeof(name), "B%lx", d);
         auto const size = static_cast<size_t>(isize);
-        MONAD_VM_DEBUG_ASSERT(size < sizeof(name));
+        MONAD_DEBUG_ASSERT(size < sizeof(name));
         jump_dests_.emplace(d, as_.newNamedLabel(name, size));
     }
 
@@ -1017,7 +1025,7 @@ namespace monad::vm::compiler::native
         return block_prologue(b);
     }
 
-    void Emitter::gas_decrement_static_work(int64_t gas)
+    void Emitter::gas_decrement_static_work(int64_t const gas)
     {
         if (gas) {
             gas_decrement_no_check(gas);
@@ -1027,7 +1035,7 @@ namespace monad::vm::compiler::native
         }
     }
 
-    void Emitter::gas_decrement_unbounded_work(int64_t gas)
+    void Emitter::gas_decrement_unbounded_work(int64_t const gas)
     {
         accumulated_static_work_ = 0;
         if (gas) {
@@ -1036,7 +1044,7 @@ namespace monad::vm::compiler::native
         }
     }
 
-    void Emitter::spill_caller_save_regs(bool spill_avx)
+    void Emitter::spill_caller_save_regs(bool const spill_avx)
     {
         // Spill general regs first, because if stack element is in both
         // general register and avx register then stack element will be
@@ -1060,7 +1068,7 @@ namespace monad::vm::compiler::native
         }
     }
 
-    void Emitter::spill_avx_reg_range(uint8_t start)
+    void Emitter::spill_avx_reg_range(uint8_t const start)
     {
         for (auto const &[reg, off] : stack_.spill_avx_reg_range(start)) {
             as_.vmovaps(stack_offset_to_mem(off), avx_reg_to_ymm(reg));
@@ -1092,7 +1100,7 @@ namespace monad::vm::compiler::native
         }
     }
 
-    AvxRegReserv Emitter::insert_avx_reg(StackElemRef elem)
+    AvxRegReserv Emitter::insert_avx_reg(StackElemRef const elem)
     {
         auto [reserv, offset] = stack_.insert_avx_reg(elem);
         if (offset.has_value()) {
@@ -1112,7 +1120,7 @@ namespace monad::vm::compiler::native
         return {elem, reserv};
     }
 
-    GeneralRegReserv Emitter::insert_general_reg(StackElemRef elem)
+    GeneralRegReserv Emitter::insert_general_reg(StackElemRef const elem)
     {
         auto [reserv, offset] = stack_.insert_general_reg(elem);
         if (offset.has_value()) {
@@ -1236,14 +1244,14 @@ namespace monad::vm::compiler::native
         return is_live(reg, live, std::index_sequence_for<LiveSet...>{});
     }
 
-    void Emitter::gas_decrement_no_check(int64_t gas)
+    void Emitter::gas_decrement_no_check(int64_t const gas)
     {
-        MONAD_VM_DEBUG_ASSERT(gas > 0);
+        MONAD_DEBUG_ASSERT(gas > 0);
 
         // This condition should never hold in practice, because the total gas
         // that can be included in a block for any supported chain is
         // substantially less than the maximum 32-bit signed integer.
-        if (MONAD_VM_UNLIKELY(gas > std::numeric_limits<int32_t>::max())) {
+        if (MONAD_UNLIKELY(gas > std::numeric_limits<int32_t>::max())) {
             // TODO: To avoid hard-coding this value, we'd need to have access
             // to a Traits template parameter. Refactoring the Emitter class to
             // be trait-parameterized is a large refactoring that will need to
@@ -1263,20 +1271,20 @@ namespace monad::vm::compiler::native
             static_cast<int32_t>(gas));
     }
 
-    void Emitter::gas_decrement_no_check(x86::Gpq gas)
+    void Emitter::gas_decrement_no_check(x86::Gpq const gas)
     {
         as_.sub(
             x86::qword_ptr(reg_context, runtime::context_offset_gas_remaining),
             gas);
     }
 
-    bool Emitter::accumulate_static_work(int64_t work)
+    bool Emitter::accumulate_static_work(int64_t const work)
     {
-        MONAD_VM_DEBUG_ASSERT(work >= 0);
-        MONAD_VM_DEBUG_ASSERT(
+        MONAD_DEBUG_ASSERT(work >= 0);
+        MONAD_DEBUG_ASSERT(
             work <= std::numeric_limits<int64_t>::max() -
                         STATIC_WORK_GAS_CHECK_THRESHOLD + 1);
-        MONAD_VM_DEBUG_ASSERT(
+        MONAD_DEBUG_ASSERT(
             accumulated_static_work_ < STATIC_WORK_GAS_CHECK_THRESHOLD);
 
         accumulated_static_work_ += work;
@@ -1298,7 +1306,7 @@ namespace monad::vm::compiler::native
             as_.bind(it->second);
         }
 
-        if (MONAD_VM_UNLIKELY(runtime_debug_trace_) && !keep_stack) {
+        if (MONAD_UNLIKELY(runtime_debug_trace_) && !keep_stack) {
             runtime_print_gas_remaining(
                 std::format("Block 0x{:02x}", b.offset));
         }
@@ -1354,13 +1362,13 @@ namespace monad::vm::compiler::native
         // then we need to move the AVX register to both stack offsets
         // `0` and `1`.
 
-        MONAD_VM_ASSERT(!stack_.has_deferred_comparison());
+        MONAD_ASSERT(!stack_.has_deferred_comparison());
 
         int32_t const top_index = stack_.top_index();
         int32_t const min_delta = stack_.min_delta();
         if (top_index < min_delta) {
             // Nothing on the stack.
-            MONAD_VM_DEBUG_ASSERT(stack_.missing_spill_count() == 0);
+            MONAD_DEBUG_ASSERT(stack_.missing_spill_count() == 0);
             return;
         }
 
@@ -1396,11 +1404,11 @@ namespace monad::vm::compiler::native
                 stack_.spill_avx_reg(spill_elem) != nullptr;
         }
         auto [init1, init1_reserv, init1_spill] = stack_.alloc_avx_reg();
-        MONAD_VM_DEBUG_ASSERT(!init1_spill);
+        MONAD_DEBUG_ASSERT(!init1_spill);
         auto const init_yx1 = avx_reg_to_ymm(*init1->avx_reg());
         auto yx1 = init_yx1;
         if (spill_elem_has_new_mem_location) {
-            MONAD_VM_DEBUG_ASSERT(spill_elem->stack_offset().has_value());
+            MONAD_DEBUG_ASSERT(spill_elem->stack_offset().has_value());
             as_.vmovaps(
                 stack_offset_to_mem(*spill_elem->stack_offset()), init_yx1);
             // The above mov was a write to a final stack offset if and only
@@ -1424,7 +1432,7 @@ namespace monad::vm::compiler::native
         for (int32_t i = min_delta; i <= top_index; ++i) {
             auto const d = stack_.get(i);
 
-            MONAD_VM_DEBUG_ASSERT(
+            MONAD_DEBUG_ASSERT(
                 d->general_reg().has_value() || d->avx_reg().has_value() ||
                 d->stack_offset().has_value() || d->literal().has_value());
 
@@ -1469,7 +1477,7 @@ namespace monad::vm::compiler::native
             StackElem *d = non_dep.back();
             non_dep.pop_back();
             auto const &is = d->stack_indices();
-            MONAD_VM_DEBUG_ASSERT(is.size() >= 1);
+            MONAD_DEBUG_ASSERT(is.size() >= 1);
             auto it = is.begin();
             if (d->avx_reg()) {
                 // Stack element d is located in an AVX register we can use.
@@ -1489,7 +1497,7 @@ namespace monad::vm::compiler::native
                     mov_literal_to_ymm(*d->literal(), yx1);
                 }
                 else {
-                    MONAD_VM_DEBUG_ASSERT(d->general_reg().has_value());
+                    MONAD_DEBUG_ASSERT(d->general_reg().has_value());
                     auto const m =
                         stack_offset_to_mem(StackOffset{*it, PrevLoc::GprReg});
                     // Move to final stack offset:
@@ -1523,7 +1531,7 @@ namespace monad::vm::compiler::native
                 if (e == d) {
                     continue;
                 }
-                MONAD_VM_DEBUG_ASSERT(dep_counts[e] > 0);
+                MONAD_DEBUG_ASSERT(dep_counts[e] > 0);
                 if (--dep_counts[e] == 0) {
                     non_dep.push_back(e);
                 }
@@ -1543,16 +1551,16 @@ namespace monad::vm::compiler::native
         // so the current value of `yx1` will work for `yx2`.
         if (stack_.has_free_avx_reg()) {
             auto [y, _, spill] = stack_.alloc_avx_reg();
-            MONAD_VM_DEBUG_ASSERT(!spill);
+            MONAD_DEBUG_ASSERT(!spill);
             yx2 = avx_reg_to_ymm(*y->avx_reg());
         }
         yx1 = init_yx1;
-        MONAD_VM_DEBUG_ASSERT(yx1 != yx2);
+        MONAD_DEBUG_ASSERT(yx1 != yx2);
 
         // Write the remaining stack elements in cycles to their final stack
         // offsets.
         for (auto const [e, ec] : dep_counts) {
-            MONAD_VM_DEBUG_ASSERT(ec >= 0);
+            MONAD_DEBUG_ASSERT(ec >= 0);
             if (ec == 0) {
                 // Since stack element e as no dependencies, it has
                 // already been written it its final stack offsets.
@@ -1563,18 +1571,18 @@ namespace monad::vm::compiler::native
             cycle.reserve(2);
             StackElem *d = e;
             do {
-                MONAD_VM_DEBUG_ASSERT(dep_counts[d] == 1);
-                MONAD_VM_DEBUG_ASSERT(!d->avx_reg().has_value());
-                MONAD_VM_DEBUG_ASSERT(d->stack_offset().has_value());
+                MONAD_DEBUG_ASSERT(dep_counts[d] == 1);
+                MONAD_DEBUG_ASSERT(!d->avx_reg().has_value());
+                MONAD_DEBUG_ASSERT(d->stack_offset().has_value());
                 dep_counts[d] = 0;
                 cycle.push_back(d);
-                MONAD_VM_DEBUG_ASSERT(
+                MONAD_DEBUG_ASSERT(
                     d->stack_offset()->offset <= stack_.top_index());
                 d = stack_.get(d->stack_offset()->offset).get();
             }
             while (d != e);
 
-            MONAD_VM_DEBUG_ASSERT(cycle.size() >= 2);
+            MONAD_DEBUG_ASSERT(cycle.size() >= 2);
             as_.vmovaps(
                 yx1, stack_offset_to_mem(*cycle.back()->stack_offset()));
 
@@ -1611,7 +1619,7 @@ namespace monad::vm::compiler::native
         }
 
 #ifdef MONAD_COMPILER_TESTING
-        MONAD_VM_ASSERT(
+        MONAD_ASSERT(
             MONAD_COMPILER_X86_FINAL_WRITE_COUNT ==
             stack_.missing_spill_count());
 #endif
@@ -1634,7 +1642,7 @@ namespace monad::vm::compiler::native
 
     void Emitter::unchecked_debug_comment(std::string const &msg)
     {
-        MONAD_VM_ASSERT(debug_logger_.file());
+        MONAD_ASSERT(debug_logger_.file());
         std::stringstream ss{msg};
         std::string line;
         while (std::getline(ss, line, '\n')) {
@@ -1645,10 +1653,10 @@ namespace monad::vm::compiler::native
     }
 
     // Does not update eflags
-    void
-    Emitter::discharge_deferred_comparison(StackElem *elem, Comparison comp)
+    void Emitter::discharge_deferred_comparison(
+        StackElem *const elem, Comparison const comp)
     {
-        MONAD_VM_DEBUG_ASSERT(
+        MONAD_DEBUG_ASSERT(
             !elem->general_reg() && !elem->avx_reg() && !elem->literal() &&
             !elem->stack_offset());
         insert_avx_reg_without_reserv(*elem);
@@ -1689,9 +1697,9 @@ namespace monad::vm::compiler::native
         as_.vmovd(x, x86::eax);
     }
 
-    Emitter::Gpq256 &Emitter::general_reg_to_gpq256(GeneralReg reg)
+    Emitter::Gpq256 &Emitter::general_reg_to_gpq256(GeneralReg const reg)
     {
-        MONAD_VM_DEBUG_ASSERT(reg.reg <= 2);
+        MONAD_DEBUG_ASSERT(reg.reg <= 2);
         return gpq256_regs_[reg.reg];
     }
 
@@ -1747,7 +1755,7 @@ namespace monad::vm::compiler::native
         if (e->stack_offset()) {
             return 7;
         }
-        MONAD_VM_DEBUG_ASSERT(e->avx_reg().has_value());
+        MONAD_DEBUG_ASSERT(e->avx_reg().has_value());
         return 8;
     }
 
@@ -1757,30 +1765,30 @@ namespace monad::vm::compiler::native
         static_assert(
             gpq == x86::rdi || gpq == x86::rsi || gpq == x86::rcx ||
             gpq == x86::rdx);
-        MONAD_VM_DEBUG_ASSERT(volatile_general_reg == rdi_general_reg);
-        MONAD_VM_DEBUG_ASSERT(volatile_general_reg == rsi_general_reg);
-        MONAD_VM_DEBUG_ASSERT(volatile_general_reg == rcx_general_reg);
-        MONAD_VM_DEBUG_ASSERT(volatile_general_reg == rdx_general_reg);
+        MONAD_DEBUG_ASSERT(volatile_general_reg == rdi_general_reg);
+        MONAD_DEBUG_ASSERT(volatile_general_reg == rsi_general_reg);
+        MONAD_DEBUG_ASSERT(volatile_general_reg == rcx_general_reg);
+        MONAD_DEBUG_ASSERT(volatile_general_reg == rdx_general_reg);
         auto const &gpq256 = general_reg_to_gpq256(volatile_general_reg);
         for (uint8_t i = 0; i < 4; ++i) {
             if (gpq256[i] == gpq) {
                 return i;
             }
         }
-        MONAD_VM_ASSERT(false);
+        MONAD_ABORT();
     }
 
-    void Emitter::mov_stack_index_to_avx_reg(int32_t stack_index)
+    void Emitter::mov_stack_index_to_avx_reg(int32_t const stack_index)
     {
         mov_stack_elem_to_avx_reg(stack_.get(stack_index));
     }
 
-    void Emitter::mov_stack_index_to_general_reg(int32_t stack_index)
+    void Emitter::mov_stack_index_to_general_reg(int32_t const stack_index)
     {
         mov_stack_elem_to_general_reg(stack_.get(stack_index));
     }
 
-    void Emitter::mov_stack_index_to_stack_offset(int32_t stack_index)
+    void Emitter::mov_stack_index_to_stack_offset(int32_t const stack_index)
     {
         mov_stack_elem_to_stack_offset(stack_.get(stack_index));
     }
@@ -1789,7 +1797,7 @@ namespace monad::vm::compiler::native
     void
     Emitter::mov_literal_to_mem(StackElemRef elem, asmjit::x86::Mem const &mem)
     {
-        MONAD_VM_ASSERT(elem->literal().has_value());
+        MONAD_ASSERT(elem->literal().has_value());
 
         auto const &lit = *elem->literal();
 
@@ -1820,8 +1828,8 @@ namespace monad::vm::compiler::native
             stack_.alloc_literal(lit), mem);
     }
 
-    void
-    Emitter::mov_general_reg_to_mem(GeneralReg reg, asmjit::x86::Mem const &mem)
+    void Emitter::mov_general_reg_to_mem(
+        GeneralReg const reg, asmjit::x86::Mem const &mem)
     {
         x86::Mem temp{mem};
         for (auto const &r : general_reg_to_gpq256(reg)) {
@@ -1848,7 +1856,7 @@ namespace monad::vm::compiler::native
             mov_literal_to_mem<false, false>(elem, mem);
         }
         else {
-            MONAD_VM_DEBUG_ASSERT(elem->stack_offset().has_value());
+            MONAD_DEBUG_ASSERT(elem->stack_offset().has_value());
             auto [t, reserv] = alloc_avx_reg();
             auto const ymm = avx_reg_to_ymm(*t->avx_reg());
             as_.vmovaps(ymm, stack_offset_to_mem(*elem->stack_offset()));
@@ -1856,7 +1864,8 @@ namespace monad::vm::compiler::native
         }
     }
 
-    void Emitter::mov_general_reg_to_gpq256(GeneralReg reg, Gpq256 const &gpq)
+    void
+    Emitter::mov_general_reg_to_gpq256(GeneralReg const reg, Gpq256 const &gpq)
     {
         Gpq256 const &temp = general_reg_to_gpq256(reg);
         if (&temp != &gpq) {
@@ -1894,8 +1903,8 @@ namespace monad::vm::compiler::native
         }
     }
 
-    void
-    Emitter::mov_stack_offset_to_gpq256(StackOffset offset, Gpq256 const &gpq)
+    void Emitter::mov_stack_offset_to_gpq256(
+        StackOffset const offset, Gpq256 const &gpq)
     {
         mov_mem_to_gpq256(stack_offset_to_mem(offset), gpq);
     }
@@ -1913,7 +1922,7 @@ namespace monad::vm::compiler::native
             mov_stack_offset_to_gpq256(*elem->stack_offset(), gpq);
         }
         else {
-            MONAD_VM_ASSERT(elem->avx_reg().has_value());
+            MONAD_ASSERT(elem->avx_reg().has_value());
             if constexpr (remember_intermediate) {
                 mov_stack_elem_to_stack_offset(elem);
                 mov_stack_offset_to_gpq256(*elem->stack_offset(), gpq);
@@ -1926,7 +1935,8 @@ namespace monad::vm::compiler::native
         }
     }
 
-    void Emitter::mov_stack_elem_low64_to_gpq(StackElemRef elem, x86::Gpq gp)
+    void Emitter::mov_stack_elem_low64_to_gpq(
+        StackElemRef const elem, x86::Gpq const gp)
     {
         if (elem->general_reg()) {
             auto const &gp256 = general_reg_to_gpq256(*elem->general_reg());
@@ -1941,7 +1951,7 @@ namespace monad::vm::compiler::native
             as_.vmovq(gp, avx_reg_to_xmm(*elem->avx_reg()));
         }
         else {
-            MONAD_VM_DEBUG_ASSERT(elem->stack_offset().has_value());
+            MONAD_DEBUG_ASSERT(elem->stack_offset().has_value());
             as_.mov(gp, stack_offset_to_mem(*elem->stack_offset()));
         }
     }
@@ -1987,7 +1997,7 @@ namespace monad::vm::compiler::native
             mov_stack_offset_to_avx_reg(std::move(elem));
         }
         else {
-            MONAD_VM_ASSERT(elem->general_reg().has_value());
+            MONAD_ASSERT(elem->general_reg().has_value());
             mov_general_reg_to_avx_reg(std::move(elem));
         }
     }
@@ -2004,13 +2014,13 @@ namespace monad::vm::compiler::native
             mov_stack_offset_to_general_reg(std::move(elem));
         }
         else {
-            MONAD_VM_ASSERT(elem->avx_reg().has_value());
+            MONAD_ASSERT(elem->avx_reg().has_value());
             mov_avx_reg_to_general_reg(std::move(elem));
         }
     }
 
-    void
-    Emitter::mov_stack_elem_to_general_reg(StackElemRef elem, int32_t preferred)
+    void Emitter::mov_stack_elem_to_general_reg(
+        StackElemRef elem, int32_t const preferred)
     {
         if (elem->general_reg()) {
             return;
@@ -2022,7 +2032,7 @@ namespace monad::vm::compiler::native
             mov_stack_offset_to_general_reg(std::move(elem));
         }
         else {
-            MONAD_VM_ASSERT(elem->avx_reg().has_value());
+            MONAD_ASSERT(elem->avx_reg().has_value());
             mov_avx_reg_to_general_reg(std::move(elem), preferred);
         }
     }
@@ -2039,13 +2049,13 @@ namespace monad::vm::compiler::native
             mov_general_reg_to_stack_offset(std::move(elem));
         }
         else {
-            MONAD_VM_ASSERT(elem->literal().has_value());
+            MONAD_ASSERT(elem->literal().has_value());
             mov_literal_to_stack_offset(std::move(elem));
         }
     }
 
     void Emitter::mov_stack_elem_to_stack_offset(
-        StackElemRef elem, int32_t preferred_offset)
+        StackElemRef elem, int32_t const preferred_offset)
     {
         if (elem->stack_offset()) {
             return;
@@ -2057,14 +2067,14 @@ namespace monad::vm::compiler::native
             mov_general_reg_to_stack_offset(std::move(elem), preferred_offset);
         }
         else {
-            MONAD_VM_ASSERT(elem->literal().has_value());
+            MONAD_ASSERT(elem->literal().has_value());
             mov_literal_to_stack_offset(std::move(elem), preferred_offset);
         }
     }
 
-    void Emitter::mov_general_reg_to_avx_reg(StackElemRef elem)
+    void Emitter::mov_general_reg_to_avx_reg(StackElemRef const elem)
     {
-        MONAD_VM_DEBUG_ASSERT(elem->general_reg().has_value());
+        MONAD_DEBUG_ASSERT(elem->general_reg().has_value());
         Gpq256 const &gpq = general_reg_to_gpq256(*elem->general_reg());
         auto const reserv0 = insert_avx_reg(elem);
         auto const elem_avx = *elem->avx_reg();
@@ -2081,16 +2091,16 @@ namespace monad::vm::compiler::native
         as_.vinserti128(ymm0, ymm0, xmm1, 1);
     }
 
-    void Emitter::mov_literal_to_avx_reg(StackElemRef elem)
+    void Emitter::mov_literal_to_avx_reg(StackElemRef const elem)
     {
-        MONAD_VM_DEBUG_ASSERT(elem->literal().has_value());
+        MONAD_DEBUG_ASSERT(elem->literal().has_value());
         auto const reserv = insert_avx_reg(elem);
         mov_literal_to_ymm(*elem->literal(), avx_reg_to_ymm(*elem->avx_reg()));
     }
 
-    void Emitter::mov_stack_offset_to_avx_reg(StackElemRef elem)
+    void Emitter::mov_stack_offset_to_avx_reg(StackElemRef const elem)
     {
-        MONAD_VM_DEBUG_ASSERT(elem->stack_offset().has_value());
+        MONAD_DEBUG_ASSERT(elem->stack_offset().has_value());
         auto const reserv = insert_avx_reg(elem);
         as_.vmovaps(
             avx_reg_to_ymm(*elem->avx_reg()),
@@ -2103,10 +2113,10 @@ namespace monad::vm::compiler::native
         mov_avx_reg_to_stack_offset(std::move(elem), preferred);
     }
 
-    void
-    Emitter::mov_avx_reg_to_stack_offset(StackElemRef elem, int32_t preferred)
+    void Emitter::mov_avx_reg_to_stack_offset(
+        StackElemRef const elem, int32_t const preferred)
     {
-        MONAD_VM_DEBUG_ASSERT(elem->avx_reg().has_value());
+        MONAD_DEBUG_ASSERT(elem->avx_reg().has_value());
         stack_.insert_stack_offset(elem, preferred, PrevLoc::AvxReg);
         auto const y = avx_reg_to_ymm(*elem->avx_reg());
         as_.vmovaps(stack_offset_to_mem(*elem->stack_offset()), y);
@@ -2118,23 +2128,23 @@ namespace monad::vm::compiler::native
         mov_general_reg_to_stack_offset(elem, preferred);
     }
 
-    void Emitter::mov_general_reg_to_stack_offset(StackElemRef elem)
+    void Emitter::mov_general_reg_to_stack_offset(StackElemRef const elem)
     {
         int32_t const preferred = elem->preferred_stack_offset();
         mov_general_reg_to_stack_offset(*elem, preferred);
     }
 
-    void
-    Emitter::mov_general_reg_to_stack_offset(StackElem &elem, int32_t preferred)
+    void Emitter::mov_general_reg_to_stack_offset(
+        StackElem &elem, int32_t const preferred)
     {
-        MONAD_VM_DEBUG_ASSERT(elem.general_reg().has_value());
+        MONAD_DEBUG_ASSERT(elem.general_reg().has_value());
         stack_.insert_stack_offset(elem, preferred, PrevLoc::GprReg);
         mov_general_reg_to_mem(
             *elem.general_reg(), stack_offset_to_mem(*elem.stack_offset()));
     }
 
     void Emitter::mov_general_reg_to_stack_offset(
-        StackElemRef elem, int32_t preferred)
+        StackElemRef const elem, int32_t const preferred)
     {
         return mov_general_reg_to_stack_offset(*elem, preferred);
     }
@@ -2145,16 +2155,16 @@ namespace monad::vm::compiler::native
         mov_literal_to_stack_offset(std::move(elem), preferred);
     }
 
-    void
-    Emitter::mov_literal_to_stack_offset(StackElemRef elem, int32_t preferred)
+    void Emitter::mov_literal_to_stack_offset(
+        StackElemRef const elem, int32_t const preferred)
     {
-        MONAD_VM_DEBUG_ASSERT(elem->literal().has_value());
+        MONAD_DEBUG_ASSERT(elem->literal().has_value());
         // mov_literal_to_mem stores literals by first loading them into an avx
         // register, hence we set it as the previous location
         stack_.insert_stack_offset(elem, preferred, PrevLoc::AvxReg);
         mov_literal_to_mem<true, true>(
             elem, stack_offset_to_mem(*elem->stack_offset()));
-        MONAD_VM_DEBUG_ASSERT(elem->avx_reg().has_value());
+        MONAD_DEBUG_ASSERT(elem->avx_reg().has_value());
     }
 
     void Emitter::mov_avx_reg_to_general_reg(StackElemRef elem)
@@ -2163,46 +2173,46 @@ namespace monad::vm::compiler::native
         mov_avx_reg_to_general_reg(std::move(elem), preferred);
     }
 
-    void
-    Emitter::mov_avx_reg_to_general_reg(StackElemRef elem, int32_t preferred)
+    void Emitter::mov_avx_reg_to_general_reg(
+        StackElemRef const elem, int32_t const preferred)
     {
         mov_avx_reg_to_stack_offset(elem, preferred);
         mov_stack_offset_to_general_reg(elem);
     }
 
-    void Emitter::mov_literal_to_general_reg(StackElemRef elem)
+    void Emitter::mov_literal_to_general_reg(StackElemRef const elem)
     {
-        MONAD_VM_DEBUG_ASSERT(elem->literal().has_value());
+        MONAD_DEBUG_ASSERT(elem->literal().has_value());
         auto const reserv = insert_general_reg(elem);
         mov_literal_to_gpq256(
             *elem->literal(), general_reg_to_gpq256(*elem->general_reg()));
     }
 
-    void Emitter::mov_stack_offset_to_general_reg(StackElemRef elem)
+    void Emitter::mov_stack_offset_to_general_reg(StackElemRef const elem)
     {
-        MONAD_VM_DEBUG_ASSERT(elem->stack_offset().has_value());
+        MONAD_DEBUG_ASSERT(elem->stack_offset().has_value());
         auto const reserv = insert_general_reg(elem);
         mov_stack_offset_to_gpq256(
             *elem->stack_offset(), general_reg_to_gpq256(*elem->general_reg()));
     }
 
     StackElem *
-    Emitter::revertible_mov_stack_offset_to_general_reg(StackElemRef elem)
+    Emitter::revertible_mov_stack_offset_to_general_reg(StackElemRef const elem)
     {
-        MONAD_VM_DEBUG_ASSERT(elem->stack_offset().has_value());
+        MONAD_DEBUG_ASSERT(elem->stack_offset().has_value());
         StackElem *spill_elem = stack_.has_free_general_reg()
                                     ? nullptr
                                     : stack_.spill_general_reg();
 
         auto reg_elem = [this] {
             auto [x, _, spill] = stack_.alloc_general_reg();
-            MONAD_VM_DEBUG_ASSERT(!spill.has_value());
+            MONAD_DEBUG_ASSERT(!spill.has_value());
             return x;
         };
         stack_.move_general_reg(*reg_elem(), *elem);
 
         if (spill_elem != nullptr) {
-            MONAD_VM_DEBUG_ASSERT(spill_elem->stack_offset().has_value());
+            MONAD_DEBUG_ASSERT(spill_elem->stack_offset().has_value());
             mov_general_reg_to_mem(
                 *elem->general_reg(),
                 stack_offset_to_mem(*spill_elem->stack_offset()));
@@ -2213,9 +2223,9 @@ namespace monad::vm::compiler::native
         return spill_elem;
     }
 
-    void Emitter::mov_mem_be_to_general_reg(x86::Mem m, StackElemRef e)
+    void Emitter::mov_mem_be_to_general_reg(x86::Mem m, StackElemRef const e)
     {
-        MONAD_VM_DEBUG_ASSERT(e->general_reg().has_value());
+        MONAD_DEBUG_ASSERT(e->general_reg().has_value());
         auto const &gpq = general_reg_to_gpq256(*e->general_reg());
         for (size_t i = 0; i < 4; ++i) {
             as_.movbe(gpq[3 - i], m);
@@ -2224,8 +2234,8 @@ namespace monad::vm::compiler::native
     }
 
     void Emitter::bswap_to_ymm(
-        std::variant<asmjit::x86::Ymm, asmjit::x86::Mem> src,
-        asmjit::x86::Ymm dst)
+        std::variant<asmjit::x86::Ymm, asmjit::x86::Mem> const src,
+        asmjit::x86::Ymm const dst)
     {
         // Permute qwords:
         // {b0, ..., b7, b8, ..., b15, b16, ..., b23, b24, ..., b31} ->
@@ -2234,7 +2244,7 @@ namespace monad::vm::compiler::native
             as_.vpermq(dst, *y, 27);
         }
         else {
-            MONAD_VM_DEBUG_ASSERT(std::holds_alternative<x86::Mem>(src));
+            MONAD_DEBUG_ASSERT(std::holds_alternative<x86::Mem>(src));
             as_.vpermq(dst, std::get<x86::Mem>(src), 27);
         }
         auto const t = rodata_.add32(
@@ -2248,13 +2258,13 @@ namespace monad::vm::compiler::native
         as_.vpshufb(dst, dst, t);
     }
 
-    void Emitter::mov_mem_be_to_avx_reg(x86::Mem m, StackElemRef e)
+    void Emitter::mov_mem_be_to_avx_reg(x86::Mem const m, StackElemRef const e)
     {
-        MONAD_VM_DEBUG_ASSERT(e->avx_reg().has_value());
+        MONAD_DEBUG_ASSERT(e->avx_reg().has_value());
         bswap_to_ymm(m, avx_reg_to_ymm(*e->avx_reg()));
     }
 
-    StackElemRef Emitter::read_mem_be(x86::Mem m)
+    StackElemRef Emitter::read_mem_be(x86::Mem const m)
     {
         if (stack_.has_free_general_reg()) {
             auto [dst, _] = alloc_general_reg();
@@ -2268,7 +2278,7 @@ namespace monad::vm::compiler::native
         }
     }
 
-    void Emitter::mov_stack_elem_to_mem_be(StackElemRef e, x86::Mem m)
+    void Emitter::mov_stack_elem_to_mem_be(StackElemRef const e, x86::Mem m)
     {
         if (e->literal()) {
             auto const x =
@@ -2289,7 +2299,7 @@ namespace monad::vm::compiler::native
                 bswap_to_ymm(avx_reg_to_ymm(*e->avx_reg()), y);
             }
             else {
-                MONAD_VM_DEBUG_ASSERT(e->stack_offset().has_value());
+                MONAD_DEBUG_ASSERT(e->stack_offset().has_value());
                 bswap_to_ymm(stack_offset_to_mem(*e->stack_offset()), y);
             }
             as_.vmovups(m, y);
@@ -2309,16 +2319,16 @@ namespace monad::vm::compiler::native
     }
 
     // No discharge
-    void Emitter::dup(uint8_t dup_ix)
+    void Emitter::dup(uint8_t const dup_ix)
     {
-        MONAD_VM_ASSERT(dup_ix > 0);
+        MONAD_ASSERT(dup_ix > 0);
         stack_.dup(stack_.top_index() + 1 - static_cast<int32_t>(dup_ix));
     }
 
     // No discharge
-    void Emitter::swap(uint8_t swap_ix)
+    void Emitter::swap(uint8_t const swap_ix)
     {
-        MONAD_VM_ASSERT(swap_ix > 0);
+        MONAD_ASSERT(swap_ix > 0);
         stack_.swap(stack_.top_index() - static_cast<int32_t>(swap_ix));
     }
 
@@ -2457,7 +2467,7 @@ namespace monad::vm::compiler::native
             }
             if (src->literal()) {
                 auto const &x = src->literal()->value;
-                push(runtime::byte(i, x));
+                push(monad::byte(i, x));
                 return;
             }
         }
@@ -2489,7 +2499,7 @@ namespace monad::vm::compiler::native
         }
         else {
             if (ix->literal()) {
-                MONAD_VM_DEBUG_ASSERT(src->stack_offset().has_value());
+                MONAD_DEBUG_ASSERT(src->stack_offset().has_value());
                 byte_literal_ix_stack_offset_src(std::move(ix), std::move(src));
             }
             else {
@@ -2508,7 +2518,7 @@ namespace monad::vm::compiler::native
         if (ix->literal() && src->literal()) {
             auto const &i = ix->literal()->value;
             auto const &x = src->literal()->value;
-            push(runtime::signextend(i, x));
+            push(monad::signextend(i, x));
             return;
         }
 
@@ -2593,7 +2603,7 @@ namespace monad::vm::compiler::native
         if (shift->literal() && value->literal()) {
             auto const &i = shift->literal()->value;
             auto const &x = value->literal()->value;
-            return stack_.alloc_literal({runtime::sar(i, x)});
+            return stack_.alloc_literal({monad::sar(i, x)});
         }
         return shift_by_stack_elem<ShiftType::SAR>(
             std::move(shift), std::move(value), live);
@@ -2606,7 +2616,7 @@ namespace monad::vm::compiler::native
 
         if (elem->literal()) {
             auto const &x = elem->literal()->value;
-            push(runtime::countl_zero(x));
+            push(countl_zero(x));
             return;
         }
 
@@ -2860,7 +2870,7 @@ namespace monad::vm::compiler::native
             as_.vptest(y, y);
         }
         else {
-            MONAD_VM_DEBUG_ASSERT(left_loc == LocationType::GeneralReg);
+            MONAD_DEBUG_ASSERT(left_loc == LocationType::GeneralReg);
             Gpq256 const &gpq = general_reg_to_gpq256(*dst->general_reg());
             as_.or_(gpq[0], gpq[1]);
             as_.or_(gpq[2], gpq[3]);
@@ -2877,7 +2887,8 @@ namespace monad::vm::compiler::native
     }
 
     // Discharge when returning Comparison
-    std::variant<Comparison, StackElemRef> Emitter::iszero(StackElemRef elem)
+    std::variant<Comparison, StackElemRef>
+    Emitter::iszero(StackElemRef const elem)
     {
         if (elem->literal()) {
             return stack_.alloc_literal({!elem->literal()->value});
@@ -2892,13 +2903,13 @@ namespace monad::vm::compiler::native
         }
 
         auto [left, right, loc] = get_una_arguments(false, elem, {});
-        MONAD_VM_DEBUG_ASSERT(left == right);
+        MONAD_DEBUG_ASSERT(left == right);
         if (loc == LocationType::AvxReg) {
             x86::Ymm const y = avx_reg_to_ymm(*left->avx_reg());
             as_.vptest(y, y);
         }
         else {
-            MONAD_VM_DEBUG_ASSERT(loc == LocationType::GeneralReg);
+            MONAD_DEBUG_ASSERT(loc == LocationType::GeneralReg);
             Gpq256 const &gpq = general_reg_to_gpq256(*left->general_reg());
             if (is_live(left, {})) {
                 as_.mov(x86::rax, gpq[0]);
@@ -2924,7 +2935,7 @@ namespace monad::vm::compiler::native
             stack_.push_deferred_comparison(std::get<Comparison>(res));
         }
         else {
-            MONAD_VM_DEBUG_ASSERT(std::holds_alternative<StackElemRef>(res));
+            MONAD_DEBUG_ASSERT(std::holds_alternative<StackElemRef>(res));
             stack_.push(std::get<StackElemRef>(res));
         }
     }
@@ -2932,10 +2943,10 @@ namespace monad::vm::compiler::native
     // Discharge
     // Returns null without discharging when `e` is deferred comparison,
     // which cannot be signed.
-    std::optional<Comparison> Emitter::issigned(StackElemRef e)
+    std::optional<Comparison> Emitter::issigned(StackElemRef const e)
     {
         // Unimplemented for literal, because it is not needed.
-        MONAD_VM_DEBUG_ASSERT(!e->literal().has_value());
+        MONAD_DEBUG_ASSERT(!e->literal().has_value());
 
         auto const dc = stack_.peek_deferred_comparison();
         if (e.get() == dc.stack_elem || e.get() == dc.negated_stack_elem) {
@@ -2958,7 +2969,7 @@ namespace monad::vm::compiler::native
             as_.test(x86::eax, 8);
             return Comparison::NotEqual;
         }
-        MONAD_VM_DEBUG_ASSERT(e->stack_offset().has_value());
+        MONAD_DEBUG_ASSERT(e->stack_offset().has_value());
         auto m = stack_offset_to_mem(*e->stack_offset());
         m.addOffset(24);
         as_.mov(x86::rax, m);
@@ -2997,8 +3008,8 @@ namespace monad::vm::compiler::native
             }
         }
         else {
-            MONAD_VM_DEBUG_ASSERT(loc == LocationType::GeneralReg);
-            MONAD_VM_DEBUG_ASSERT(left == right);
+            MONAD_DEBUG_ASSERT(loc == LocationType::GeneralReg);
+            MONAD_DEBUG_ASSERT(left == right);
             Gpq256 const &gpq = general_reg_to_gpq256(*left->general_reg());
             for (size_t i = 0; i < 4; ++i) {
                 as_.not_(gpq[i]);
@@ -3008,9 +3019,9 @@ namespace monad::vm::compiler::native
     }
 
     // Discharge
-    void Emitter::gas(int64_t remaining_base_gas)
+    void Emitter::gas(int64_t const remaining_base_gas)
     {
-        MONAD_VM_DEBUG_ASSERT(remaining_base_gas >= 0);
+        MONAD_DEBUG_ASSERT(remaining_base_gas >= 0);
         discharge_deferred_comparison();
         auto [dst, _] = alloc_general_reg();
         Gpq256 const &gpq = general_reg_to_gpq256(*dst->general_reg());
@@ -3169,8 +3180,8 @@ namespace monad::vm::compiler::native
 
         // It is later assumed that volatile_general_reg coincides with
         // rdi_general_reg and rsi_general_reg.
-        MONAD_VM_DEBUG_ASSERT(rdi_general_reg == volatile_general_reg);
-        MONAD_VM_DEBUG_ASSERT(rsi_general_reg == volatile_general_reg);
+        MONAD_DEBUG_ASSERT(rdi_general_reg == volatile_general_reg);
+        MONAD_DEBUG_ASSERT(rsi_general_reg == volatile_general_reg);
 
         auto const done_label = as_.newLabel();
 
@@ -3214,14 +3225,14 @@ namespace monad::vm::compiler::native
             // in `is_bounded_by_bits`. Hence `r` cannot be part of the volatile
             // general reg and in particular cannot be rdi or rsi, so no need to
             // worry about overwriting the value of `r` here.
-            MONAD_VM_DEBUG_ASSERT(r != x86::rdi && r != x86::rsi);
+            MONAD_DEBUG_ASSERT(r != x86::rdi && r != x86::rsi);
             as_.mov(x86::rdi, x86::qword_ptr(reg_context, data_offset));
             as_.mov(x86::esi, x86::dword_ptr(reg_context, size_offset));
             as_.add(x86::rdi, r);
             as_.sub(x86::rsi, r);
         }
         else {
-            MONAD_VM_DEBUG_ASSERT(
+            MONAD_DEBUG_ASSERT(
                 std::holds_alternative<std::monostate>(offset_op));
             as_.mov(x86::rdi, x86::qword_ptr(reg_context, data_offset));
             as_.mov(x86::esi, x86::dword_ptr(reg_context, size_offset));
@@ -3300,9 +3311,9 @@ namespace monad::vm::compiler::native
             as_.vpextrb(*mem, avx_reg_to_xmm(*value->avx_reg()), 0);
         }
         else {
-            MONAD_VM_DEBUG_ASSERT(value->stack_offset().has_value());
-            MONAD_VM_DEBUG_ASSERT(volatile_general_reg == rcx_general_reg);
-            MONAD_VM_DEBUG_ASSERT(
+            MONAD_DEBUG_ASSERT(value->stack_offset().has_value());
+            MONAD_DEBUG_ASSERT(volatile_general_reg == rcx_general_reg);
+            MONAD_DEBUG_ASSERT(
                 !stack_.is_general_reg_on_stack(volatile_general_reg));
             as_.mov(x86::cl, stack_offset_to_mem(*value->stack_offset()));
             as_.mov(*mem, x86::cl);
@@ -3312,7 +3323,7 @@ namespace monad::vm::compiler::native
     template void Emitter::mstore8<runtime::Memory::Version::V1>();
     template void Emitter::mstore8<runtime::Memory::Version::MIP3>();
 
-    void Emitter::mul(int64_t remaining_base_gas)
+    void Emitter::mul(int64_t const remaining_base_gas)
     {
         if (mul_optimized()) {
             return;
@@ -3320,7 +3331,7 @@ namespace monad::vm::compiler::native
         call_runtime(remaining_base_gas, false, runtime::mul);
     }
 
-    void Emitter::udiv(int64_t remaining_base_gas)
+    void Emitter::udiv(int64_t const remaining_base_gas)
     {
         if (div_optimized<false>()) {
             return;
@@ -3328,7 +3339,7 @@ namespace monad::vm::compiler::native
         call_runtime(remaining_base_gas, true, runtime::udiv);
     }
 
-    void Emitter::sdiv(int64_t remaining_base_gas)
+    void Emitter::sdiv(int64_t const remaining_base_gas)
     {
         if (div_optimized<true>()) {
             return;
@@ -3336,7 +3347,7 @@ namespace monad::vm::compiler::native
         call_runtime(remaining_base_gas, true, runtime::sdiv);
     }
 
-    void Emitter::umod(int64_t remaining_base_gas)
+    void Emitter::umod(int64_t const remaining_base_gas)
     {
         if (mod_optimized<false>()) {
             return;
@@ -3344,7 +3355,7 @@ namespace monad::vm::compiler::native
         call_runtime(remaining_base_gas, true, runtime::umod);
     }
 
-    void Emitter::smod(int64_t remaining_base_gas)
+    void Emitter::smod(int64_t const remaining_base_gas)
     {
         if (mod_optimized<true>()) {
             return;
@@ -3352,7 +3363,7 @@ namespace monad::vm::compiler::native
         call_runtime(remaining_base_gas, true, runtime::smod);
     }
 
-    void Emitter::addmod(int64_t remaining_base_gas)
+    void Emitter::addmod(int64_t const remaining_base_gas)
     {
         if (addmod_opt()) {
             return;
@@ -3360,7 +3371,7 @@ namespace monad::vm::compiler::native
         call_runtime(remaining_base_gas, true, runtime::addmod);
     }
 
-    void Emitter::mulmod(int64_t remaining_base_gas)
+    void Emitter::mulmod(int64_t const remaining_base_gas)
     {
         if (mulmod_opt()) {
             return;
@@ -3394,7 +3405,7 @@ namespace monad::vm::compiler::native
     // Discharge indirectly with `jumpi_comparison`
     void Emitter::jumpi(basic_blocks::Block const &ft)
     {
-        MONAD_VM_DEBUG_ASSERT(ft.offset <= *bytecode_size_);
+        MONAD_DEBUG_ASSERT(ft.offset <= *bytecode_size_);
         // We spill the stack if the fall through block is a jumpdest, but also
         // in case the number of spills is not proportional to the number of
         // instructions in the fall through block and the fallthrough block
@@ -3449,7 +3460,7 @@ namespace monad::vm::compiler::native
         return_with_status_code(runtime::StatusCode::Revert);
     }
 
-    void Emitter::status_code(runtime::StatusCode status)
+    void Emitter::status_code(runtime::StatusCode const status)
     {
         int32_t const c = static_cast<int32_t>(status);
         as_.mov(
@@ -3457,7 +3468,8 @@ namespace monad::vm::compiler::native
             c);
     }
 
-    void Emitter::error_block(asmjit::Label &lbl, runtime::StatusCode status)
+    void
+    Emitter::error_block(asmjit::Label &lbl, runtime::StatusCode const status)
     {
         as_.align(asmjit::AlignMode::kCode, 16);
         as_.bind(lbl);
@@ -3465,7 +3477,7 @@ namespace monad::vm::compiler::native
         as_.jmp(epilogue_label_);
     }
 
-    void Emitter::return_with_status_code(runtime::StatusCode status)
+    void Emitter::return_with_status_code(runtime::StatusCode const status)
     {
         auto const offset = stack_.pop();
         RegReserv const offset_avx_reserv{offset};
@@ -3499,7 +3511,7 @@ namespace monad::vm::compiler::native
         }
     }
 
-    uint256_t Emitter::literal_jump_dest_operand(StackElemRef dest)
+    uint256_t Emitter::literal_jump_dest_operand(StackElemRef const dest)
     {
         return dest->literal()->value;
     }
@@ -3553,7 +3565,7 @@ namespace monad::vm::compiler::native
             op = general_reg_to_gpq256(*dest->general_reg());
         }
         else if (!dest->stack_offset()) {
-            MONAD_VM_DEBUG_ASSERT(dest->avx_reg().has_value());
+            MONAD_DEBUG_ASSERT(dest->avx_reg().has_value());
             x86::Mem const m = x86::qword_ptr(x86::rsp, sp_offset_temp_word1);
             as_.vmovups(m, avx_reg_to_ymm(*dest->avx_reg()));
             op = m;
@@ -3562,16 +3574,16 @@ namespace monad::vm::compiler::native
     }
 
     void Emitter::jump_non_literal_dest(
-        StackElemRef dest, Operand const &dest_op,
-        std::optional<StackElem *> spill_elem)
+        StackElemRef const dest, Operand const &dest_op,
+        std::optional<StackElem *> const spill_elem)
     {
         if (spill_elem.has_value()) {
-            MONAD_VM_DEBUG_ASSERT(dest->general_reg().has_value());
+            MONAD_DEBUG_ASSERT(dest->general_reg().has_value());
             // Restore `stack_` back to the state before calling
             // `non_literal_jump_dest_operand`.
             auto *e = *spill_elem;
             if (e != nullptr) {
-                MONAD_VM_DEBUG_ASSERT(e->is_on_stack());
+                MONAD_DEBUG_ASSERT(e->is_on_stack());
                 stack_.move_general_reg(*dest, *e);
                 stack_.remove_stack_offset(*e);
             }
@@ -3595,7 +3607,7 @@ namespace monad::vm::compiler::native
             as_.jmp(x86::rax);
         }
         else {
-            MONAD_VM_DEBUG_ASSERT(std::holds_alternative<x86::Mem>(dest_op));
+            MONAD_DEBUG_ASSERT(std::holds_alternative<x86::Mem>(dest_op));
             x86::Mem m = std::get<x86::Mem>(dest_op);
             if (m.baseReg() == x86::rbp) {
                 // Since `adjust_by_stack_delta` has been called before this
@@ -3622,7 +3634,8 @@ namespace monad::vm::compiler::native
         }
     }
 
-    void Emitter::conditional_jmp(asmjit::Label const &lbl, Comparison comp)
+    void
+    Emitter::conditional_jmp(asmjit::Label const &lbl, Comparison const comp)
     {
         switch (comp) {
         case Comparison::Below:
@@ -3658,7 +3671,8 @@ namespace monad::vm::compiler::native
         }
     }
 
-    Comparison Emitter::jumpi_comparison(StackElemRef cond, StackElemRef dest)
+    Comparison
+    Emitter::jumpi_comparison(StackElemRef const cond, StackElemRef const dest)
     {
         auto const dc = stack_.discharge_deferred_comparison();
         if (dc.stack_elem && (dc.stack_elem == dest.get() ||
@@ -3704,7 +3718,7 @@ namespace monad::vm::compiler::native
                 }
             }
             else {
-                MONAD_VM_DEBUG_ASSERT(cond->stack_offset().has_value());
+                MONAD_DEBUG_ASSERT(cond->stack_offset().has_value());
                 RegReserv const dest_reserv{dest};
                 mov_stack_offset_to_avx_reg(cond);
                 auto const y = avx_reg_to_ymm(*cond->avx_reg());
@@ -3797,7 +3811,7 @@ namespace monad::vm::compiler::native
         }
     }
 
-    void Emitter::read_context_address(int32_t offset)
+    void Emitter::read_context_address(int32_t const offset)
     {
         x86::Mem m = x86::qword_ptr(reg_context, offset);
         auto [dst, _] = alloc_general_reg();
@@ -3818,7 +3832,7 @@ namespace monad::vm::compiler::native
         stack_.push(std::move(dst));
     }
 
-    void Emitter::read_evmc_tx_context_address(int32_t offset)
+    void Emitter::read_evmc_tx_context_address(int32_t const offset)
     {
         auto [dst, _] = alloc_general_reg();
         Gpq256 const &gpq = general_reg_to_gpq256(*dst->general_reg());
@@ -3843,12 +3857,12 @@ namespace monad::vm::compiler::native
         stack_.push(std::move(dst));
     }
 
-    void Emitter::read_context_word(int32_t offset)
+    void Emitter::read_context_word(int32_t const offset)
     {
         stack_.push(read_mem_be(x86::qword_ptr(reg_context, offset)));
     }
 
-    void Emitter::read_evmc_tx_context_word(int32_t offset)
+    void Emitter::read_evmc_tx_context_word(int32_t const offset)
     {
         as_.mov(
             x86::rax,
@@ -3857,7 +3871,7 @@ namespace monad::vm::compiler::native
         stack_.push(read_mem_be(x86::qword_ptr(x86::rax, offset)));
     }
 
-    void Emitter::read_context_uint32_to_word(int32_t offset)
+    void Emitter::read_context_uint32_to_word(int32_t const offset)
     {
         auto [dst, _] = alloc_general_reg();
         Gpq256 const &gpq = general_reg_to_gpq256(*dst->general_reg());
@@ -3875,7 +3889,7 @@ namespace monad::vm::compiler::native
         stack_.push(std::move(dst));
     }
 
-    void Emitter::read_evmc_tx_context_uint64_to_word(int32_t offset)
+    void Emitter::read_evmc_tx_context_uint64_to_word(int32_t const offset)
     {
         auto [dst, _] = alloc_general_reg();
         Gpq256 const &gpq = general_reg_to_gpq256(*dst->general_reg());
@@ -3953,7 +3967,7 @@ namespace monad::vm::compiler::native
         if (pre_dst->literal() && pre_src->literal()) {
             auto const &x = pre_dst->literal()->value;
             auto const &y = pre_src->literal()->value;
-            push(runtime::slt(x, y));
+            push(monad::slt(x, y));
             return;
         }
 
@@ -4015,8 +4029,8 @@ namespace monad::vm::compiler::native
     void Emitter::destructive_mov_stack_elem_to_bounded_rax(
         StackElemRef e, uint16_t bound, std::tuple<LiveSet...> const &live)
     {
-        MONAD_VM_DEBUG_ASSERT(bound > 0);
-        MONAD_VM_DEBUG_ASSERT(!e->literal().has_value());
+        MONAD_DEBUG_ASSERT(bound > 0);
+        MONAD_DEBUG_ASSERT(!e->literal().has_value());
         if (e->general_reg()) {
             auto const &gpq = general_reg_to_gpq256(*e->general_reg());
             as_.cmp(gpq[0], bound);
@@ -4062,7 +4076,7 @@ namespace monad::vm::compiler::native
             }
         }
         else {
-            MONAD_VM_ASSERT(e->stack_offset().has_value());
+            MONAD_ASSERT(e->stack_offset().has_value());
             x86::Mem mem = stack_offset_to_mem(*e->stack_offset());
             mem.addOffset(8);
             as_.mov(x86::rax, mem);
@@ -4088,15 +4102,15 @@ namespace monad::vm::compiler::native
         }
     }
 
-    void
-    Emitter::byte_literal_ix_stack_offset_src(StackElemRef ix, StackElemRef src)
+    void Emitter::byte_literal_ix_stack_offset_src(
+        StackElemRef ix, StackElemRef const src)
     {
-        MONAD_VM_DEBUG_ASSERT(ix->literal().has_value());
-        MONAD_VM_DEBUG_ASSERT(src->stack_offset().has_value());
+        MONAD_DEBUG_ASSERT(ix->literal().has_value());
+        MONAD_DEBUG_ASSERT(src->stack_offset().has_value());
 
         auto const i = ix->literal()->value;
         ix.reset(); // Potentially release locations
-        MONAD_VM_DEBUG_ASSERT(i < 32);
+        MONAD_DEBUG_ASSERT(i < 32);
 
         auto [dst, dst_reserv] = alloc_general_reg();
         Gpq256 const &dst_gpq = general_reg_to_gpq256(*dst->general_reg());
@@ -4121,8 +4135,8 @@ namespace monad::vm::compiler::native
     void Emitter::byte_non_literal_ix_literal_or_stack_offset_src(
         StackElemRef ix, StackElemRef src, std::tuple<LiveSet...> const &live)
     {
-        MONAD_VM_DEBUG_ASSERT(!ix->literal().has_value());
-        MONAD_VM_DEBUG_ASSERT(
+        MONAD_DEBUG_ASSERT(!ix->literal().has_value());
+        MONAD_DEBUG_ASSERT(
             src->literal().has_value() || src->stack_offset().has_value());
 
         RegReserv const ix_reserv{ix};
@@ -4183,11 +4197,11 @@ namespace monad::vm::compiler::native
     void Emitter::byte_literal_ix_general_reg_src(
         StackElemRef ix, StackElemRef src, std::tuple<LiveSet...> const &live)
     {
-        MONAD_VM_DEBUG_ASSERT(ix->literal().has_value());
-        MONAD_VM_DEBUG_ASSERT(src->general_reg().has_value());
+        MONAD_DEBUG_ASSERT(ix->literal().has_value());
+        MONAD_DEBUG_ASSERT(src->general_reg().has_value());
 
         auto const i = ix->literal()->value;
-        MONAD_VM_DEBUG_ASSERT(i < 32);
+        MONAD_DEBUG_ASSERT(i < 32);
         ix.reset(); // Potentially release locations
 
         Gpq256 const &src_gpq = general_reg_to_gpq256(*src->general_reg());
@@ -4227,8 +4241,8 @@ namespace monad::vm::compiler::native
     void Emitter::byte_non_literal_ix_general_reg_src(
         StackElemRef ix, StackElemRef src, std::tuple<LiveSet...> const &live)
     {
-        MONAD_VM_DEBUG_ASSERT(!ix->literal().has_value());
-        MONAD_VM_DEBUG_ASSERT(src->general_reg().has_value());
+        MONAD_DEBUG_ASSERT(!ix->literal().has_value());
+        MONAD_DEBUG_ASSERT(src->general_reg().has_value());
 
         RegReserv const ix_reserv{ix};
 
@@ -4248,7 +4262,7 @@ namespace monad::vm::compiler::native
             ix0 = x86::rax;
         }
         else {
-            MONAD_VM_DEBUG_ASSERT(ix->avx_reg().has_value());
+            MONAD_DEBUG_ASSERT(ix->avx_reg().has_value());
             auto const ix_ymm = avx_reg_to_ymm(*ix->avx_reg());
             as_.vmovq(x86::rax, ix_ymm.xmm());
             ix0 = x86::rax;
@@ -4286,14 +4300,15 @@ namespace monad::vm::compiler::native
         stack_.push(std::move(dst));
     }
 
-    void Emitter::byte_literal_ix_avx_reg_src(StackElemRef ix, StackElemRef src)
+    void Emitter::byte_literal_ix_avx_reg_src(
+        StackElemRef ix, StackElemRef const src)
     {
-        MONAD_VM_DEBUG_ASSERT(ix->literal().has_value());
-        MONAD_VM_DEBUG_ASSERT(src->avx_reg().has_value());
+        MONAD_DEBUG_ASSERT(ix->literal().has_value());
+        MONAD_DEBUG_ASSERT(src->avx_reg().has_value());
 
         auto const i = ix->literal()->value;
         ix.reset(); // Potentially release locations
-        MONAD_VM_DEBUG_ASSERT(i < 32);
+        MONAD_DEBUG_ASSERT(i < 32);
 
         AvxRegReserv const src_reserv{src};
         auto const src_ymm = avx_reg_to_ymm(*src->avx_reg());
@@ -4326,8 +4341,8 @@ namespace monad::vm::compiler::native
     void Emitter::byte_non_literal_ix_avx_reg_src(
         StackElemRef ix, StackElemRef src, std::tuple<LiveSet...> const &live)
     {
-        MONAD_VM_DEBUG_ASSERT(!ix->literal().has_value());
-        MONAD_VM_DEBUG_ASSERT(src->avx_reg().has_value());
+        MONAD_DEBUG_ASSERT(!ix->literal().has_value());
+        MONAD_DEBUG_ASSERT(src->avx_reg().has_value());
 
         RegReserv const ix_reserv{ix};
         AvxRegReserv const src_reserv{src};
@@ -4350,7 +4365,7 @@ namespace monad::vm::compiler::native
             as_.mov(x86::rax, ix_mem);
         }
         else {
-            MONAD_VM_DEBUG_ASSERT(ix->avx_reg().has_value());
+            MONAD_DEBUG_ASSERT(ix->avx_reg().has_value());
             auto const ix_ymm = avx_reg_to_ymm(*ix->avx_reg());
             as_.vmovq(x86::rax, ix_ymm.xmm());
         }
@@ -4380,10 +4395,11 @@ namespace monad::vm::compiler::native
         stack_.push(std::move(dst));
     }
 
-    void Emitter::signextend_avx_reg_by_int8(int8_t ix, StackElemRef src)
+    void
+    Emitter::signextend_avx_reg_by_int8(int8_t const ix, StackElemRef const src)
     {
-        MONAD_VM_DEBUG_ASSERT(ix >= 0 && ix < 31);
-        MONAD_VM_DEBUG_ASSERT(src->avx_reg().has_value());
+        MONAD_DEBUG_ASSERT(ix >= 0 && ix < 31);
+        MONAD_DEBUG_ASSERT(src->avx_reg().has_value());
 
         AvxRegReserv const src_reserv{src};
         auto [dst, dst_reserv] = alloc_avx_reg();
@@ -4497,7 +4513,7 @@ namespace monad::vm::compiler::native
             stack_.push(std::move(dst));
         }
         else {
-            MONAD_VM_DEBUG_ASSERT(src->stack_offset());
+            MONAD_DEBUG_ASSERT(src->stack_offset());
 
             auto src_mem = stack_offset_to_mem(*src->stack_offset());
 
@@ -4552,7 +4568,7 @@ namespace monad::vm::compiler::native
         uint256_t const &pre_ix, StackElemRef src,
         std::tuple<LiveSet...> const &live)
     {
-        MONAD_VM_DEBUG_ASSERT(!src->literal().has_value());
+        MONAD_DEBUG_ASSERT(!src->literal().has_value());
         if (pre_ix >= 31) {
             return stack_.push(std::move(src));
         }
@@ -4566,9 +4582,9 @@ namespace monad::vm::compiler::native
         }
     }
 
-    void Emitter::signextend_avx_reg_by_bounded_rax(StackElemRef src)
+    void Emitter::signextend_avx_reg_by_bounded_rax(StackElemRef const src)
     {
-        MONAD_VM_DEBUG_ASSERT(src->avx_reg().has_value());
+        MONAD_DEBUG_ASSERT(src->avx_reg().has_value());
 
         AvxRegReserv const src_reserv{src};
         auto [dst, dst_reserv] = alloc_avx_reg();
@@ -4605,9 +4621,9 @@ namespace monad::vm::compiler::native
         stack_.push(std::move(dst));
     }
 
-    void Emitter::signextend_general_reg_by_bounded_rax(StackElemRef src)
+    void Emitter::signextend_general_reg_by_bounded_rax(StackElemRef const src)
     {
-        MONAD_VM_DEBUG_ASSERT(src->general_reg().has_value());
+        MONAD_DEBUG_ASSERT(src->general_reg().has_value());
 
         GeneralRegReserv const src_reserv{src};
         auto [dst, dst_reserv] = alloc_general_reg();
@@ -4734,10 +4750,10 @@ namespace monad::vm::compiler::native
         stack_.push(std::move(dst));
     }
 
-    void
-    Emitter::signextend_stack_offset_or_literal_by_bounded_rax(StackElemRef src)
+    void Emitter::signextend_stack_offset_or_literal_by_bounded_rax(
+        StackElemRef const src)
     {
-        MONAD_VM_DEBUG_ASSERT(
+        MONAD_DEBUG_ASSERT(
             src->stack_offset().has_value() || src->literal().has_value());
 
         auto [dst, dst_reserv] = alloc_avx_reg();
@@ -4795,8 +4811,8 @@ namespace monad::vm::compiler::native
     void Emitter::signextend_by_non_literal(
         StackElemRef ix, StackElemRef src, std::tuple<LiveSet...> const &live)
     {
-        MONAD_VM_DEBUG_ASSERT(!stack_.has_deferred_comparison());
-        MONAD_VM_DEBUG_ASSERT(!ix->literal().has_value());
+        MONAD_DEBUG_ASSERT(!stack_.has_deferred_comparison());
+        MONAD_DEBUG_ASSERT(!ix->literal().has_value());
 
         {
             RegReserv const src_reserv{src};
@@ -4835,9 +4851,9 @@ namespace monad::vm::compiler::native
     StackElemRef Emitter::shift_general_reg_or_stack_offset_by_literal(
         unsigned shift, StackElemRef value, std::tuple<LiveSet...> const &live)
     {
-        MONAD_VM_DEBUG_ASSERT(!stack_.has_deferred_comparison());
-        MONAD_VM_DEBUG_ASSERT(shift <= 256);
-        MONAD_VM_DEBUG_ASSERT(
+        MONAD_DEBUG_ASSERT(!stack_.has_deferred_comparison());
+        MONAD_DEBUG_ASSERT(shift <= 256);
+        MONAD_DEBUG_ASSERT(
             value->general_reg().has_value() ||
             value->stack_offset().has_value());
 
@@ -4860,7 +4876,7 @@ namespace monad::vm::compiler::native
         Gpq256 &dst_gpq = general_reg_to_gpq256(*dst->general_reg());
 
         if (shift == 256) {
-            MONAD_VM_DEBUG_ASSERT(shift_type == ShiftType::SAR);
+            MONAD_DEBUG_ASSERT(shift_type == ShiftType::SAR);
             if (std::holds_alternative<Gpq256 const *>(value_op)) {
                 Gpq256 const &value_gpq = *std::get<Gpq256 const *>(value_op);
                 if (&dst_gpq != &value_gpq) {
@@ -4974,9 +4990,9 @@ namespace monad::vm::compiler::native
     {
         // See `shift_avx_reg_by_non_literal` for the general algorithm.
 
-        MONAD_VM_DEBUG_ASSERT(!stack_.has_deferred_comparison());
-        MONAD_VM_DEBUG_ASSERT(shift <= 256);
-        MONAD_VM_DEBUG_ASSERT(value->avx_reg().has_value());
+        MONAD_DEBUG_ASSERT(!stack_.has_deferred_comparison());
+        MONAD_DEBUG_ASSERT(shift <= 256);
+        MONAD_DEBUG_ASSERT(value->avx_reg().has_value());
 
         unsigned const dword_shift = shift >> 6;
         unsigned const bit_shift = shift & 63;
@@ -4988,7 +5004,7 @@ namespace monad::vm::compiler::native
         auto const out = avx_reg_to_ymm(*result->avx_reg());
 
         if (shift == 256) {
-            MONAD_VM_DEBUG_ASSERT(shift_type == ShiftType::SAR);
+            MONAD_DEBUG_ASSERT(shift_type == ShiftType::SAR);
             as_.vpxor(out, out, out);
             as_.vpcmpgtq(out, out, in);
             as_.vpermq(out, out, 0xff);
@@ -5061,7 +5077,7 @@ namespace monad::vm::compiler::native
         uint256_t const &shift_literal, StackElemRef value,
         std::tuple<LiveSet...> const &live)
     {
-        MONAD_VM_DEBUG_ASSERT(!value->literal().has_value());
+        MONAD_DEBUG_ASSERT(!value->literal().has_value());
 
         auto shift = static_cast<unsigned>(shift_literal);
         if (shift_literal >= 256) {
@@ -5096,12 +5112,12 @@ namespace monad::vm::compiler::native
         StackElemRef shift, StackElemRef value,
         std::tuple<LiveSet...> const &live)
     {
-        MONAD_VM_DEBUG_ASSERT(
+        MONAD_DEBUG_ASSERT(
             gpq256_regs_[rcx_general_reg.reg][volatile_gpq_index<x86::rcx>()] ==
             x86::rcx);
 
         if (value->literal()) {
-            MONAD_VM_DEBUG_ASSERT(!shift->literal().has_value());
+            MONAD_DEBUG_ASSERT(!shift->literal().has_value());
             if (value->literal()->value == 0) {
                 return value;
             }
@@ -5133,7 +5149,7 @@ namespace monad::vm::compiler::native
                 std::move(shift), std::move(value), live);
         }
         else {
-            MONAD_VM_DEBUG_ASSERT(value->stack_offset().has_value());
+            MONAD_DEBUG_ASSERT(value->stack_offset().has_value());
             mov_stack_offset_to_general_reg(value);
             return shift_general_reg_by_non_literal<shift_type>(
                 std::move(shift), std::move(value), live);
@@ -5145,7 +5161,7 @@ namespace monad::vm::compiler::native
         StackElemRef shift, StackElemRef value,
         std::tuple<LiveSet...> const &live)
     {
-        MONAD_VM_DEBUG_ASSERT(value->general_reg().has_value());
+        MONAD_DEBUG_ASSERT(value->general_reg().has_value());
 
         bool restore_rcx_from_rax =
             stack_.is_general_reg_on_stack(rcx_general_reg);
@@ -5284,7 +5300,7 @@ namespace monad::vm::compiler::native
         if (restore_rcx_from_rax) {
             as_.mov(x86::rcx, x86::rax);
         }
-        MONAD_VM_DEBUG_ASSERT(rcx_gpq[rcx_gpq_ix] == x86::rax);
+        MONAD_DEBUG_ASSERT(rcx_gpq[rcx_gpq_ix] == x86::rax);
         rcx_gpq[rcx_gpq_ix] = x86::rcx;
 
         return dst;
@@ -5295,7 +5311,7 @@ namespace monad::vm::compiler::native
         StackElemRef shift, StackElemRef value,
         std::tuple<LiveSet...> const &live)
     {
-        MONAD_VM_DEBUG_ASSERT(value->avx_reg().has_value());
+        MONAD_DEBUG_ASSERT(value->avx_reg().has_value());
 
         AvxRegReserv const value_reserv{value};
         auto const in = avx_reg_to_ymm(*value->avx_reg());
@@ -5489,7 +5505,7 @@ namespace monad::vm::compiler::native
                 mov_stack_offset_to_general_reg(dst);
             }
             else {
-                MONAD_VM_DEBUG_ASSERT(dst->avx_reg().has_value());
+                MONAD_DEBUG_ASSERT(dst->avx_reg().has_value());
                 mov_avx_reg_to_general_reg(dst);
             }
         }
@@ -5522,7 +5538,7 @@ namespace monad::vm::compiler::native
                 std::move(src),
                 LocationType::Literal};
         }
-        MONAD_VM_DEBUG_ASSERT(src->avx_reg().has_value());
+        MONAD_DEBUG_ASSERT(src->avx_reg().has_value());
         mov_avx_reg_to_stack_offset(src);
         return {
             std::move(dst),
@@ -5544,7 +5560,7 @@ namespace monad::vm::compiler::native
         RegReserv const dst_reserv{dst};
         RegReserv const src_reserv{src};
 
-        MONAD_VM_DEBUG_ASSERT(dst_loc == LocationType::GeneralReg);
+        MONAD_DEBUG_ASSERT(dst_loc == LocationType::GeneralReg);
         auto new_dst = release_general_reg(dst, live);
         if (dst == src) {
             return {new_dst, dst_loc, new_dst, src_loc};
@@ -5555,7 +5571,8 @@ namespace monad::vm::compiler::native
     }
 
     Emitter::Operand Emitter::get_operand(
-        StackElemRef elem, LocationType loc, bool always_add_literal)
+        StackElemRef const elem, LocationType const loc,
+        bool const always_add_literal)
     {
         switch (loc) {
         case LocationType::StackOffset:
@@ -5589,7 +5606,7 @@ namespace monad::vm::compiler::native
     {
         auto dst_op = get_operand(dst, dst_loc);
         auto src_op = get_operand(src, src_loc);
-        MONAD_VM_DEBUG_ASSERT(!std::holds_alternative<x86::Ymm>(src_op));
+        MONAD_DEBUG_ASSERT(!std::holds_alternative<x86::Ymm>(src_op));
 
         size_t instr_ix = 0;
         auto isnop = [&] -> std::function<bool(size_t, size_t)> {
@@ -5648,8 +5665,8 @@ namespace monad::vm::compiler::native
                 src_op);
         }
         else {
-            MONAD_VM_DEBUG_ASSERT(std::holds_alternative<x86::Mem>(dst_op));
-            MONAD_VM_DEBUG_ASSERT(!std::holds_alternative<x86::Mem>(src_op));
+            MONAD_DEBUG_ASSERT(std::holds_alternative<x86::Mem>(dst_op));
+            MONAD_DEBUG_ASSERT(!std::holds_alternative<x86::Mem>(src_op));
 
             x86::Mem const &dst_mem = std::get<x86::Mem>(dst_op);
             std::visit(
@@ -5678,7 +5695,7 @@ namespace monad::vm::compiler::native
         }
 
         // This is not required to be an invariant, but it currently is:
-        MONAD_VM_DEBUG_ASSERT(instr_ix > 0);
+        MONAD_DEBUG_ASSERT(instr_ix > 0);
     }
 
     template <typename... LiveSet>
@@ -5687,7 +5704,7 @@ namespace monad::vm::compiler::native
         bool is_dst_mutated, StackElemRef dst,
         std::tuple<LiveSet...> const &live)
     {
-        MONAD_VM_DEBUG_ASSERT(!dst->literal());
+        MONAD_DEBUG_ASSERT(!dst->literal());
         RegReserv const dst_reserv{dst};
 
         if (!dst->avx_reg()) {
@@ -5698,7 +5715,7 @@ namespace monad::vm::compiler::native
                 auto const new_dst = release_general_reg(std::move(dst), live);
                 return {new_dst, new_dst, LocationType::GeneralReg};
             }
-            MONAD_VM_DEBUG_ASSERT(dst->stack_offset().has_value());
+            MONAD_DEBUG_ASSERT(dst->stack_offset().has_value());
             // to prevent a store forwarding stall, load the stack offset back
             // into gpr if we know it was previously stored there from another
             // gpr
@@ -5757,7 +5774,7 @@ namespace monad::vm::compiler::native
                     std::move(src),
                     LocationType::AvxReg};
             }
-            MONAD_VM_DEBUG_ASSERT(dst->stack_offset().has_value());
+            MONAD_DEBUG_ASSERT(dst->stack_offset().has_value());
             if (dst->stack_offset()->moved_from == PrevLoc::GprReg) {
                 mov_stack_offset_to_general_reg(dst);
                 return {
@@ -5776,7 +5793,7 @@ namespace monad::vm::compiler::native
 
         // We need to consider 15 cases for the pair (dst, src).
         // The case (literal, literal) is not possible.
-        MONAD_VM_DEBUG_ASSERT(
+        MONAD_DEBUG_ASSERT(
             !dst->literal().has_value() || !src->literal().has_value());
 
         // Case 1: (avx, avx)
@@ -5863,7 +5880,7 @@ namespace monad::vm::compiler::native
         //  (literal, general)
         //  (general, avx)
         //  (avx, general)
-        MONAD_VM_DEBUG_ASSERT(dst->general_reg() || src->general_reg());
+        MONAD_DEBUG_ASSERT(dst->general_reg() || src->general_reg());
         return prepare_general_dest_and_source(
             true, std::move(dst), std::move(src), live);
     }
@@ -5892,7 +5909,7 @@ namespace monad::vm::compiler::native
             }
         }
         else {
-            MONAD_VM_DEBUG_ASSERT(dst_loc == LocationType::AvxReg);
+            MONAD_DEBUG_ASSERT(dst_loc == LocationType::AvxReg);
             if (is_live(dst, live)) {
                 if (!is_live(src, live) && src_loc == LocationType::AvxReg) {
                     auto const n = stack_.release_avx_reg(src);
@@ -5939,8 +5956,8 @@ namespace monad::vm::compiler::native
         auto left_op = get_operand(left, left_loc);
         auto right_op = get_operand(
             right, right_loc, std::holds_alternative<x86::Ymm>(left_op));
-        MONAD_VM_DEBUG_ASSERT(dst->avx_reg().has_value());
-        MONAD_VM_DEBUG_ASSERT(std::holds_alternative<x86::Ymm>(left_op));
+        MONAD_DEBUG_ASSERT(dst->avx_reg().has_value());
+        MONAD_DEBUG_ASSERT(std::holds_alternative<x86::Ymm>(left_op));
         if (std::holds_alternative<x86::Ymm>(right_op)) {
             (as_.*VV)(
                 avx_reg_to_ymm(*dst->avx_reg()),
@@ -5948,7 +5965,7 @@ namespace monad::vm::compiler::native
                 std::get<x86::Ymm>(right_op));
         }
         else {
-            MONAD_VM_DEBUG_ASSERT(std::holds_alternative<x86::Mem>(right_op));
+            MONAD_DEBUG_ASSERT(std::holds_alternative<x86::Mem>(right_op));
             (as_.*VM)(
                 avx_reg_to_ymm(*dst->avx_reg()),
                 std::get<x86::Ymm>(left_op),
@@ -5972,8 +5989,8 @@ namespace monad::vm::compiler::native
     void Emitter::test_high_bits192(
         StackElemRef elem, std::tuple<LiveSet...> const &live)
     {
-        MONAD_VM_DEBUG_ASSERT(!stack_.has_deferred_comparison());
-        MONAD_VM_DEBUG_ASSERT(!elem->literal());
+        MONAD_DEBUG_ASSERT(!stack_.has_deferred_comparison());
+        MONAD_DEBUG_ASSERT(!elem->literal());
         if (elem->general_reg()) {
             auto const &gpq = general_reg_to_gpq256(*elem->general_reg());
             if (is_live(elem, live)) {
@@ -5995,7 +6012,7 @@ namespace monad::vm::compiler::native
             as_.vptest(avx_reg_to_ymm(*elem->avx_reg()), rodata_.add32(mask));
         }
         else {
-            MONAD_VM_DEBUG_ASSERT(elem->stack_offset().has_value());
+            MONAD_DEBUG_ASSERT(elem->stack_offset().has_value());
             auto mem = stack_offset_to_mem(*elem->stack_offset());
             mem.addOffset(8);
             as_.mov(x86::rax, mem);
@@ -6065,7 +6082,7 @@ namespace monad::vm::compiler::native
             return x86::rax;
         }
 
-        MONAD_VM_DEBUG_ASSERT(elem->stack_offset().has_value());
+        MONAD_DEBUG_ASSERT(elem->stack_offset().has_value());
 
         auto mem = stack_offset_to_mem(*elem->stack_offset());
         mem.addOffset(8);
@@ -6097,7 +6114,7 @@ namespace monad::vm::compiler::native
             discharge_deferred_comparison();
         }
 
-        MONAD_VM_DEBUG_ASSERT(read_size <= 32);
+        MONAD_DEBUG_ASSERT(read_size <= 32);
 
         // Make sure offset bits are sufficiently small to
         // not overflow a runtime::Bin<30> after incrementing by `read_size`.
@@ -6110,7 +6127,7 @@ namespace monad::vm::compiler::native
 
         // It is later assumed that volatile_general_reg coincides with
         // rdi_general_reg.
-        MONAD_VM_DEBUG_ASSERT(rdi_general_reg == volatile_general_reg);
+        MONAD_DEBUG_ASSERT(rdi_general_reg == volatile_general_reg);
 
         auto const after_increase_label = as_.newLabel();
 
@@ -6136,7 +6153,7 @@ namespace monad::vm::compiler::native
             as_.mov(x86::rdi, read_end);
         }
         else {
-            MONAD_VM_DEBUG_ASSERT(std::holds_alternative<x86::Gpq>(offset_op));
+            MONAD_DEBUG_ASSERT(std::holds_alternative<x86::Gpq>(offset_op));
             auto const r = std::get<x86::Gpq>(offset_op);
             if (r != x86::rax) {
                 as_.mov(x86::rax, r);
@@ -6173,7 +6190,7 @@ namespace monad::vm::compiler::native
             return x86::qword_ptr(x86::rax, static_cast<int32_t>(lit));
         }
         else {
-            MONAD_VM_DEBUG_ASSERT(std::holds_alternative<x86::Gpq>(offset_op));
+            MONAD_DEBUG_ASSERT(std::holds_alternative<x86::Gpq>(offset_op));
             static_assert(sizeof(runtime::Memory::data) == sizeof(uint64_t));
             as_.add(
                 x86::rax,
@@ -6183,9 +6200,9 @@ namespace monad::vm::compiler::native
         }
     }
 
-    StackElemRef Emitter::negate_by_sub(StackElemRef elem)
+    StackElemRef Emitter::negate_by_sub(StackElemRef const elem)
     {
-        MONAD_VM_DEBUG_ASSERT(!elem->literal().has_value());
+        MONAD_DEBUG_ASSERT(!elem->literal().has_value());
 
         GeneralRegReserv const reserv{elem};
 
@@ -6203,7 +6220,7 @@ namespace monad::vm::compiler::native
         }
         else {
             if (!elem->stack_offset()) {
-                MONAD_VM_DEBUG_ASSERT(elem->avx_reg().has_value());
+                MONAD_DEBUG_ASSERT(elem->avx_reg().has_value());
                 mov_avx_reg_to_stack_offset(elem);
             }
             auto m = stack_offset_to_mem(*elem->stack_offset());
@@ -6271,7 +6288,7 @@ namespace monad::vm::compiler::native
     void Emitter::gpr_mul_by_int32_via_imul(
         x86::Gpq dst, LeftOpType left, int32_t right)
     {
-        MONAD_VM_DEBUG_ASSERT(right != 0 && right != 1);
+        MONAD_DEBUG_ASSERT(right != 0 && right != 1);
         if constexpr (Is32Bit) {
             if constexpr (std::is_same_v<LeftOpType, x86::Gpq>) {
                 as_.imul(dst.r32(), left.r32(), right);
@@ -6289,10 +6306,9 @@ namespace monad::vm::compiler::native
     void Emitter::gpr_mul_by_uint64_via_shl(
         x86::Gpq dst, LeftOpType left, uint64_t right)
     {
-        MONAD_VM_DEBUG_ASSERT(std::popcount(right) == 1);
+        MONAD_DEBUG_ASSERT(std::popcount(right) == 1);
         if constexpr (Is32Bit) {
-            MONAD_VM_DEBUG_ASSERT(
-                right <= std::numeric_limits<uint32_t>::max());
+            MONAD_DEBUG_ASSERT(right <= std::numeric_limits<uint32_t>::max());
             if constexpr (std::is_same_v<LeftOpType, x86::Gpq>) {
                 // Always mov when right == 1 to clear upper 32 bits of dst:
                 if (dst != left || right == 1) {
@@ -6336,7 +6352,7 @@ namespace monad::vm::compiler::native
             gpr_mul_by_uint64_via_shl<Is32Bit>(dst, left, right);
         }
         else {
-            MONAD_VM_DEBUG_ASSERT(Is32Bit || is_uint64_bounded(right));
+            MONAD_DEBUG_ASSERT(Is32Bit || is_uint64_bounded(right));
             int32_t r;
             std::memcpy(&r, &right, sizeof(r));
             gpr_mul_by_int32_via_imul<Is32Bit>(dst, left, r);
@@ -6361,8 +6377,8 @@ namespace monad::vm::compiler::native
     }
 
     void Emitter::mul_with_bit_size_by_rax(
-        size_t bit_size, x86::Gpq const *dst, Operand const &left,
-        std::optional<uint64_t> value_of_rax)
+        size_t const bit_size, x86::Gpq const *const dst, Operand const &left,
+        std::optional<uint64_t> const value_of_rax)
     {
         if ((bit_size & 63) && (bit_size & 63) <= 32) {
             mul_with_bit_size_and_has_32_bit_by_rax<true>(
@@ -6380,7 +6396,7 @@ namespace monad::vm::compiler::native
         size_t bit_size, x86::Gpq const *dst, Operand const &left,
         std::optional<uint64_t> value_of_rax)
     {
-        MONAD_VM_DEBUG_ASSERT(bit_size > 0 && bit_size <= 256);
+        MONAD_DEBUG_ASSERT(bit_size > 0 && bit_size <= 256);
 
         constexpr auto right = x86::rax;
 
@@ -6430,7 +6446,7 @@ namespace monad::vm::compiler::native
             }
         }
         else {
-            MONAD_VM_ASSERT(std::holds_alternative<x86::Mem>(left));
+            MONAD_ASSERT(std::holds_alternative<x86::Mem>(left));
             auto mem = std::get<x86::Mem>(left);
             mem.addOffset(static_cast<int64_t>(last_ix) * 8);
             gpr_mul_by_rax_or_uint64<Has32Bit>(dst[last_ix], mem, value_of_rax);
@@ -6445,8 +6461,9 @@ namespace monad::vm::compiler::native
     }
 
     Emitter::MulEmitter::MulEmitter(
-        size_t bit_size, Emitter &em, Operand const &left,
-        RightMulArg const &right, x86::Gpq const *dst, x86::Gpq const *tmp)
+        size_t const bit_size, Emitter &em, Operand const &left,
+        RightMulArg const &right, x86::Gpq const *const dst,
+        x86::Gpq const *const tmp)
         : bit_size_{bit_size}
         , em_{em}
         , left_{left}
@@ -6457,7 +6474,8 @@ namespace monad::vm::compiler::native
     {
     }
 
-    void Emitter::MulEmitter::init_mul_dst(size_t sub_size, x86::Gpq *mul_dst)
+    void Emitter::MulEmitter::init_mul_dst(
+        size_t const sub_size, x86::Gpq *const mul_dst)
     {
         size_t const N = div64_ceil(sub_size);
         if (is_dst_initialized_) {
@@ -6495,7 +6513,7 @@ namespace monad::vm::compiler::native
                 }
             }
             else {
-                MONAD_VM_DEBUG_ASSERT(std::holds_alternative<x86::Mem>(left_));
+                MONAD_DEBUG_ASSERT(std::holds_alternative<x86::Mem>(left_));
                 auto lmem = std::get<x86::Mem>(left_);
                 size_t i = 0;
                 for (; i < N - 1; ++i) {
@@ -6576,7 +6594,7 @@ namespace monad::vm::compiler::native
                 right_);
         }
         else {
-            MONAD_VM_DEBUG_ASSERT(std::holds_alternative<x86::Mem>(left_));
+            MONAD_DEBUG_ASSERT(std::holds_alternative<x86::Mem>(left_));
             auto const &lmem = std::get<x86::Mem>(left_);
             std::visit(
                 Cases{
@@ -6703,18 +6721,18 @@ namespace monad::vm::compiler::native
     {
         auto const rdx_general_reg_index = volatile_gpq_index<x86::rdx>();
 
-        MONAD_VM_DEBUG_ASSERT(bit_size > 0 && bit_size <= 256);
-        MONAD_VM_DEBUG_ASSERT(
+        MONAD_DEBUG_ASSERT(bit_size > 0 && bit_size <= 256);
+        MONAD_DEBUG_ASSERT(
             gpq256_regs_[rdx_general_reg.reg][rdx_general_reg_index] ==
             x86::rdx);
 
         size_t const dst_word_count = div64_ceil(bit_size);
 
         // This is currently assumed to simplify register allocations:
-        MONAD_VM_DEBUG_ASSERT(
+        MONAD_DEBUG_ASSERT(
             !std::holds_alternative<Gpq256>(right) || dst_word_count <= 2);
 
-        MONAD_VM_DEBUG_ASSERT(!left->literal().has_value());
+        MONAD_DEBUG_ASSERT(!left->literal().has_value());
 
         {
             GeneralRegReserv const left_reserv{left};
@@ -6741,7 +6759,7 @@ namespace monad::vm::compiler::native
             return stack_.alloc_literal({0});
         }
 
-        MONAD_VM_DEBUG_ASSERT(
+        MONAD_DEBUG_ASSERT(
             required_reg_count >= dst_word_count && required_reg_count < 8);
 
         GeneralRegReserv const left_reserv{left};
@@ -6752,7 +6770,7 @@ namespace monad::vm::compiler::native
         }
         else {
             if (!left->general_reg() && !left->stack_offset()) {
-                MONAD_VM_DEBUG_ASSERT(left->avx_reg().has_value());
+                MONAD_DEBUG_ASSERT(left->avx_reg().has_value());
                 mov_avx_reg_to_stack_offset(left);
             }
         }
@@ -6787,7 +6805,7 @@ namespace monad::vm::compiler::native
             auto &dst_gpq = general_reg_to_gpq256(*dst->general_reg());
             auto &tmp_gpq = general_reg_to_gpq256(*tmp->general_reg());
             if (dst_gpq[rdx_general_reg_index] == x86::rdx) {
-                MONAD_VM_DEBUG_ASSERT(*dst->general_reg() == rdx_general_reg);
+                MONAD_DEBUG_ASSERT(*dst->general_reg() == rdx_general_reg);
                 preserve_dst_rdx = true;
             }
             if (preserve_dst_rdx) {
@@ -6810,7 +6828,7 @@ namespace monad::vm::compiler::native
                     auto &left_gpq =
                         general_reg_to_gpq256(*left->general_reg());
                     if (left_gpq[rdx_general_reg_index] == x86::rdx) {
-                        MONAD_VM_DEBUG_ASSERT(
+                        MONAD_DEBUG_ASSERT(
                             *left->general_reg() == rdx_general_reg);
                         if (tmp != dst) {
                             spill_gpq = tmp_gpq[rdx_general_reg_index];
@@ -6834,8 +6852,8 @@ namespace monad::vm::compiler::native
                         // Due to the limited size of `dst_word_count <= 2`
                         // when `right` holds register, we have the
                         // following two invariants.
-                        MONAD_VM_DEBUG_ASSERT(tmp == dst);
-                        MONAD_VM_DEBUG_ASSERT(
+                        MONAD_DEBUG_ASSERT(tmp == dst);
+                        MONAD_DEBUG_ASSERT(
                             preserve_left_rdx || !spill_gpq.has_value());
                         // If left and right are the same register, then
                         // we only need to emit the `rdx` perserving
@@ -6859,7 +6877,7 @@ namespace monad::vm::compiler::native
                 if (!preserve_left_rdx && !preserve_right_rdx &&
                     is_live(rdx_general_reg, live)) {
                     auto const &q = general_reg_to_gpq256(rdx_general_reg);
-                    MONAD_VM_DEBUG_ASSERT(q[rdx_general_reg_index] == x86::rdx);
+                    MONAD_DEBUG_ASSERT(q[rdx_general_reg_index] == x86::rdx);
                     preserve_stack_rdx = true;
                     if (spill_gpq) {
                         as_.mov(*spill_gpq, x86::rdx);
@@ -6876,7 +6894,7 @@ namespace monad::vm::compiler::native
             left->general_reg()
                 ? Operand{general_reg_to_gpq256(*left->general_reg())}
                 : Operand{stack_offset_to_mem(*left->stack_offset())};
-        MONAD_VM_DEBUG_ASSERT(dst_word_count <= 4);
+        MONAD_DEBUG_ASSERT(dst_word_count <= 4);
         x86::Gpq emit_tmp[3];
         if (tmp != dst) {
             auto &tmp_gpq = general_reg_to_gpq256(*tmp->general_reg());
@@ -6911,7 +6929,7 @@ namespace monad::vm::compiler::native
             as_.xor_(dst_gpq[i].r32(), dst_gpq[i].r32());
         }
 
-        MONAD_VM_DEBUG_ASSERT(
+        MONAD_DEBUG_ASSERT(
             preserve_stack_rdx + preserve_dst_rdx + preserve_left_rdx +
                 preserve_right_rdx <=
             1);
@@ -6996,11 +7014,11 @@ namespace monad::vm::compiler::native
             a_shift = -a;
         }
 
-        if (runtime::popcount(a_shift) == 1) {
+        if (popcount(a_shift) == 1) {
             stack_.pop();
             stack_.pop();
             auto x = shift_by_literal<ShiftType::SHL>(
-                runtime::countr_zero(a_shift), std::move(b_elem), {});
+                countr_zero(a_shift), std::move(b_elem), {});
             if (a_shift[3] != a[3]) {
                 // The shift was negated. Negate result for correct sign:
                 stack_.push(negate(std::move(x), {}));
@@ -7033,8 +7051,8 @@ namespace monad::vm::compiler::native
         StackElemRef elem, uint256_t const &shift_in,
         std::tuple<LiveSet...> const &live)
     {
-        MONAD_VM_DEBUG_ASSERT(!elem->literal().has_value());
-        MONAD_VM_DEBUG_ASSERT(shift_in <= 255);
+        MONAD_DEBUG_ASSERT(!elem->literal().has_value());
+        MONAD_DEBUG_ASSERT(shift_in <= 255);
 
         auto const shift = static_cast<uint64_t>(shift_in);
 
@@ -7088,17 +7106,17 @@ namespace monad::vm::compiler::native
         }
         else {
             if (!elem->stack_offset()) {
-                MONAD_VM_DEBUG_ASSERT(elem->avx_reg().has_value());
+                MONAD_DEBUG_ASSERT(elem->avx_reg().has_value());
                 mov_avx_reg_to_stack_offset(elem);
             }
-            MONAD_VM_DEBUG_ASSERT(elem->stack_offset().has_value());
+            MONAD_DEBUG_ASSERT(elem->stack_offset().has_value());
             auto mem = stack_offset_to_mem(*elem->stack_offset());
             mem.addOffset(24);
             as_.mov(x86::rax, static_cast<uint64_t>(1) << 63);
             as_.test(mem, x86::rax);
             as_.setnz(x86::byte_ptr(x86::rsp, sp_offset_temp_word1));
 
-            MONAD_VM_DEBUG_ASSERT(index <= 3);
+            MONAD_DEBUG_ASSERT(index <= 3);
             mem.addOffset(static_cast<int64_t>(index) * 8 - 24);
             as_.mov(x86::rax, mask);
             as_.and_(x86::rax, mem);
@@ -7114,7 +7132,7 @@ namespace monad::vm::compiler::native
 
         elem.reset(); // Release registers and stack offset.
 
-        MONAD_VM_DEBUG_ASSERT(!sh->literal().has_value());
+        MONAD_DEBUG_ASSERT(!sh->literal().has_value());
 
         StackElemRef dst;
         if (is_live(sh, live)) {
@@ -7144,7 +7162,7 @@ namespace monad::vm::compiler::native
             dst = stack_.release_stack_offset(sh);
         }
         else {
-            MONAD_VM_DEBUG_ASSERT(sh->avx_reg().has_value());
+            MONAD_DEBUG_ASSERT(sh->avx_reg().has_value());
             mov_avx_reg_to_stack_offset(sh);
             dst = stack_.release_stack_offset(sh);
         }
@@ -7157,7 +7175,7 @@ namespace monad::vm::compiler::native
             }
         }
         else {
-            MONAD_VM_DEBUG_ASSERT(dst->stack_offset().has_value());
+            MONAD_DEBUG_ASSERT(dst->stack_offset().has_value());
             auto mem = stack_offset_to_mem(*dst->stack_offset());
             as_.add(mem, x86::rax);
             for (size_t i = 1; i < 4; ++i) {
@@ -7188,8 +7206,7 @@ namespace monad::vm::compiler::native
                 stack_.pop();
                 stack_.pop();
                 if constexpr (is_sdiv) {
-                    stack_.push_literal(
-                        b == 0 ? 0 : runtime::sdivrem(a, b).quot);
+                    stack_.push_literal(b == 0 ? 0 : sdivrem(a, b).quot);
                 }
                 else {
                     stack_.push_literal(b == 0 ? 0 : a / b);
@@ -7221,10 +7238,10 @@ namespace monad::vm::compiler::native
             return false;
         }();
 
-        if (runtime::popcount(b) == 1) {
+        if (popcount(b) == 1) {
             stack_.pop();
             stack_.pop();
-            auto const shift = runtime::countr_zero(b);
+            auto const shift = countr_zero(b);
             auto dst = [&] {
                 if constexpr (is_sdiv) {
                     return sdiv_by_sar(std::move(a_elem), shift, {});
@@ -7255,7 +7272,7 @@ namespace monad::vm::compiler::native
         StackElemRef elem, uint256_t const &mask,
         std::tuple<LiveSet...> const &live)
     {
-        MONAD_VM_DEBUG_ASSERT(!elem->literal().has_value());
+        MONAD_DEBUG_ASSERT(!elem->literal().has_value());
 
         {
             RegReserv const elem_reserv{elem};
@@ -7327,8 +7344,7 @@ namespace monad::vm::compiler::native
                 stack_.pop();
                 stack_.pop();
                 if constexpr (is_smod) {
-                    stack_.push_literal(
-                        b == 0 ? 0 : runtime::sdivrem(a, b).rem);
+                    stack_.push_literal(b == 0 ? 0 : sdivrem(a, b).rem);
                 }
                 else {
                     stack_.push_literal(b == 0 ? 0 : a % b);
@@ -7354,7 +7370,7 @@ namespace monad::vm::compiler::native
             stack_.push_literal(0);
             return true;
         }
-        if (runtime::popcount(b) == 1) {
+        if (popcount(b) == 1) {
             stack_.pop();
             stack_.pop();
             if constexpr (is_smod) {
@@ -7410,7 +7426,7 @@ namespace monad::vm::compiler::native
                 mov_stack_offset_to_general_reg_mod2(dst, exp);
             }
             else {
-                MONAD_VM_DEBUG_ASSERT(dst->avx_reg().has_value());
+                MONAD_DEBUG_ASSERT(dst->avx_reg().has_value());
                 mov_avx_reg_to_stack_offset(dst);
                 mov_stack_offset_to_general_reg_mod2(dst, exp);
             }
@@ -7444,7 +7460,7 @@ namespace monad::vm::compiler::native
                 std::move(src),
                 LocationType::Literal};
         }
-        MONAD_VM_DEBUG_ASSERT(src->avx_reg().has_value());
+        MONAD_DEBUG_ASSERT(src->avx_reg().has_value());
         mov_avx_reg_to_stack_offset(src);
         return {
             std::move(dst),
@@ -7453,15 +7469,15 @@ namespace monad::vm::compiler::native
             LocationType::StackOffset};
     }
 
-    void
-    Emitter::mov_stack_offset_to_general_reg_mod2(StackElemRef elem, size_t exp)
+    void Emitter::mov_stack_offset_to_general_reg_mod2(
+        StackElemRef const elem, size_t const exp)
     {
-        MONAD_VM_DEBUG_ASSERT(exp > 0);
-        MONAD_VM_DEBUG_ASSERT(elem->stack_offset().has_value());
+        MONAD_DEBUG_ASSERT(exp > 0);
+        MONAD_DEBUG_ASSERT(elem->stack_offset().has_value());
 
         x86::Mem mem{stack_offset_to_mem(*elem->stack_offset())};
         auto const reserv = insert_general_reg(elem);
-        MONAD_VM_DEBUG_ASSERT(elem->general_reg());
+        MONAD_DEBUG_ASSERT(elem->general_reg());
         auto const &gpq = general_reg_to_gpq256(*elem->general_reg());
 
         size_t const numQwords = div64_ceil(exp);
@@ -7478,10 +7494,11 @@ namespace monad::vm::compiler::native
         }
     }
 
-    void Emitter::mov_literal_to_general_reg_mod2(StackElemRef elem, size_t exp)
+    void Emitter::mov_literal_to_general_reg_mod2(
+        StackElemRef const elem, size_t const exp)
     {
-        MONAD_VM_DEBUG_ASSERT(exp > 0);
-        MONAD_VM_DEBUG_ASSERT(elem->literal().has_value());
+        MONAD_DEBUG_ASSERT(exp > 0);
+        MONAD_DEBUG_ASSERT(elem->literal().has_value());
 
         auto const reserv = insert_general_reg(elem);
         auto const &gpq = general_reg_to_gpq256(*elem->general_reg());
@@ -7504,10 +7521,10 @@ namespace monad::vm::compiler::native
         }
     }
 
-    void
-    Emitter::mov_stack_elem_to_general_reg_mod2(StackElemRef elem, size_t exp)
+    void Emitter::mov_stack_elem_to_general_reg_mod2(
+        StackElemRef elem, size_t const exp)
     {
-        MONAD_VM_DEBUG_ASSERT(exp > 0);
+        MONAD_DEBUG_ASSERT(exp > 0);
         if (elem->general_reg()) {
             return;
         }
@@ -7518,7 +7535,7 @@ namespace monad::vm::compiler::native
             mov_stack_offset_to_general_reg_mod2(std::move(elem), exp);
         }
         else {
-            MONAD_VM_ASSERT(elem->avx_reg().has_value());
+            MONAD_ASSERT(elem->avx_reg().has_value());
             mov_avx_reg_to_stack_offset(elem);
             mov_stack_offset_to_general_reg_mod2(std::move(elem), exp);
         }
@@ -7537,7 +7554,7 @@ namespace monad::vm::compiler::native
         RegReserv const dst_reserv{dst};
         RegReserv const src_reserv{src};
 
-        MONAD_VM_DEBUG_ASSERT(dst_loc == LocationType::GeneralReg);
+        MONAD_DEBUG_ASSERT(dst_loc == LocationType::GeneralReg);
         if (is_live(dst, live) && !dst->stack_offset() && !dst->literal() &&
             !dst->avx_reg()) {
             if (stack_.has_free_general_reg()) {
@@ -7634,7 +7651,7 @@ namespace monad::vm::compiler::native
         // (a + b) % m, where m = 2^n
         // as
         // (a + b) & (n - 1)
-        if (runtime::popcount(m) != 1) {
+        if (popcount(m) != 1) {
             return false;
         }
 
@@ -7655,7 +7672,7 @@ namespace monad::vm::compiler::native
             stack_.push(and_(std::move(b_elem), std::move(mask), {}));
         }
         else {
-            size_t const exp = runtime::bit_width(m) - 1;
+            size_t const exp = bit_width(m) - 1;
             // The heavy lifting is done by the following function.
             (this->*ModOpByMask)(std::move(a_elem), std::move(b_elem), exp);
         }
@@ -7666,10 +7683,11 @@ namespace monad::vm::compiler::native
     // Discharge
     bool Emitter::addmod_opt()
     {
-        return modop_optimized<runtime::addmod, 0, 0, &Emitter::add_mod2>();
+        return modop_optimized<monad::addmod, 0, 0, &Emitter::add_mod2>();
     }
 
-    void Emitter::add_mod2(StackElemRef a_elem, StackElemRef b_elem, size_t exp)
+    void Emitter::add_mod2(
+        StackElemRef const a_elem, StackElemRef const b_elem, size_t const exp)
     {
         {
             RegReserv const a_reserv{a_elem};
@@ -7681,7 +7699,7 @@ namespace monad::vm::compiler::native
             get_mod2_bin_dest_and_source(a_elem, b_elem, exp, {});
         auto left_op = get_operand(left, left_loc);
         auto right_op = get_operand(right, right_loc);
-        MONAD_VM_DEBUG_ASSERT(!std::holds_alternative<x86::Ymm>(right_op));
+        MONAD_DEBUG_ASSERT(!std::holds_alternative<x86::Ymm>(right_op));
 
         size_t const numQwords = div64_ceil(exp);
 
@@ -7793,7 +7811,7 @@ namespace monad::vm::compiler::native
                                     as_.add(a[i].r32(), b[i].r32());
                                 }
                                 else {
-                                    MONAD_VM_DEBUG_ASSERT(bits_occupied <= 64);
+                                    MONAD_DEBUG_ASSERT(bits_occupied <= 64);
                                     as_.add(a[i].r64(), b[i].r64());
                                 }
                             }
@@ -7802,7 +7820,7 @@ namespace monad::vm::compiler::native
                                     as_.adc(a[i].r32(), b[i].r32());
                                 }
                                 else {
-                                    MONAD_VM_DEBUG_ASSERT(bits_occupied <= 64);
+                                    MONAD_DEBUG_ASSERT(bits_occupied <= 64);
                                     as_.adc(a[i].r64(), b[i].r64());
                                 }
                             }
@@ -7821,7 +7839,7 @@ namespace monad::vm::compiler::native
                                     as_.add(a[i].r32(), temp);
                                 }
                                 else {
-                                    MONAD_VM_DEBUG_ASSERT(bits_occupied <= 64);
+                                    MONAD_DEBUG_ASSERT(bits_occupied <= 64);
                                     as_.add(a[i].r64(), temp);
                                 }
                             }
@@ -7830,7 +7848,7 @@ namespace monad::vm::compiler::native
                                     as_.adc(a[i].r32(), temp);
                                 }
                                 else {
-                                    MONAD_VM_DEBUG_ASSERT(bits_occupied <= 64);
+                                    MONAD_DEBUG_ASSERT(bits_occupied <= 64);
                                     as_.adc(a[i].r64(), temp);
                                 }
                             }
@@ -7848,7 +7866,7 @@ namespace monad::vm::compiler::native
                                     as_.add(a[i].r32(), b[i]);
                                 }
                                 else {
-                                    MONAD_VM_DEBUG_ASSERT(bits_occupied <= 64);
+                                    MONAD_DEBUG_ASSERT(bits_occupied <= 64);
                                     as_.add(a[i].r64(), b[i]);
                                 }
                             }
@@ -7857,7 +7875,7 @@ namespace monad::vm::compiler::native
                                     as_.adc(a[i].r32(), b[i]);
                                 }
                                 else {
-                                    MONAD_VM_DEBUG_ASSERT(bits_occupied <= 64);
+                                    MONAD_DEBUG_ASSERT(bits_occupied <= 64);
                                     as_.adc(a[i].r64(), b[i]);
                                 }
                             }
@@ -7870,8 +7888,8 @@ namespace monad::vm::compiler::native
                 right_op);
         }
         else {
-            MONAD_VM_DEBUG_ASSERT(std::holds_alternative<x86::Mem>(left_op));
-            MONAD_VM_DEBUG_ASSERT(!std::holds_alternative<x86::Mem>(right_op));
+            MONAD_DEBUG_ASSERT(std::holds_alternative<x86::Mem>(left_op));
+            MONAD_DEBUG_ASSERT(!std::holds_alternative<x86::Mem>(right_op));
 
             x86::Mem const &a = std::get<x86::Mem>(left_op);
             std::visit(
@@ -7889,7 +7907,7 @@ namespace monad::vm::compiler::native
                                     as_.add(temp, b[i].r32());
                                 }
                                 else {
-                                    MONAD_VM_DEBUG_ASSERT(bits_occupied <= 64);
+                                    MONAD_DEBUG_ASSERT(bits_occupied <= 64);
                                     as_.add(temp, b[i].r64());
                                 }
                             }
@@ -7898,7 +7916,7 @@ namespace monad::vm::compiler::native
                                     as_.adc(temp, b[i].r32());
                                 }
                                 else {
-                                    MONAD_VM_DEBUG_ASSERT(bits_occupied <= 64);
+                                    MONAD_DEBUG_ASSERT(bits_occupied <= 64);
                                     as_.adc(temp, b[i].r64());
                                 }
                             }
@@ -7928,7 +7946,7 @@ namespace monad::vm::compiler::native
                                     as_.add(temp, b[i]);
                                 }
                                 else {
-                                    MONAD_VM_DEBUG_ASSERT(bits_occupied <= 64);
+                                    MONAD_DEBUG_ASSERT(bits_occupied <= 64);
                                     as_.add(temp, b[i]);
                                 }
                             }
@@ -7946,7 +7964,7 @@ namespace monad::vm::compiler::native
                                     as_.adc(temp, b[i]);
                                 }
                                 else {
-                                    MONAD_VM_DEBUG_ASSERT(bits_occupied <= 64);
+                                    MONAD_DEBUG_ASSERT(bits_occupied <= 64);
                                     as_.adc(temp, b[i]);
                                 }
                             }
@@ -7965,10 +7983,11 @@ namespace monad::vm::compiler::native
     // Discharge
     bool Emitter::mulmod_opt()
     {
-        return modop_optimized<runtime::mulmod, 1, 0, &Emitter::mul_mod2>();
+        return modop_optimized<monad::mulmod, 1, 0, &Emitter::mul_mod2>();
     }
 
-    void Emitter::mul_mod2(StackElemRef a_elem, StackElemRef b_elem, size_t exp)
+    void Emitter::mul_mod2(
+        StackElemRef a_elem, StackElemRef b_elem, size_t const exp)
     {
         {
             RegReserv const a_reserv{a_elem};
@@ -7976,11 +7995,11 @@ namespace monad::vm::compiler::native
             discharge_deferred_comparison();
         }
 
-        MONAD_VM_DEBUG_ASSERT(exp >= 1 && exp < 256);
+        MONAD_DEBUG_ASSERT(exp >= 1 && exp < 256);
         if (a_elem->literal()) {
             std::swap(a_elem, b_elem);
         }
-        MONAD_VM_DEBUG_ASSERT(!a_elem->literal().has_value());
+        MONAD_DEBUG_ASSERT(!a_elem->literal().has_value());
 
         auto mask = (1 << uint256_t{exp}) - 1;
         auto const last_ix = (exp - 1) >> 6;
@@ -8023,7 +8042,7 @@ namespace monad::vm::compiler::native
             return;
         }
 
-        MONAD_VM_DEBUG_ASSERT(exp > 128);
+        MONAD_DEBUG_ASSERT(exp > 128);
         spill_caller_save_regs(false);
 
         auto call_runtime_mul = [&](RuntimeImpl &&rt) {
@@ -8042,7 +8061,7 @@ namespace monad::vm::compiler::native
                     this, false, runtime::mul));
         }
 
-        MONAD_VM_DEBUG_ASSERT(stack_.top()->stack_offset().has_value());
+        MONAD_DEBUG_ASSERT(stack_.top()->stack_offset().has_value());
         auto res_mem = stack_offset_to_mem(*stack_.top()->stack_offset());
         res_mem.addOffset(static_cast<int64_t>(last_ix * 8));
         if (exp & 63) {
@@ -8057,7 +8076,7 @@ namespace monad::vm::compiler::native
         }
         if (last_ix < 3) {
             res_mem.addOffset(8);
-            MONAD_VM_DEBUG_ASSERT(last_ix == 2);
+            MONAD_DEBUG_ASSERT(last_ix == 2);
             as_.mov(res_mem, 0);
         }
     }
@@ -8136,7 +8155,7 @@ namespace monad::vm::compiler::native
     }
 
     // Compute byte width of stack element, stores the result in x86::eax.
-    void Emitter::stack_elem_byte_width(StackElemRef elem)
+    void Emitter::stack_elem_byte_width(StackElemRef const elem)
     {
         if (elem->general_reg()) {
             auto const &gpq = general_reg_to_gpq256(*elem->general_reg());
@@ -8160,16 +8179,16 @@ namespace monad::vm::compiler::native
             as_.neg(x86::eax); // eax = 32 - lzcnt(mask)
         }
         else {
-            MONAD_VM_ASSERT(!elem->literal().has_value());
+            MONAD_ASSERT(!elem->literal().has_value());
         }
     }
 
     void Emitter::exp_emit_gas_decrement_by_literal(
-        uint256_t exp, uint32_t gas_factor)
+        uint256_t const exp, uint32_t const gas_factor)
     {
         discharge_deferred_comparison();
 
-        auto const exponent_byte_size = runtime::count_significant_bytes(exp);
+        auto const exponent_byte_size = count_significant_bytes(exp);
         // The static work cost of EXP is already sufficient to cover for
         // the accumulated static work by an optimized EXP, so no gas check:
         auto const gas = static_cast<int32_t>(exponent_byte_size * gas_factor);
@@ -8179,9 +8198,9 @@ namespace monad::vm::compiler::native
     }
 
     void Emitter::exp_emit_gas_decrement_by_stack_elem(
-        StackElemRef exponent_elem, uint32_t gas_factor)
+        StackElemRef const exponent_elem, uint32_t const gas_factor)
     {
-        MONAD_VM_ASSERT(!exponent_elem->literal().has_value());
+        MONAD_ASSERT(!exponent_elem->literal().has_value());
 
         RegReserv const reserv{exponent_elem};
 
@@ -8197,7 +8216,8 @@ namespace monad::vm::compiler::native
     // Discharge via exp_emit_gas_decrement_*.
     // It is assumed that the work of optimized EXP does not exceed the static
     // work cost of the EXP instruction. See `static_assert` in `Emitter::exp`.
-    bool Emitter::exp_optimized(int64_t remaining_base_gas, uint32_t gas_factor)
+    bool Emitter::exp_optimized(
+        int64_t const remaining_base_gas, uint32_t const gas_factor)
     {
         auto base_elem = stack_.get(stack_.top_index());
         auto exp_elem = stack_.get(stack_.top_index() - 1);
@@ -8218,7 +8238,7 @@ namespace monad::vm::compiler::native
                 exp_emit_gas_decrement_by_literal(exp, gas_factor);
                 uint256_t shift{0};
                 uint64_t const b{bit_width(base) - 1};
-                if (MONAD_VM_LIKELY(b)) {
+                if (MONAD_LIKELY(b)) {
                     static constexpr uint64_t mask =
                         std::numeric_limits<uint32_t>::max();
                     shift = exp;
@@ -8231,7 +8251,7 @@ namespace monad::vm::compiler::native
                 stack_.pop();
                 stack_.pop();
                 exp_emit_gas_decrement_by_literal(exp, gas_factor);
-                push(runtime::exp(base, exp));
+                push(monad::exp(base, exp));
                 return true;
             }
             else if (exponential_constant_fold_counter_ < 500) {
@@ -8244,7 +8264,7 @@ namespace monad::vm::compiler::native
                 stack_.pop();
                 stack_.pop();
                 exp_emit_gas_decrement_by_literal(exp, gas_factor);
-                push(runtime::exp(base, exp));
+                push(monad::exp(base, exp));
                 return true;
             }
         }
@@ -8288,7 +8308,7 @@ namespace monad::vm::compiler::native
                 as_.mov(x86::rax, gp[0]);
                 uint8_t const b = static_cast<uint8_t>(bit_width(base) - 1);
                 if (std::popcount(b) == 1) {
-                    MONAD_VM_DEBUG_ASSERT(b >= 2 && b <= 128);
+                    MONAD_DEBUG_ASSERT(b >= 2 && b <= 128);
                     gpr_mul_by_uint64_via_shl<false>(gp[0], gp[0], b);
                     constexpr auto mask = std::numeric_limits<int32_t>::min();
                     as_.test(x86::rax, mask);

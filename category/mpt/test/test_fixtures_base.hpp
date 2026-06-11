@@ -15,11 +15,10 @@
 
 #pragma once
 
-#include <category/mpt/compute.hpp>
-#include <category/mpt/trie.hpp>
-
 #include <category/core/assert.h>
 #include <category/core/small_prng.hpp>
+#include <category/mpt/compute.hpp>
+#include <category/mpt/trie.hpp>
 
 #include <array>
 #include <vector>
@@ -70,9 +69,9 @@ namespace monad::test
             ++depth;
         }
 
-        virtual void up(size_t n) override
+        virtual void up(size_t const n) override
         {
-            MONAD_DEBUG_ASSERT(n <= depth);
+            MONAD_ASSERT(n <= depth);
             depth -= n;
         }
 
@@ -129,9 +128,9 @@ namespace monad::test
             ++depth;
         }
 
-        virtual void up(size_t n) override
+        virtual void up(size_t const n) override
         {
-            MONAD_DEBUG_ASSERT(n <= depth);
+            MONAD_ASSERT(n <= depth);
             depth -= n;
         }
 
@@ -195,9 +194,9 @@ namespace monad::test
             ++depth;
         }
 
-        virtual void up(size_t n) override
+        virtual void up(size_t const n) override
         {
-            MONAD_DEBUG_ASSERT(n <= depth);
+            MONAD_ASSERT(n <= depth);
             depth -= n;
         }
 
@@ -236,8 +235,8 @@ namespace monad::test
     using StateMachinePlainVarLen = StateMachineAlways<
         EmptyCompute, StateMachineConfig{.variable_length_start_depth = 0}>;
 
-    Node::SharedPtr upsert_vector(
-        UpdateAuxImpl &aux, StateMachine &sm, Node::SharedPtr old,
+    inline Node::SharedPtr upsert_vector(
+        UpdateAux &aux, StateMachine &sm, Node::SharedPtr old,
         std::vector<Update> &&update_vec, uint64_t const version = 0)
     {
         UpdateList update_ls;
@@ -249,7 +248,7 @@ namespace monad::test
 
     template <class... Updates>
     [[nodiscard]] constexpr Node::SharedPtr upsert_updates_with_version(
-        UpdateAuxImpl &aux, StateMachine &sm, Node::SharedPtr old,
+        UpdateAux &aux, StateMachine &sm, Node::SharedPtr old,
         uint64_t const version, Updates... updates)
     {
         UpdateList update_ls;
@@ -259,7 +258,7 @@ namespace monad::test
 
     template <class... Updates>
     [[nodiscard]] constexpr Node::SharedPtr upsert_updates(
-        UpdateAuxImpl &aux, StateMachine &sm, Node::SharedPtr old,
+        UpdateAux &aux, StateMachine &sm, Node::SharedPtr old,
         Updates... updates)
     {
         return upsert_updates_with_version(
@@ -509,7 +508,7 @@ namespace monad::test
 
             ~state_t()
             {
-                for (auto &device : pool.devices()) {
+                for (auto const &device : pool.devices()) {
                     auto const path = device.current_path();
                     if (std::filesystem::exists(path)) {
                         std::filesystem::remove(path);
@@ -519,47 +518,50 @@ namespace monad::test
 
             std::ostream &print(std::ostream &s)
             {
-                auto v = pool.devices().front().capacity();
+                auto const v = pool.devices().front().capacity();
                 std::cout << "\n   Storage pool capacity = " << v.first
                           << " consumed = " << v.second
                           << " chunks = " << pool.chunks(pool.seq);
                 auto const diff =
-                    (int64_t(aux.get_lower_bound_free_space()) -
+                    (int64_t(aux.metadata_ctx().get_lower_bound_free_space()) -
                      int64_t(v.first - v.second));
                 std::cout << "\n   DB thinks there is a lower bound of "
-                          << aux.get_lower_bound_free_space()
+                          << aux.metadata_ctx().get_lower_bound_free_space()
                           << " bytes free whereas the syscall thinks there is "
                           << (v.first - v.second)
                           << " bytes free, which is a difference of " << diff
                           << ".\n";
                 std::cout << "   Fast list:";
-                for (auto const *ci = aux.db_metadata()->fast_list_begin();
+                for (auto const *ci =
+                         aux.metadata_ctx().main()->fast_list_begin();
                      ci != nullptr;
-                     ci = ci->next(aux.db_metadata())) {
-                    auto idx = ci->index(aux.db_metadata());
-                    auto &chunk = pool.chunk(pool.seq, idx);
+                     ci = ci->next(aux.metadata_ctx().main())) {
+                    auto const idx = ci->index(aux.metadata_ctx().main());
+                    auto const &chunk = pool.chunk(pool.seq, idx);
                     std::cout << "\n      Chunk " << idx
                               << " has capacity = " << chunk.capacity()
                               << " consumed = " << chunk.size();
                 }
                 std::cout << "\n\n   Slow list:";
-                for (auto const *ci = aux.db_metadata()->slow_list_begin();
+                for (auto const *ci =
+                         aux.metadata_ctx().main()->slow_list_begin();
                      ci != nullptr;
-                     ci = ci->next(aux.db_metadata())) {
-                    auto idx = ci->index(aux.db_metadata());
-                    auto chunk = pool.chunk(pool.seq, idx);
+                     ci = ci->next(aux.metadata_ctx().main())) {
+                    auto const idx = ci->index(aux.metadata_ctx().main());
+                    auto const chunk = pool.chunk(pool.seq, idx);
                     std::cout << "\n      Chunk " << idx
                               << " has capacity = " << chunk.capacity()
                               << " consumed = " << chunk.size();
                 }
                 std::cout << "\n\n   Free list: "
-                          << aux.db_metadata()->capacity_in_free_list
+                          << aux.metadata_ctx().main()->capacity_in_free_list
                           << " bytes.";
-                auto const ro = aux.root_offsets();
+                auto const ro = aux.metadata_ctx().root_offsets();
                 auto const most_recent_offset = ro[ro.max_version()];
                 std::cout << "\n\n   DB version history is "
-                          << aux.db_history_min_valid_version() << " - "
-                          << aux.db_history_max_version()
+                          << aux.metadata_ctx().db_history_min_valid_version()
+                          << " - "
+                          << aux.metadata_ctx().db_history_max_version()
                           << ". Most recent DB history is id "
                           << most_recent_offset.id << " offset "
                           << most_recent_offset.offset;
@@ -567,7 +569,7 @@ namespace monad::test
                 return s;
             }
 
-            void ensure_total_chunks(size_t chunks)
+            void ensure_total_chunks(size_t const chunks)
             {
                 std::vector<Update> updates;
                 updates.reserve(Config.updates_per_block);
@@ -583,10 +585,10 @@ namespace monad::test
                             }
                             keys.emplace_back(
                                 std::move(key),
-                                aux.get_latest_root_offset().id);
+                                aux.metadata_ctx().get_latest_root_offset().id);
                         }
                         updates.push_back(make_update(
-                            keys.back().first, keys.back().first, 0));
+                            keys.back().first, keys.back().first, false));
                         update_ls.push_front(updates.back());
                     }
                     root = aux.do_update(
@@ -596,9 +598,10 @@ namespace monad::test
                         version++,
                         true);
                     size_t count = 0;
-                    for (auto const *ci = aux.db_metadata()->fast_list_begin();
+                    for (auto const *ci =
+                             aux.metadata_ctx().main()->fast_list_begin();
                          ci != nullptr;
-                         count++, ci = ci->next(aux.db_metadata())) {
+                         count++, ci = ci->next(aux.metadata_ctx().main())) {
                     }
                     if (count >= chunks) {
                         break;
@@ -615,11 +618,13 @@ namespace monad::test
                     MONAD_MPT_NAMESPACE::detail::unsigned_20>>
                     ret;
                 ret.reserve(4);
-                for (auto const *ci = aux.db_metadata()->fast_list_begin();
+                for (auto const *ci =
+                         aux.metadata_ctx().main()->fast_list_begin();
                      ci != nullptr;
-                     ci = ci->next(aux.db_metadata())) {
+                     ci = ci->next(aux.metadata_ctx().main())) {
                     ret.emplace_back(
-                        ci->index(aux.db_metadata()), ci->insertion_count());
+                        ci->index(aux.metadata_ctx().main()),
+                        ci->insertion_count());
                 }
                 return ret;
             }
@@ -633,11 +638,13 @@ namespace monad::test
                     MONAD_MPT_NAMESPACE::detail::unsigned_20>>
                     ret;
                 ret.reserve(4);
-                for (auto const *ci = aux.db_metadata()->slow_list_begin();
+                for (auto const *ci =
+                         aux.metadata_ctx().main()->slow_list_begin();
                      ci != nullptr;
-                     ci = ci->next(aux.db_metadata())) {
+                     ci = ci->next(aux.metadata_ctx().main())) {
                     ret.emplace_back(
-                        ci->index(aux.db_metadata()), ci->insertion_count());
+                        ci->index(aux.metadata_ctx().main()),
+                        ci->insertion_count());
                 }
                 return ret;
             }

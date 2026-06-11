@@ -13,8 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/core/bytes.hpp>
+#include <category/core/likely.h>
 #include <category/core/runtime/uint256.hpp>
-#include <category/vm/core/assert.h>
 #include <category/vm/evm/explicit_traits.hpp>
 #include <category/vm/evm/traits.hpp>
 #include <category/vm/runtime/bin.hpp>
@@ -43,7 +44,8 @@ namespace monad::vm::runtime
             }
         }
 
-        auto const balance = ctx->host->get_balance(ctx->context, &address);
+        auto const balance = static_cast<bytes32_t>(
+            ctx->host->get_balance(ctx->context, &address));
         *result_ptr = uint256_from_bytes32(balance);
     }
 
@@ -53,7 +55,7 @@ namespace monad::vm::runtime
     void copy_impl(
         Context *ctx, uint256_t const &dest_offset_word,
         uint256_t const &offset_word, uint256_t const &size_word,
-        std::uint8_t const *source, std::uint32_t len)
+        uint8_t const *source, uint32_t const len)
     {
         auto const size = ctx->get_memory_offset(size_word);
         if (*size == 0) {
@@ -67,9 +69,9 @@ namespace monad::vm::runtime
         auto const size_in_words = shr_ceil<5>(size);
         ctx->deduct_gas(size_in_words * bin<3>);
 
-        std::uint32_t const start =
+        uint32_t const start =
             is_bounded_by_bits<32>(offset_word)
-                ? std::min(static_cast<std::uint32_t>(offset_word), len)
+                ? std::min(static_cast<uint32_t>(offset_word), len)
                 : len;
 
         auto const copy_size = std::min(*size, len - start);
@@ -141,13 +143,13 @@ namespace monad::vm::runtime
         }
 
         if (*size > 0) {
-            auto const offset = clamp_cast<std::uint32_t>(*offset_ptr);
+            auto const offset = clamp_cast<uint32_t>(*offset_ptr);
 
             auto *dest_ptr = ctx->memory.data + *dest_offset;
             auto const n = ctx->host->copy_code(
                 ctx->context, &address, offset, dest_ptr, *size);
 
-            auto *begin = dest_ptr + static_cast<std::uint32_t>(n);
+            auto *begin = dest_ptr + static_cast<uint32_t>(n);
             auto *end = dest_ptr + *size;
 
             std::fill(begin, end, 0);
@@ -162,10 +164,10 @@ namespace monad::vm::runtime
         uint256_t const *offset_ptr, uint256_t const *size_ptr)
     {
         auto const size = ctx->get_memory_offset(*size_ptr);
-        auto const offset = clamp_cast<std::uint32_t>(*offset_ptr);
+        auto const offset = clamp_cast<uint32_t>(*offset_ptr);
 
-        std::uint32_t end;
-        if (MONAD_VM_UNLIKELY(
+        uint32_t end;
+        if (MONAD_UNLIKELY(
                 __builtin_add_overflow(offset, *size, &end) ||
                 end > ctx->env.return_data_size)) {
             ctx->exit(StatusCode::OutOfGas);
@@ -202,7 +204,8 @@ namespace monad::vm::runtime
             }
         }
 
-        auto const hash = ctx->host->get_code_hash(ctx->context, &address);
+        auto const hash = static_cast<bytes32_t>(
+            ctx->host->get_code_hash(ctx->context, &address));
         *result_ptr = uint256_from_bytes32(hash);
     }
 

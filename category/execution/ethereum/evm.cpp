@@ -13,14 +13,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/core/address.hpp>
 #include <category/core/assert.h>
 #include <category/core/byte_string.hpp>
 #include <category/core/bytes.hpp>
 #include <category/core/config.hpp>
-#include <category/core/int.hpp>
 #include <category/core/keccak.hpp>
 #include <category/core/likely.h>
-#include <category/execution/ethereum/core/address.hpp>
+#include <category/core/runtime/uint256.hpp>
 #include <category/execution/ethereum/create_contract_address.hpp>
 #include <category/execution/ethereum/evm.hpp>
 #include <category/execution/ethereum/evmc_host.hpp>
@@ -34,9 +34,8 @@
 #include <evmc/evmc.h>
 #include <evmc/evmc.hpp>
 
-#include <intx/intx.hpp>
-
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <utility>
 
@@ -47,7 +46,7 @@ namespace
 
     bool sender_has_balance(State &state, evmc_message const &msg) noexcept
     {
-        uint256_t const value = intx::be::load<uint256_t>(msg.value);
+        uint256_t const value = uint256_t::load_be(msg.value.bytes);
         // for optimistic execution, we do NOT require the original balance to
         // match exactly, just add a lower bound constraint to suffice for this
         // debit
@@ -59,7 +58,7 @@ namespace
         State &state, EvmcHost<traits> &host, evmc_message const &msg,
         Address const &to)
     {
-        uint256_t const value = intx::be::load<uint256_t>(msg.value);
+        uint256_t const value = uint256_t::load_be(msg.value.bytes);
         state.subtract_from_balance(msg.sender, value);
         state.add_to_balance(to, value);
         host.emit_native_transfer_event(msg.sender, to, value);
@@ -71,6 +70,8 @@ template <Traits traits>
 evmc::Result deploy_contract_code(
     State &state, Address const &address, evmc::Result result) noexcept
 {
+    static_assert(traits::evm_rev() > EVMC_TANGERINE_WHISTLE);
+
     MONAD_ASSERT(result.status_code == EVMC_SUCCESS);
 
     // EIP-3541
@@ -80,30 +81,18 @@ evmc::Result deploy_contract_code(
         }
     }
     // EIP-170
-    if constexpr (traits::evm_rev() >= EVMC_SPURIOUS_DRAGON) {
-        if (result.output_size > traits::max_code_size()) {
-            return evmc::Result{EVMC_OUT_OF_GAS};
-        }
+    if (result.output_size > traits::max_code_size()) {
+        return evmc::Result{EVMC_OUT_OF_GAS};
     }
 
     auto const deploy_cost = static_cast<int64_t>(result.output_size) * 200;
 
     if (result.gas_left < deploy_cost) {
-        if constexpr (traits::evm_rev() == EVMC_FRONTIER) {
-            // From YP: "No code is deposited in the state if the gas
-            // does not cover the additional per-byte contract deposit
-            // fee, however, the value is still transferred and the
-            // execution side- effects take place."
-            result.create_address = address;
-            state.set_code(address, {});
-        }
-        else {
-            // EIP-2: If contract creation does not have enough gas to
-            // pay for the final gas fee for adding the contract code to
-            // the state, the contract creation fails (ie. goes
-            // out-of-gas) rather than leaving an empty contract.
-            result.status_code = EVMC_OUT_OF_GAS;
-        }
+        // EIP-2: If contract creation does not have enough gas to
+        // pay for the final gas fee for adding the contract code to
+        // the state, the contract creation fails (ie. goes
+        // out-of-gas) rather than leaving an empty contract.
+        result.status_code = EVMC_OUT_OF_GAS;
     }
     else {
         result.create_address = address;
@@ -125,6 +114,8 @@ pre_call(EvmcHost<traits> &host, evmc_message const &msg, State &state)
 
     if (msg.kind != EVMC_DELEGATECALL) {
         if (MONAD_UNLIKELY(!sender_has_balance(state, msg))) {
+            // The pushed frame exits before bytecode, account access, or
+            // storage access, so there is no access-list metadata to capture.
             state.pop_reject();
             return evmc::Result{EVMC_INSUFFICIENT_BALANCE, msg.gas};
         }
@@ -147,7 +138,24 @@ pre_call(EvmcHost<traits> &host, evmc_message const &msg, State &state)
     return std::nullopt;
 }
 
-void post_call(State &state, evmc::Result const &result)
+template <Traits traits>
+void reject_frame(EvmcHost<traits> &host, State &state)
+{
+    // Successful frames remain in State and are captured when the state tracer
+    // is encoded. Failed frames are about to be rolled back, so the state
+    // tracer lifecycle hook runs before pop_reject().
+    trace::on_frame_reject(host.state_tracer_, state);
+
+    bool const ripemd_touched = state.is_touched(ripemd_address);
+    state.pop_reject();
+    if (MONAD_UNLIKELY(ripemd_touched)) {
+        // YP K.1. Deletion of an Account Despite Out-of-gas.
+        state.touch(ripemd_address);
+    }
+}
+
+template <Traits traits>
+void post_call(EvmcHost<traits> &host, State &state, evmc::Result const &result)
 {
     MONAD_ASSERT(result.status_code == EVMC_SUCCESS || result.gas_refund == 0);
     MONAD_ASSERT(
@@ -160,12 +168,7 @@ void post_call(State &state, evmc::Result const &result)
         state.pop_accept();
     }
     else {
-        bool const ripemd_touched = state.is_touched(ripemd_address);
-        state.pop_reject();
-        if (MONAD_UNLIKELY(ripemd_touched)) {
-            // YP K.1. Deletion of an Account Despite Out-of-gas.
-            state.touch(ripemd_address);
-        }
+        reject_frame(host, state);
     }
 }
 
@@ -173,6 +176,8 @@ template <Traits traits>
 evmc::Result execute_create_message(
     EvmcHost<traits> *const host, State &state, evmc_message const &msg)
 {
+    static_assert(traits::evm_rev() > EVMC_TANGERINE_WHISTLE);
+
     MONAD_ASSERT(msg.kind == EVMC_CREATE || msg.kind == EVMC_CREATE2);
 
     auto &call_tracer = host->get_call_tracer();
@@ -237,9 +242,7 @@ evmc::Result execute_create_message(
     state.create_contract(contract_address);
 
     // EIP-161
-    constexpr auto starting_nonce =
-        traits::evm_rev() >= EVMC_SPURIOUS_DRAGON ? 1 : 0;
-    state.set_nonce(contract_address, starting_nonce);
+    state.set_nonce(contract_address, 1);
     transfer_balances<traits>(state, *host, msg, contract_address);
 
     evmc_message const m_call{
@@ -287,12 +290,7 @@ evmc::Result execute_create_message(
         if (result.status_code != EVMC_REVERT) {
             result.gas_left = 0;
         }
-        bool const ripemd_touched = state.is_touched(ripemd_address);
-        state.pop_reject();
-        if (MONAD_UNLIKELY(ripemd_touched)) {
-            // YP K.1. Deletion of an Account Despite Out-of-gas.
-            state.touch(ripemd_address);
-        }
+        reject_frame(*host, state);
     }
 
     call_tracer.on_exit(result);
@@ -343,7 +341,7 @@ evmc::Result execute_call_message(
         }
     }
 
-    post_call(state, result);
+    post_call(*host, state, result);
     call_tracer.on_exit(result);
     return result;
 }

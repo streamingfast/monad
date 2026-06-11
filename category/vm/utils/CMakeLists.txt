@@ -20,8 +20,6 @@ add_library(monad-vm-utils OBJECT)
 target_sources(monad-vm-utils PRIVATE
     "debug.cpp"
     "debug.hpp"
-    "evmc_utils.cpp"
-    "evmc_utils.hpp"
     "load_program.hpp"
     "lru_weight_cache.hpp"
     "rc_ptr.hpp"
@@ -50,7 +48,6 @@ target_include_directories(monad-vm-utils
 )
 
 target_link_libraries(monad-vm-utils
-    PUBLIC monad-vm::monad-vm-core
     PUBLIC monad-vm::monad-vm-runtime
     PRIVATE monad-vm::monad-vm-evm
 )

@@ -15,10 +15,10 @@
 
 #pragma once
 
-#include <category/mpt/config.hpp>
-
 #include <category/async/io_senders.hpp>
+#include <category/mpt/config.hpp>
 #include <category/mpt/node.hpp>
+#include <category/mpt/trie.hpp>
 
 MONAD_MPT_NAMESPACE_BEGIN
 
@@ -81,7 +81,7 @@ namespace detail
             auto const &buffer = buffer_.assume_value().front();
             MONAD_ASSERT(buffer.size() > buffer_off);
             // Did the Receiver forget to set lifetime_managed_internally?
-            MONAD_DEBUG_ASSERT(io_state->lifetime_is_managed_internally());
+            MONAD_ASSERT(io_state->lifetime_is_managed_internally());
             node = deserialize_node_from_buffer(
                 (unsigned char *)buffer.data() + buffer_off,
                 buffer.size() - buffer_off);

@@ -15,11 +15,11 @@
 
 #pragma once
 
+#include <category/core/address.hpp>
 #include <category/core/byte_string.hpp>
 #include <category/core/config.hpp>
 #include <category/core/result.hpp>
 #include <category/execution/ethereum/core/account.hpp>
-#include <category/execution/ethereum/core/address.hpp>
 #include <category/execution/ethereum/core/receipt.hpp>
 #include <category/mpt/db.hpp>
 #include <category/mpt/state_machine.hpp>
@@ -52,6 +52,7 @@ struct MachineBase : public mpt::StateMachine
         Proposal
     };
 
+    // Order matches nibble values: TableType(nibble + 1)
     enum class TableType : uint8_t
     {
         Prefix,
@@ -59,11 +60,11 @@ struct MachineBase : public mpt::StateMachine
         Code,
         Receipt,
         Transaction,
+        BlockHeader,
         Withdrawal,
+        Ommer,
         TxHash,
         BlockHash,
-        BlockHeader,
-        Ommer,
         CallFrame,
     };
 
@@ -72,8 +73,8 @@ struct MachineBase : public mpt::StateMachine
     TableType table{TableType::Prefix};
 
     virtual mpt::Compute &get_compute() const override;
-    virtual void down(unsigned char const nibble) override;
-    virtual void up(size_t const n) override;
+    virtual void down(unsigned char nibble) override;
+    virtual void up(size_t n) override;
     virtual bool is_variable_length() const override;
     constexpr uint8_t prefix_len() const;
 
@@ -147,6 +148,16 @@ Result<std::pair<byte_string_view, byte_string_view>>
 decode_storage_db_raw(byte_string_view &);
 Result<std::pair<bytes32_t, bytes32_t>> decode_storage_db(byte_string_view &);
 Result<byte_string_view> decode_storage_db_ignore_slot(byte_string_view &);
+
+struct AccountLeafProcessor
+{
+    static byte_string process(mpt::Node const &node);
+};
+
+struct StorageLeafProcessor
+{
+    static byte_string process(mpt::Node const &node);
+};
 
 Result<std::pair<Receipt, size_t>> decode_receipt_db(byte_string_view &);
 Result<std::pair<Transaction, Address>>

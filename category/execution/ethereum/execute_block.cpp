@@ -13,10 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/core/address.hpp>
 #include <category/core/assert.h>
+#include <category/core/bytes.hpp>
 #include <category/core/config.hpp>
-#include <category/core/cpu_relax.h>
-#include <category/core/event/event_recorder.h>
 #include <category/core/fiber/fiber_group.hpp>
 #include <category/core/fiber/priority_pool.hpp>
 #include <category/core/int.hpp>
@@ -31,7 +31,6 @@
 #include <category/execution/ethereum/core/receipt.hpp>
 #include <category/execution/ethereum/core/transaction.hpp>
 #include <category/execution/ethereum/core/withdrawal.hpp>
-#include <category/execution/ethereum/dao.hpp>
 #include <category/execution/ethereum/dispatch_transaction.hpp>
 #include <category/execution/ethereum/event/exec_event_ctypes.h>
 #include <category/execution/ethereum/event/exec_event_recorder.hpp>
@@ -40,31 +39,35 @@
 #include <category/execution/ethereum/execute_block.hpp>
 #include <category/execution/ethereum/execute_transaction.hpp>
 #include <category/execution/ethereum/metrics/block_metrics.hpp>
+#include <category/execution/ethereum/process_requests.hpp>
 #include <category/execution/ethereum/state2/block_state.hpp>
 #include <category/execution/ethereum/state3/state.hpp>
 #include <category/execution/ethereum/trace/call_tracer.hpp>
 #include <category/execution/ethereum/trace/event_trace.hpp>
+#include <category/execution/ethereum/trace/state_tracer.hpp>
 #include <category/execution/ethereum/validate_block.hpp>
 #include <category/execution/monad/staking/execute_block_prelude.hpp>
 #include <category/vm/evm/explicit_traits.hpp>
-#include <category/vm/evm/switch_traits.hpp>
 #include <category/vm/evm/traits.hpp>
 
 #include <boost/fiber/future/promise.hpp>
 #include <boost/outcome/try.hpp>
 #include <evmc/evmc.h>
-#include <intx/intx.hpp>
+#include <evmc/evmc.hpp>
 
-#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <memory>
 #include <optional>
+#include <span>
 #include <utility>
 #include <vector>
 
 MONAD_ANONYMOUS_NAMESPACE_BEGIN
+
+using namespace monad::literals;
 
 // EIP-4895
 void process_withdrawal(
@@ -76,15 +79,6 @@ void process_withdrawal(
                 withdrawal.recipient,
                 uint256_t{withdrawal.amount} * uint256_t{1'000'000'000u});
         }
-    }
-}
-
-void transfer_balance_dao(State &state)
-{
-    for (auto const &addr : dao::child_accounts) {
-        uint256_t const balance = state.get_balance(addr);
-        state.add_to_balance(dao::withdraw_account, balance);
-        state.subtract_from_balance(addr, balance);
     }
 }
 
@@ -212,9 +206,10 @@ std::vector<std::vector<std::optional<Address>>> recover_authorities(
 }
 
 template <Traits traits>
-void execute_block_header(
-    Chain const &chain, BlockState &block_state, BlockHeader const &header)
+void execute_block_header(BlockState &block_state, BlockHeader const &header)
 {
+    static_assert(traits::evm_rev() > EVMC_HOMESTEAD);
+
     State state{block_state, Incarnation{header.number, 0}};
 
     deploy_block_hash_history_contract<traits>(state);
@@ -222,15 +217,6 @@ void execute_block_header(
 
     if constexpr (traits::evm_rev() >= EVMC_CANCUN) {
         set_beacon_root(state, header);
-    }
-
-    // Ethereum mainnet dao fork
-    if constexpr (traits::evm_rev() == EVMC_HOMESTEAD) {
-        if (MONAD_UNLIKELY(header.number == dao::dao_block_number)) {
-            if (chain.get_chain_id() == 1) {
-                transfer_balance_dao(state);
-            }
-        }
     }
 
     // TODO: move to execute_monad_block eventually
@@ -316,7 +302,7 @@ Result<std::vector<Receipt>> execute_block_transactions(
             });
     }
 
-    auto const last = static_cast<std::ptrdiff_t>(transactions.size());
+    auto const last = static_cast<ptrdiff_t>(transactions.size());
     promises[last].get_future().get();
     block_metrics.tx_exec_time =
         std::chrono::duration_cast<std::chrono::microseconds>(
@@ -357,13 +343,15 @@ Result<std::vector<Receipt>> execute_block(
     std::span<std::unique_ptr<trace::StateTracer>> const state_tracers,
     ChainContext<traits> const &chain_ctx)
 {
+    static_assert(traits::evm_rev() > EVMC_TANGERINE_WHISTLE);
+
     TRACE_BLOCK_EVENT(StartBlock);
 
     MONAD_ASSERT(senders.size() == block.transactions.size());
     MONAD_ASSERT(senders.size() == call_tracers.size());
     MONAD_ASSERT(senders.size() == state_tracers.size());
 
-    execute_block_header<traits>(chain, block_state, block.header);
+    execute_block_header<traits>(block_state, block.header);
 
     BOOST_OUTCOME_TRY(
         auto const retvals,
@@ -388,11 +376,21 @@ Result<std::vector<Receipt>> execute_block(
         process_withdrawal(state, block.withdrawals);
     }
 
+    if constexpr (traits::eip_7002_active()) {
+        BOOST_OUTCOME_TRY(
+            auto const computed_requests_hash,
+            process_requests<traits>(
+                chain, state, block_hash_buffer, block.header, chain_ctx));
+        MONAD_ASSERT(block.header.requests_hash.has_value());
+        if (MONAD_UNLIKELY(
+                computed_requests_hash != block.header.requests_hash.value())) {
+            return BlockError::InvalidRequestsHash;
+        }
+    }
+
     apply_block_reward<traits>(state, block);
 
-    if constexpr (traits::evm_rev() >= EVMC_SPURIOUS_DRAGON) {
-        state.destruct_touched_dead();
-    }
+    state.destruct_touched_dead();
 
     MONAD_ASSERT(block_state.can_merge(state));
     block_state.merge(state);

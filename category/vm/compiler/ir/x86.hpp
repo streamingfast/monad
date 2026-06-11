@@ -35,7 +35,7 @@ namespace monad::vm::compiler::native
      */
     template <Traits traits>
     std::shared_ptr<Nativecode> compile(
-        asmjit::JitRuntime &rt, std::uint8_t const *contract_code,
+        asmjit::JitRuntime &rt, uint8_t const *contract_code,
         interpreter::code_size_t contract_code_size,
         CompilerConfig const & = {});
 
@@ -51,8 +51,8 @@ namespace monad::vm::compiler::native
      * Upper bound on (estimated) native contract size in bytes.
      */
     constexpr native_code_size_t max_code_size(
-        interpreter::code_size_t offset,
-        interpreter::code_size_t bytecode_size) noexcept
+        interpreter::code_size_t const offset,
+        interpreter::code_size_t const bytecode_size) noexcept
     {
         // A contract will be compiled asynchronously after the accumulated
         // execution gas cost of interpretation reaches this threshold. If

@@ -43,7 +43,7 @@ using namespace monad::vm::compiler;
 
 namespace
 {
-    std::vector<uint8_t> test_code(uint64_t index)
+    std::vector<uint8_t> test_code(uint64_t const index)
     {
         std::vector<uint8_t> code = {PUSH1, 1, PUSH8};
         for (uint64_t i = 0; i < 8; ++i) {
@@ -53,9 +53,9 @@ namespace
         return code;
     }
 
-    evmc::bytes32 test_hash(uint64_t index)
+    bytes32_t test_hash(uint64_t const index)
     {
-        evmc::bytes32 h{};
+        bytes32_t h{};
         for (uint64_t i = 0; i < 8; ++i) {
             h.bytes[31 - i] = static_cast<uint8_t>(index >> 8 * (7 - i));
         }

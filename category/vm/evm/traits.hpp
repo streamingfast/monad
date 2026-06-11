@@ -15,8 +15,8 @@
 
 #pragma once
 
+#include <category/core/assert.h>
 #include <category/core/is_specialization_of.hpp>
-#include <category/vm/core/assert.h>
 #include <category/vm/evm/monad/revision.h>
 
 #include <evmc/evmc.h>
@@ -29,6 +29,10 @@ namespace monad
 {
     namespace constants
     {
+        inline constexpr evmc_revision EARLIEST_SUPPORTED_EVM_FORK =
+            EVMC_BYZANTIUM;
+        inline constexpr uint64_t EARLIEST_SUPPORTED_ETH_BLOCK_NUMBER = 4370000;
+
         inline constexpr size_t MAX_CODE_SIZE_EIP170 = 24 * 1024; // 0x6000
         inline constexpr size_t MAX_INITCODE_SIZE_EIP3860 =
             2 * MAX_CODE_SIZE_EIP170; // 0xC000
@@ -47,6 +51,7 @@ namespace monad
         { T::eip_2565_active() } -> std::same_as<bool>;
         { T::eip_2929_active() } -> std::same_as<bool>;
         { T::eip_4844_active() } -> std::same_as<bool>;
+        { T::eip_7002_active() } -> std::same_as<bool>;
         { T::eip_7823_active() } -> std::same_as<bool>;
         { T::eip_7883_active() } -> std::same_as<bool>;
         { T::eip_7951_active() } -> std::same_as<bool>;
@@ -69,6 +74,8 @@ namespace monad
     template <evmc_revision Rev>
     struct EvmTraits
     {
+        static_assert(Rev >= EVMC_BYZANTIUM, "EVM revision is not supported");
+
         static consteval evmc_revision evm_rev() noexcept
         {
             return Rev;
@@ -87,6 +94,11 @@ namespace monad
         static consteval bool eip_4844_active() noexcept
         {
             return Rev >= EVMC_CANCUN;
+        }
+
+        static consteval bool eip_7002_active() noexcept
+        {
+            return Rev >= EVMC_PRAGUE;
         }
 
         static consteval bool eip_7823_active() noexcept
@@ -116,11 +128,7 @@ namespace monad
 
         static consteval size_t max_code_size() noexcept
         {
-            if constexpr (Rev >= EVMC_SPURIOUS_DRAGON) {
-                return constants::MAX_CODE_SIZE_EIP170;
-            }
-
-            return std::numeric_limits<size_t>::max();
+            return constants::MAX_CODE_SIZE_EIP170;
         }
 
         static consteval size_t max_initcode_size() noexcept
@@ -191,6 +199,11 @@ namespace monad
             // if this EIP is ever enabled, reserve balance must be modified
             // such that execution (and consensus) is accounting for the blob
             // gas used (irrevocable) in the reserve balance calculation
+            return false;
+        }
+
+        static consteval bool eip_7002_active() noexcept
+        {
             return false;
         }
 
@@ -294,7 +307,7 @@ namespace monad
         is_specialization_of_v<MonadTraits, T>;
 
     static_assert(is_monad_trait_v<MonadTraits<MONAD_ZERO>> == true);
-    static_assert(is_monad_trait_v<EvmTraits<EVMC_FRONTIER>> == false);
+    static_assert(is_monad_trait_v<EvmTraits<EVMC_BYZANTIUM>> == false);
     static_assert(is_evm_trait_v<MonadTraits<MONAD_ZERO>> == false);
-    static_assert(is_evm_trait_v<EvmTraits<EVMC_FRONTIER>> == true);
+    static_assert(is_evm_trait_v<EvmTraits<EVMC_BYZANTIUM>> == true);
 }

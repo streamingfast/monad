@@ -16,17 +16,12 @@
 #pragma once
 
 #include <category/core/basic_formatter.hpp>
+#include <category/core/log.hpp>
 #include <category/execution/ethereum/types/incarnation.hpp>
-
-#include <quill/Quill.h>
-#include <quill/bundled/fmt/format.h>
 
 #include <type_traits>
 
-template <>
-struct quill::copy_loggable<monad::Incarnation> : std::true_type
-{
-};
+MONAD_LOG_LOGGABLE(monad::Incarnation);
 
 template <>
 struct fmt::formatter<monad::Incarnation> : public monad::BasicFormatter

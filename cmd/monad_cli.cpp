@@ -21,6 +21,7 @@
 #include <category/core/hex.hpp>
 #include <category/core/keccak.h>
 #include <category/core/keccak.hpp>
+#include <category/core/log.hpp>
 #include <category/core/result.hpp>
 #include <category/execution/ethereum/core/account.hpp>
 #include <category/execution/ethereum/core/fmt/account_fmt.hpp> // NOLINT
@@ -43,9 +44,6 @@
 
 #include <CLI/CLI.hpp>
 #include <evmc/evmc.hpp>
-#include <quill/Quill.h>
-#include <quill/bundled/fmt/core.h>
-#include <quill/bundled/fmt/format.h>
 
 #include <algorithm>
 #include <cctype>
@@ -85,12 +83,13 @@ MONAD_ANONYMOUS_NAMESPACE_BEGIN
 // CLI input parsing helpers
 ////////////////////////////////////////
 
-bool is_numeric(std::string_view str)
+bool is_numeric(std::string_view const str)
 {
     return !str.empty() && std::all_of(str.begin(), str.end(), ::isdigit);
 }
 
-std::vector<std::string> tokenize(std::string_view input, char delim = ' ')
+std::vector<std::string>
+tokenize(std::string_view const input, char const delim = ' ')
 {
     std::ispanstream iss(input);
     std::vector<std::string> tokens;
@@ -107,7 +106,7 @@ std::vector<std::string> tokenize(std::string_view input, char delim = ' ')
 // TrieDb Helpers
 ////////////////////////////////////////
 
-std::string_view table_as_string(unsigned char table_id)
+std::string_view table_as_string(unsigned char const table_id)
 {
     switch (table_id) {
     case STATE_NIBBLE:
@@ -141,7 +140,7 @@ void print_receipt(Receipt const &receipt)
     fmt::print("{}\n\n", receipt);
 }
 
-void print_storage(bytes32_t key, bytes32_t val)
+void print_storage(bytes32_t const key, bytes32_t const val)
 {
     fmt::print("Storage{{key={},value={}}}\n\n", key, val);
 }
@@ -283,7 +282,7 @@ struct DbStateMachine
         }
     }
 
-    void set_table(unsigned char table_id)
+    void set_table(unsigned char const table_id)
     {
         if (state != DbState::proposal_or_finalize) {
             fmt::println("Error: at wrong part of trie, only allow set table "
@@ -788,7 +787,7 @@ int interactive_impl(Db &db)
 
 MONAD_ANONYMOUS_NAMESPACE_END
 
-int main(int argc, char *argv[])
+int main(int const argc, char *argv[])
 {
     std::vector<std::filesystem::path> dbname_paths;
     std::optional<unsigned> sq_thread_cpu = std::nullopt;
@@ -864,19 +863,9 @@ int main(int argc, char *argv[])
         return cli.exit(e);
     }
 
-    auto stdout_handler = quill::stdout_handler();
-    stdout_handler->set_pattern(
-        "%(time) [%(thread_id)] %(file_name):%(line_number) LOG_%(log_level)\t"
-        "%(message)",
-        "%Y-%m-%d %H:%M:%S.%Qns",
-        quill::Timezone::GmtTime);
-    quill::Config cfg;
-    cfg.default_handlers.emplace_back(stdout_handler);
-    quill::configure(cfg);
-    quill::start(true);
-    quill::get_root_logger()->set_log_level(log_level);
+    init_root_logger(log_level);
     LOG_INFO("running with commit '{}'", GIT_COMMIT_HASH);
-    quill::flush();
+    flush_logger();
 
     {
         fmt::println("Opening read only database {}.", dbname_paths);

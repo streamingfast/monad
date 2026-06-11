@@ -15,29 +15,25 @@
 
 #pragma once
 
+#include <category/core/address.hpp>
 #include <category/core/bytes.hpp>
 #include <category/core/bytes_hash_compare.hpp>
 #include <category/core/config.hpp>
 #include <category/core/lru/lru_cache.hpp>
 #include <category/execution/ethereum/core/account.hpp>
-#include <category/execution/ethereum/core/address.hpp>
-#include <category/execution/ethereum/db/db.hpp>
 #include <category/execution/ethereum/state2/state_deltas.hpp>
-#include <category/execution/ethereum/trace/call_tracer.hpp>
 #include <category/execution/monad/state2/proposal_state.hpp>
-#include <category/vm/vm.hpp>
 
-#include <evmc/evmc.hpp>
-
+#include <cstdint>
+#include <cstring>
 #include <memory>
 #include <optional>
+#include <string>
 
 MONAD_NAMESPACE_BEGIN
 
-class DbCache final : public Db
+class DbCache final
 {
-    Db &db_;
-
     struct StorageKey
     {
         static constexpr size_t k_bytes =
@@ -48,7 +44,8 @@ class DbCache final : public Db
         StorageKey() = default;
 
         StorageKey(
-            Address const &addr, Incarnation incarnation, bytes32_t const &key)
+            Address const &addr, Incarnation const incarnation,
+            bytes32_t const &key)
         {
             memcpy(bytes, addr.bytes, sizeof(Address));
             memcpy(&bytes[sizeof(Address)], &incarnation, sizeof(Incarnation));
@@ -70,62 +67,60 @@ class DbCache final : public Db
     Proposals proposals_;
 
 public:
-    DbCache(Db &db)
-        : db_{db}
-    {
-    }
+    DbCache() = default;
 
-    virtual std::optional<Account> read_account(Address const &address) override
+    bool
+    try_read_account(Address const &address, std::optional<Account> &result)
     {
-        bool truncated = false; // ancestors truncated
-        std::optional<Account> result;
-        if (proposals_.try_read_account(address, result, truncated)) {
-            return result;
+        auto const res = proposals_.try_read_account(address, result);
+        if (res.found) {
+            return true;
         }
-        if (!truncated) {
+        if (!res.truncated) {
             AccountsCache::ConstAccessor acc{};
             if (accounts_.find(acc, address)) {
-                return acc->second.value_;
+                result = acc->second.value_;
+                return true;
             }
         }
-        return db_.read_account(address);
+        return false;
     }
 
-    virtual bytes32_t read_storage(
+    bool try_read_storage(
         Address const &address, Incarnation const incarnation,
-        bytes32_t const &key) override
+        bytes32_t const &key, bytes32_t &result)
     {
-        bool truncated = false;
-        bytes32_t result;
-        if (proposals_.try_read_storage(
-                address, incarnation, key, result, truncated)) {
-            return result;
+        auto const res =
+            proposals_.try_read_storage(address, incarnation, key, result);
+        if (res.found) {
+            return true;
         }
-        if (!truncated) {
+        if (!res.truncated) {
             StorageKey const skey{address, incarnation, key};
             StorageCache::ConstAccessor acc{};
             if (storage_.find(acc, skey)) {
-                return acc->second.value_;
+                result = acc->second.value_;
+                return true;
             }
         }
-        return db_.read_storage(address, incarnation, key);
+        return false;
     }
 
-    virtual vm::SharedIntercode read_code(bytes32_t const &code_hash) override
-    {
-        return db_.read_code(code_hash);
-    }
-
-    virtual void set_block_and_prefix(
-        uint64_t const block_number,
-        bytes32_t const &block_id = bytes32_t{}) override
+    void
+    set_block_and_prefix(uint64_t const block_number, bytes32_t const &block_id)
     {
         proposals_.set_block_and_prefix(block_number, block_id);
-        db_.set_block_and_prefix(block_number, block_id);
     }
 
-    virtual void
-    finalize(uint64_t const block_number, bytes32_t const &block_id) override
+    void update_proposal_state(
+        std::unique_ptr<StateDeltas> state_deltas, uint64_t const block_number,
+        bytes32_t const &block_id)
+    {
+        MONAD_ASSERT(state_deltas);
+        proposals_.commit(std::move(state_deltas), block_number, block_id);
+    }
+
+    void on_finalize(uint64_t const block_number, bytes32_t const &block_id)
     {
         std::unique_ptr<ProposalState> const ps =
             proposals_.finalize(block_number, block_id);
@@ -137,113 +132,28 @@ public:
             accounts_.clear();
             storage_.clear();
         }
-        db_.finalize(block_number, block_id);
-        proposals_.set_block_and_prefix(block_number, block_id);
     }
 
-    virtual void update_verified_block(uint64_t const block_number) override
+    std::string accounts_stats()
     {
-        db_.update_verified_block(block_number);
+        return accounts_.print_stats();
     }
 
-    virtual void update_voted_metadata(
-        uint64_t const block_number, bytes32_t const &block_id) override
+    std::string storage_stats()
     {
-        db_.update_voted_metadata(block_number, block_id);
-    }
-
-    virtual void update_proposed_metadata(
-        uint64_t const block_number, bytes32_t const &block_id) override
-    {
-        db_.update_proposed_metadata(block_number, block_id);
-    }
-
-    virtual void commit(
-        StateDeltas const &, Code const &, bytes32_t const &,
-        BlockHeader const &, std::vector<Receipt> const &,
-        std::vector<std::vector<CallFrame>> const &,
-        std::vector<Address> const &, std::vector<Transaction> const &,
-        std::vector<BlockHeader> const &,
-        std::optional<std::vector<Withdrawal>> const &) override
-    {
-        MONAD_ABORT("Use DbCache commit with unique_ptr arg.");
-    }
-
-    virtual void commit(
-        std::unique_ptr<StateDeltas> state_deltas, Code const &code,
-        bytes32_t const &block_id, BlockHeader const &header,
-        std::vector<Receipt> const &receipts = {},
-        std::vector<std::vector<CallFrame>> const &call_frames = {},
-        std::vector<Address> const &senders = {},
-        std::vector<Transaction> const &transactions = {},
-        std::vector<BlockHeader> const &ommers = {},
-        std::optional<std::vector<Withdrawal>> const &withdrawals = {}) override
-    {
-        db_.commit(
-            *state_deltas,
-            code,
-            block_id,
-            header,
-            receipts,
-            call_frames,
-            senders,
-            transactions,
-            ommers,
-            withdrawals);
-
-        proposals_.commit(std::move(state_deltas), header.number, block_id);
-    }
-
-    virtual BlockHeader read_eth_header() override
-    {
-        return db_.read_eth_header();
-    }
-
-    virtual bytes32_t state_root() override
-    {
-        return db_.state_root();
-    }
-
-    virtual bytes32_t receipts_root() override
-    {
-        return db_.receipts_root();
-    }
-
-    virtual bytes32_t transactions_root() override
-    {
-        return db_.transactions_root();
-    }
-
-    virtual std::optional<bytes32_t> withdrawals_root() override
-    {
-        return db_.withdrawals_root();
-    }
-
-    virtual std::string print_stats() override
-    {
-        return db_.print_stats() + ",ac=" + accounts_.print_stats() +
-               ",sc=" + storage_.print_stats();
-    }
-
-    virtual uint64_t get_block_number() const override
-    {
-        return db_.get_block_number();
+        return storage_.print_stats();
     }
 
 private:
     void insert_in_lru_caches(StateDeltas const &state_deltas)
     {
-        for (auto it = state_deltas.cbegin(); it != state_deltas.cend(); ++it) {
-            auto const &address = it->first;
-            auto const &account_delta = it->second.account;
+        for (auto const &[address, delta] : state_deltas) {
+            auto const &account_delta = delta.account;
             accounts_.insert(address, account_delta.second);
-            auto const &storage = it->second.storage;
+            auto const &storage = delta.storage;
             auto const &account = account_delta.second;
             if (account.has_value()) {
-                for (auto it2 = storage.cbegin(); it2 != storage.cend();
-                     ++it2) {
-                    auto const &key = it2->first;
-                    auto const &storage_delta = it2->second;
+                for (auto const &[key, storage_delta] : storage) {
                     auto const incarnation = account->incarnation;
                     storage_.insert(
                         StorageKey(address, incarnation, key),

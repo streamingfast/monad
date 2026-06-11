@@ -16,6 +16,8 @@
 #include "fixture.hpp"
 
 #include <algorithm>
+#include <category/core/address.hpp>
+#include <category/core/bytes.hpp>
 #include <category/core/runtime/uint256.hpp>
 #include <category/vm/runtime/transmute.hpp>
 
@@ -99,7 +101,7 @@ namespace monad::vm::compiler::test
     }
 
     evmc_result RuntimeTestBase::success_result(
-        std::int64_t gas_left, std::int64_t gas_refund)
+        std::int64_t const gas_left, std::int64_t const gas_refund)
     {
         auto output_data = result_data();
         return {
@@ -115,7 +117,8 @@ namespace monad::vm::compiler::test
     }
 
     evmc_result RuntimeTestBase::create_result(
-        evmc_address prog_addr, std::int64_t gas_left, std::int64_t gas_refund)
+        Address const prog_addr, std::int64_t const gas_left,
+        std::int64_t const gas_refund)
     {
         auto output_data = result_data();
         return {
@@ -130,7 +133,7 @@ namespace monad::vm::compiler::test
         };
     }
 
-    evmc_result RuntimeTestBase::failure_result(evmc_status_code sc)
+    evmc_result RuntimeTestBase::failure_result(evmc_status_code const sc)
     {
         auto output_data = result_data();
         return {
@@ -145,7 +148,8 @@ namespace monad::vm::compiler::test
         };
     }
 
-    void RuntimeTestBase::set_balance(uint256_t addr, uint256_t balance)
+    void
+    RuntimeTestBase::set_balance(uint256_t const addr, uint256_t const balance)
     {
         host_.accounts[address_from_uint256(addr)].balance =
             bytes32_from_uint256(balance);
@@ -161,11 +165,11 @@ namespace monad::vm::compiler::test
     }
 
     void RuntimeTestBase::add_account_at(
-        uint256_t addr, std::span<uint8_t> const code)
+        uint256_t const addr, std::span<uint8_t> const code)
     {
         auto const contract_addr = address_from_uint256(addr);
         auto const codehash = ethash::keccak256(code.data(), code.size());
-        evmc::bytes32 codehash_bytes;
+        bytes32_t codehash_bytes;
         std::copy(codehash.bytes, codehash.bytes + 32, codehash_bytes.bytes);
         auto const account = evmc::MockedAccount{
             .nonce = 0,

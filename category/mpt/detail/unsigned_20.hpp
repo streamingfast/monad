@@ -35,10 +35,10 @@ namespace detail
 
     public:
         // NOLINTNEXTLINE(google-explicit-constructor)
-        constexpr unsigned_20(uint32_t v)
+        constexpr unsigned_20(uint32_t const v)
             : v_(v & 0xfffff)
         {
-            MONAD_DEBUG_ASSERT(v == uint32_t(-1) || (v >> 20) == 0);
+            MONAD_ASSERT(v == uint32_t(-1) || (v >> 20) == 0);
         }
 
         constexpr explicit operator uint32_t() const noexcept

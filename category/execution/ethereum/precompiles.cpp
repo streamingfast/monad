@@ -13,11 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/core/address.hpp>
 #include <category/core/assert.h>
 #include <category/core/byte_string.hpp>
 #include <category/core/config.hpp>
 #include <category/core/likely.h>
-#include <category/execution/ethereum/core/address.hpp>
 #include <category/execution/ethereum/precompiles.hpp>
 #include <category/execution/ethereum/state3/state.hpp>
 #include <category/vm/evm/explicit_traits.hpp>
@@ -64,6 +64,8 @@ static std::optional<uint64_t> fmap_optional(byte_string_view const a)
 template <Traits traits>
 std::optional<PrecompiledContract> resolve_precompile(Address const &address)
 {
+    static_assert(traits::evm_rev() > EVMC_SPURIOUS_DRAGON);
+
 #define CASE(addr, gas_cost, execute)                                          \
     do {                                                                       \
         if (MONAD_UNLIKELY(Address{(addr)} == address)) {                      \
@@ -74,16 +76,14 @@ std::optional<PrecompiledContract> resolve_precompile(Address const &address)
 
     // Ethereum precompiles
     CASE(0x01, ecrecover_gas_cost<traits>, ecrecover_execute);
-    CASE(0x02, sha256_gas_cost<traits>, sha256_execute);
-    CASE(0x03, ripemd160_gas_cost<traits>, ripemd160_execute);
+    CASE(0x02, sha256_gas_cost, sha256_execute);
+    CASE(0x03, ripemd160_gas_cost, ripemd160_execute);
     CASE(0x04, identity_gas_cost, identity_execute);
 
-    if constexpr (traits::evm_rev() >= EVMC_BYZANTIUM) {
-        CASE(0x05, expmod_gas_cost<traits>, expmod_execute);
-        CASE(0x06, ecadd_gas_cost<traits>, ecadd_execute);
-        CASE(0x07, ecmul_gas_cost<traits>, ecmul_execute);
-        CASE(0x08, snarkv_gas_cost<traits>, snarkv_execute);
-    }
+    CASE(0x05, expmod_gas_cost<traits>, expmod_execute);
+    CASE(0x06, ecadd_gas_cost<traits>, ecadd_execute);
+    CASE(0x07, ecmul_gas_cost<traits>, ecmul_execute);
+    CASE(0x08, snarkv_gas_cost<traits>, snarkv_execute);
 
     if constexpr (traits::evm_rev() >= EVMC_ISTANBUL) {
         CASE(0x09, blake2bf_gas_cost<traits>, blake2bf_execute);
@@ -155,10 +155,9 @@ std::optional<evmc::Result> check_call_eth_precompile(evmc_message const &msg)
     byte_string_view const input{msg.input_data, msg.input_size};
     std::optional<uint64_t> const cost = gas_cost_func(input);
 
-    // If cost is std::nullopt, the gas function got an invalid input. This is
-    // currently only possible for EXPMOD with EIP-7823.
+    // If cost is std::nullopt, the gas function got an invalid input.
     if (!cost.has_value()) {
-        return evmc::Result{evmc_status_code::EVMC_FAILURE};
+        return evmc::Result{evmc_status_code::EVMC_PRECOMPILE_FAILURE};
     }
 
     if (MONAD_UNLIKELY(std::cmp_less(msg.gas, cost.value()))) {

@@ -13,9 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/core/address.hpp>
 #include <category/core/assert.h>
+#include <category/core/byte_string.hpp>
+#include <category/core/config.hpp>
 #include <category/core/int.hpp>
 #include <category/core/likely.h>
+#include <category/core/result.hpp>
 #include <category/execution/ethereum/block_hash_buffer.hpp>
 #include <category/execution/ethereum/chain/chain.hpp>
 #include <category/execution/ethereum/core/block.hpp>
@@ -32,18 +36,25 @@
 #include <category/execution/ethereum/trace/state_tracer.hpp>
 #include <category/execution/ethereum/transaction_gas.hpp>
 #include <category/execution/ethereum/tx_context.hpp>
+#include <category/execution/ethereum/types/incarnation.hpp>
 #include <category/execution/ethereum/validate_transaction.hpp>
+#include <category/vm/evm/delegation.hpp>
 #include <category/vm/evm/explicit_traits.hpp>
 #include <category/vm/evm/switch_traits.hpp>
 #include <category/vm/evm/traits.hpp>
+#include <category/vm/memory_pool.hpp>
+#include <evmc/evmc.h>
+#include <evmc/evmc.hpp>
 
 #include <boost/fiber/future/promise.hpp>
 #include <boost/outcome/try.hpp>
-#include <intx/intx.hpp>
 
 #include <algorithm>
-#include <functional>
+#include <cstdint>
+#include <limits>
 #include <memory>
+#include <optional>
+#include <span>
 #include <utility>
 
 MONAD_ANONYMOUS_NAMESPACE_BEGIN
@@ -92,7 +103,6 @@ template <Traits traits>
 uint64_t ExecuteTransactionNoValidation<traits>::process_authorizations(
     State &state, EvmcHost<traits> &host)
 {
-    using namespace intx::literals;
 
     MONAD_ASSERT(authorities_.size() == tx_.authorization_list.size());
 
@@ -105,7 +115,7 @@ uint64_t ExecuteTransactionNoValidation<traits>::process_authorizations(
         // 1. Verify the chain ID is 0 or the ID of the current chain.
         auto const &chain_id = *auth_entry.sc.chain_id;
         auto const host_chain_id =
-            intx::be::load<uint256_t>(host.get_tx_context()->chain_id);
+            uint256_t::load_be(host.get_tx_context()->chain_id.bytes);
 
         if (!(chain_id == 0 || chain_id == host_chain_id)) {
             continue;
@@ -185,8 +195,7 @@ uint64_t ExecuteTransactionNoValidation<traits>::process_authorizations(
 
 template <Traits traits>
 evmc_message ExecuteTransactionNoValidation<traits>::to_message(
-    vm::MemoryPool::Ref &msg_memory,
-    std::uint32_t const msg_memory_capacity) const
+    vm::MemoryPool::Ref &msg_memory, uint32_t const msg_memory_capacity) const
 {
     auto const to_address = [this] {
         if (tx_.to) {
@@ -211,7 +220,7 @@ evmc_message ExecuteTransactionNoValidation<traits>::to_message(
         .memory = msg_memory.get(),
         .memory_capacity = msg_memory_capacity,
     };
-    intx::be::store(msg.value.bytes, tx_.value);
+    store_be(msg.value.bytes, tx_.value);
     return msg;
 }
 
@@ -331,6 +340,7 @@ Result<evmc::Result> ExecuteTransaction<traits>::execute_impl2(State &state)
         get_tx_context<traits>(tx_, sender_, header_, chain_.get_chain_id());
     EvmcHost<traits> host{
         call_tracer_,
+        state_tracer_,
         tx_context,
         block_hash_buffer_,
         state,
@@ -346,6 +356,8 @@ template <Traits traits>
 Receipt ExecuteTransaction<traits>::execute_final(
     State &state, evmc::Result const &result)
 {
+    static_assert(traits::evm_rev() > EVMC_TANGERINE_WHISTLE);
+
     MONAD_ASSERT(result.gas_left >= 0);
     MONAD_ASSERT(result.gas_refund >= 0);
     MONAD_ASSERT(tx_.gas_limit >= static_cast<uint64_t>(result.gas_left));
@@ -379,9 +391,7 @@ Receipt ExecuteTransaction<traits>::execute_final(
 
     // finalize state, Eqn. 77-79
     state.destruct_suicides<traits>();
-    if constexpr (traits::evm_rev() >= EVMC_SPURIOUS_DRAGON) {
-        state.destruct_touched_dead();
-    }
+    state.destruct_touched_dead();
 
     Receipt receipt{
         .status = result.status_code == EVMC_SUCCESS ? 1u : 0u,
@@ -426,6 +436,7 @@ Result<Receipt> ExecuteTransaction<traits>::operator()()
         state.set_original_nonce(sender_, tx_.nonce);
 
         call_tracer_.reset();
+        trace::reset(state_tracer_);
 
         auto result = execute_impl2(state);
 
@@ -450,6 +461,7 @@ Result<Receipt> ExecuteTransaction<traits>::operator()()
         State state{block_state_, Incarnation{header_.number, i_ + 1}};
 
         call_tracer_.reset();
+        trace::reset(state_tracer_);
 
         auto result = execute_impl2(state);
 

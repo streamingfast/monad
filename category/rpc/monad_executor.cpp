@@ -16,6 +16,7 @@
 #include <category/rpc/monad_executor.h>
 #include <category/rpc/overrides.hpp>
 
+#include <category/core/address.hpp>
 #include <category/core/assert.h>
 #include <category/core/byte_string.hpp>
 #include <category/core/bytes.hpp>
@@ -23,17 +24,17 @@
 #include <category/core/fiber/fiber_thread_pool.hpp>
 #include <category/core/fiber/priority_pool.hpp>
 #include <category/core/hex.hpp>
-#include <category/core/int.hpp>
 #include <category/core/keccak.hpp>
 #include <category/core/likely.h>
-#include <category/core/lru/static_lru_cache.hpp>
+#include <category/core/log.hpp>
 #include <category/core/monad_exception.hpp>
 #include <category/core/result.hpp>
+#include <category/core/runtime/uint256.hpp>
 #include <category/execution/ethereum/block_hash_buffer.hpp>
 #include <category/execution/ethereum/chain/chain.hpp>
 #include <category/execution/ethereum/chain/chain_config.h>
 #include <category/execution/ethereum/chain/ethereum_mainnet.hpp>
-#include <category/execution/ethereum/core/address.hpp>
+#include <category/execution/ethereum/chain/hive_net.hpp>
 #include <category/execution/ethereum/core/block.hpp>
 #include <category/execution/ethereum/core/rlp/address_rlp.hpp>
 #include <category/execution/ethereum/core/rlp/block_rlp.hpp>
@@ -62,8 +63,8 @@
 #include <category/execution/monad/chain/monad_testnet.hpp>
 #include <category/execution/monad/reserve_balance.hpp>
 #include <category/mpt/db.hpp>
-#include <category/mpt/nibbles_view.hpp>
 #include <category/mpt/ondisk_db_config.hpp>
+#include <category/rpc/lazy_block_hash.hpp>
 #include <category/vm/evm/switch_traits.hpp>
 #include <category/vm/evm/traits.hpp>
 #include <category/vm/vm.hpp>
@@ -93,65 +94,13 @@
 #include <ankerl/unordered_dense.h>
 #include <evmc/evmc.h>
 #include <evmc/evmc.hpp>
-#include <intx/intx.hpp>
 #include <nlohmann/json_fwd.hpp>
-#include <quill/Quill.h>
 
 using namespace monad;
 using namespace monad::vm;
 
 namespace
 {
-    // eth call on latest uses eip-2935. historical eth calls use this class,
-    // which lazily loads the block header from the DB and computes BLOCKHASH.
-    // historical can always query from the finalized prefix.
-    //
-    // A thread-safe LRU is not needed. Each submitted call to the executor pool
-    // creates its own LazyBlockHash instance.
-    class LazyBlockHash : public BlockHashBuffer
-    {
-        using BlockHashBuffer::N;
-
-        mpt::RODb const &db_;
-        uint64_t const n_;
-        using Cache = static_lru_cache<uint64_t, bytes32_t>;
-        mutable Cache blockhash_cache_;
-
-    public:
-        LazyBlockHash(mpt::RODb const &db, uint64_t const n)
-            : db_{db}
-            , n_{n}
-            , blockhash_cache_{N}
-        {
-        }
-
-        ~LazyBlockHash() override = default;
-
-        uint64_t n() const override
-        {
-            return n_;
-        }
-
-        bytes32_t const &get(uint64_t const n) const override
-        {
-            MONAD_ASSERT_PRINTF(n < n_ && n + N >= n_, "n_=%lu, n=%lu", n_, n);
-            if (Cache::ConstAccessor acc; blockhash_cache_.find(acc, n)) {
-                return acc->second->val;
-            }
-
-            auto const cursor_res = db_.find(
-                mpt::concat(
-                    FINALIZED_NIBBLE, mpt::NibblesView{block_header_nibbles}),
-                n);
-            MONAD_ASSERT_THROW(
-                !cursor_res.has_error(), "blockhash: error querying DB");
-            bytes32_t const blockhash =
-                to_bytes(keccak256(cursor_res.value().node->value()));
-            auto const res = blockhash_cache_.insert(n, blockhash);
-            return res.first->second->val;
-        }
-    };
-
     char const *const UNEXPECTED_EXCEPTION_ERR_MSG = "unexpected error";
     char const *const EXCEED_QUEUE_SIZE_ERR_MSG =
         "failure to submit eth_call to thread pool: queue size exceeded";
@@ -321,6 +270,7 @@ namespace
 
         EvmcHost<traits> host{
             call_tracer,
+            state_tracer,
             tx_context,
             buffer,
             state,
@@ -415,7 +365,7 @@ namespace
             authorities_view{authorities.data(), transactions_size};
 
         // Execute block header
-        execute_block_header<traits>(chain, block_state, header);
+        execute_block_header<traits>(block_state, header);
         BlockMetrics metrics{};
 
         // Prepare state tracers and auxiliary noop call tracers.
@@ -704,7 +654,7 @@ struct monad_executor
     // The VM for executing eth calls needs to unconditionally use the
     // interpreter rather than the compiler. If it uses the compiler, then
     // out-of-gas errors can be misreported as generic failures.
-    vm::VM vm_{false};
+    vm::VM vm_{vm::VM::InterpreterOnly};
 
     monad_executor(
         monad_executor_pool_config const &low_pool_config,
@@ -870,6 +820,8 @@ struct monad_executor
                             return std::make_unique<MonadTestnet>();
                         case CHAIN_CONFIG_MONAD_MAINNET:
                             return std::make_unique<MonadMainnet>();
+                        case CHAIN_CONFIG_HIVE_NET:
+                            return std::make_unique<HiveNet>();
                         }
                         MONAD_ASSERT(false);
                     }();
@@ -906,7 +858,8 @@ struct monad_executor
                     }();
 
                     auto const res = [&]() -> Result<evmc::Result> {
-                        if (chain_config == CHAIN_CONFIG_ETHEREUM_MAINNET) {
+                        if (chain_config == CHAIN_CONFIG_ETHEREUM_MAINNET ||
+                            chain_config == CHAIN_CONFIG_HIVE_NET) {
                             evmc_revision const rev = chain->get_revision(
                                 block_header.number, block_header.timestamp);
                             SWITCH_EVM_TRAITS(
@@ -1162,6 +1115,8 @@ struct monad_executor
                             return std::make_unique<MonadTestnet>();
                         case CHAIN_CONFIG_MONAD_MAINNET:
                             return std::make_unique<MonadMainnet>();
+                        case CHAIN_CONFIG_HIVE_NET:
+                            return std::make_unique<HiveNet>();
                         }
                         MONAD_ASSERT(false);
                     }();
@@ -1233,7 +1188,8 @@ struct monad_executor
                     LazyBlockHash block_hash_buffer{db, block_number};
 
                     auto const res = [&]() -> Result<nlohmann::json> {
-                        if (chain_config == CHAIN_CONFIG_ETHEREUM_MAINNET) {
+                        if (chain_config == CHAIN_CONFIG_ETHEREUM_MAINNET ||
+                            chain_config == CHAIN_CONFIG_HIVE_NET) {
                             evmc_revision const rev = chain->get_revision(
                                 block_header.number, block_header.timestamp);
                             SWITCH_EVM_TRAITS(
@@ -1425,14 +1381,16 @@ struct monad_executor_state monad_executor_get_state(monad_executor *const e)
 }
 
 void monad_executor_run_transactions(
-    struct monad_executor *executor, enum monad_chain_config chain_config,
-    uint8_t const *rlp_header, size_t rlp_header_len, uint64_t block_number,
-    uint8_t const *rlp_block_id, size_t rlp_block_id_len,
-    uint8_t const *rlp_parent_block_id, size_t rlp_parent_block_id_len,
-    uint8_t const *rlp_grandparent_block_id,
-    size_t rlp_grandparent_block_id_len, int64_t const transaction_index,
-    void (*complete)(monad_executor_result *, void *user), void *user,
-    enum monad_tracer_config tracer_config)
+    struct monad_executor *const executor,
+    enum monad_chain_config const chain_config, uint8_t const *const rlp_header,
+    size_t const rlp_header_len, uint64_t const block_number,
+    uint8_t const *const rlp_block_id, size_t const rlp_block_id_len,
+    uint8_t const *const rlp_parent_block_id,
+    size_t const rlp_parent_block_id_len,
+    uint8_t const *const rlp_grandparent_block_id,
+    size_t const rlp_grandparent_block_id_len, int64_t const transaction_index,
+    void (*complete)(monad_executor_result *, void *user), void *const user,
+    enum monad_tracer_config const tracer_config)
 {
     MONAD_ASSERT(executor);
 

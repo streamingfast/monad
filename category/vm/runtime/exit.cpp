@@ -18,7 +18,7 @@
 extern "C" void monad_vm_runtime_exit [[noreturn]] (void *);
 
 extern "C" void monad_vm_runtime_context_out_of_gas_exit
-    [[noreturn]] (monad::vm::runtime::Context *ctx)
+    [[noreturn]] (monad::vm::runtime::Context *const ctx)
 {
     ctx->result.status = monad::vm::runtime::StatusCode::OutOfGas;
     monad_vm_runtime_exit(ctx->exit_stack_ptr);
@@ -33,7 +33,7 @@ namespace monad::vm::runtime
         monad_vm_runtime_exit(exit_stack_ptr);
     }
 
-    void Context::exit [[noreturn]] (StatusCode code) noexcept
+    void Context::exit [[noreturn]] (StatusCode const code) noexcept
     {
         result.status = code;
         monad_vm_runtime_exit(exit_stack_ptr);

@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-#include <category/vm/core/assert.h>
+#include <category/core/assert.h>
 #include <category/vm/utils/lru_weight_cache.hpp>
 
 #include <gtest/gtest.h>
@@ -83,7 +83,7 @@ namespace
         WeightCache weight_cache_{max_weight, update_period};
         std::atomic<uint64_t> current_weight_{0};
 
-        std::optional<uint32_t> weight_cache_find(Key k)
+        std::optional<uint32_t> weight_cache_find(Key const k)
         {
             WeightCache::ConstAccessor acc;
             if (!weight_cache_.find(acc, k)) {
@@ -93,8 +93,8 @@ namespace
         }
 
         std::vector<TestThread> make_readers(
-            size_t reader_count, std::function<void()> p,
-            size_t upper_weight = max_weight)
+            size_t const reader_count, std::function<void()> const p,
+            size_t const upper_weight = max_weight)
         {
             auto r = [=, this](size_t start_index) {
                 size_t i = start_index;
@@ -114,12 +114,12 @@ namespace
 
         std::vector<TestThread> make_rereaders(
             std::unordered_map<Key, std::atomic_flag> &is_updated,
-            size_t rereader_count)
+            size_t const rereader_count)
         {
             for (auto &[_, b] : is_updated) {
-                MONAD_VM_ASSERT(!b.test());
+                MONAD_ASSERT(!b.test());
             }
-            MONAD_VM_ASSERT(is_updated.size() == elems.size());
+            MONAD_ASSERT(is_updated.size() == elems.size());
             auto r = [this, &is_updated](size_t start_index) {
                 size_t i = start_index;
                 for (;;) {
@@ -142,8 +142,9 @@ namespace
         }
 
         std::vector<TestThread> make_writers(
-            size_t writer_count, std::function<void()> p,
-            std::function<Value(Key)> f, size_t upper_weight = max_weight)
+            size_t const writer_count, std::function<void()> const p,
+            std::function<Value(Key)> const f,
+            size_t const upper_weight = max_weight)
         {
             auto w = [=, this](size_t start_index) {
                 size_t i = start_index;

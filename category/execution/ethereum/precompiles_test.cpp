@@ -13,8 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/core/address.hpp>
 #include <category/core/hex.hpp>
-#include <category/execution/ethereum/core/address.hpp>
 #include <category/execution/ethereum/precompiles.hpp>
 #include <category/execution/ethereum/state2/block_state.hpp>
 #include <category/execution/ethereum/trace/call_tracer.hpp>
@@ -33,14 +33,16 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 #include "test_resource_data.h"
 
 using namespace monad;
 
-using namespace evmc::literals;
+using namespace monad::literals;
 
 namespace fs = std::filesystem;
 
@@ -125,12 +127,15 @@ namespace
                                   "fffe5bfeffffffff00000001"})
             .value();
 
+    struct evmc_some_error
+    {
+    };
+
     struct test_case
     {
         std::string name;
         evmc::bytes input;
-        std::optional<evmc::bytes> expected;
-        std::optional<evmc_status_code> expected_failure;
+        std::variant<evmc::bytes, evmc_some_error, evmc_status_code> expected;
         int64_t gas;
         std::optional<int64_t> gas_offset;
     };
@@ -143,6 +148,10 @@ namespace
         if (j.contains("Expected")) {
             std::string expected = j.at("Expected");
             t.expected = from_hex(std::string_view{expected}).value();
+        }
+        else {
+            MONAD_ASSERT(j.contains("ExpectedError"));
+            t.expected = evmc_some_error{};
         }
 
         // Expected-to-fail tests don't have a Gas field, so we assign them the
@@ -185,20 +194,22 @@ namespace
     static test_case const ECRECOVER_TEST_CASES[] = {
         {.name = "ecrecover_unrecoverable_key_enough_gas",
          .input = ECRECOVER_UNRECOVERABLE_KEY_INPUT,
+         .expected = evmc::bytes{},
          .gas = 3'000,
          .gas_offset = 3'000},
         {.name = "ecrecover_unrecoverable_key_insufficient_gas",
          .input = ECRECOVER_UNRECOVERABLE_KEY_INPUT,
-         .expected_failure = evmc_status_code::EVMC_OUT_OF_GAS,
+         .expected = evmc_status_code::EVMC_OUT_OF_GAS,
          .gas = 3'000,
          .gas_offset = -1},
         {.name = "ecrecover_valid_key_enough_gas",
          .input = ECRECOVER_VALID_KEY_INPUT,
+         .expected = ECRECOVER_VALID_KEY_OUTPUT,
          .gas = 3'000,
          .gas_offset = 3'000},
         {.name = "ecrecover_valid_key_insufficient_gas",
          .input = ECRECOVER_VALID_KEY_INPUT,
-         .expected_failure = evmc_status_code::EVMC_OUT_OF_GAS,
+         .expected = evmc_status_code::EVMC_OUT_OF_GAS,
          .gas = 3'000,
          .gas_offset = -1}};
 
@@ -210,7 +221,7 @@ namespace
          .gas_offset = 40},
         {.name = "sha256_empty_insufficient_gas",
          .input = evmc::bytes{},
-         .expected_failure = evmc_status_code::EVMC_OUT_OF_GAS,
+         .expected = evmc_status_code::EVMC_OUT_OF_GAS,
          .gas = 60,
          .gas_offset = -1},
         {.name = "sha256_message_enough_gas",
@@ -220,7 +231,7 @@ namespace
          .gas_offset = 1},
         {.name = "sha256_message_insufficient_gas",
          .input = evmc::bytes{reinterpret_cast<uint8_t const *>("lol"), 3},
-         .expected_failure = evmc_status_code::EVMC_OUT_OF_GAS,
+         .expected = evmc_status_code::EVMC_OUT_OF_GAS,
          .gas = 72,
          .gas_offset = -1}};
 
@@ -232,7 +243,7 @@ namespace
          .gas_offset = 1},
         {.name = "ripemd160_empty_insufficient_gas",
          .input = evmc::bytes{},
-         .expected_failure = evmc_status_code::EVMC_OUT_OF_GAS,
+         .expected = evmc_status_code::EVMC_OUT_OF_GAS,
          .gas = 600,
          .gas_offset = -1},
         {.name = "ripemd160_message_enough_gas",
@@ -242,7 +253,7 @@ namespace
          .gas_offset = 1},
         {.name = "ripemd160_message_insufficient_gas",
          .input = evmc::bytes{reinterpret_cast<uint8_t const *>("lol"), 3},
-         .expected_failure = evmc_status_code::EVMC_OUT_OF_GAS,
+         .expected = evmc_status_code::EVMC_OUT_OF_GAS,
          .gas = 720,
          .gas_offset = -1}};
 
@@ -254,7 +265,7 @@ namespace
          .gas_offset = 1},
         {.name = "identity_empty_insufficient_gas",
          .input = evmc::bytes{},
-         .expected_failure = evmc_status_code::EVMC_OUT_OF_GAS,
+         .expected = evmc_status_code::EVMC_OUT_OF_GAS,
          .gas = 15,
          .gas_offset = -1},
         {.name = "identity_nonempty_enough_gas",
@@ -264,7 +275,7 @@ namespace
          .gas_offset = 1},
         {.name = "identity_nonempty_insufficient_gas",
          .input = evmc::bytes{reinterpret_cast<uint8_t const *>("dead"), 4},
-         .expected_failure = evmc_status_code::EVMC_OUT_OF_GAS,
+         .expected = evmc_status_code::EVMC_OUT_OF_GAS,
          .gas = 18,
          .gas_offset = -1}};
 
@@ -276,7 +287,7 @@ namespace
          .gas_offset = 3'000},
         {.name = "point_evaluation_insufficient_gas",
          .input = POINT_EVALUATION_INPUT,
-         .expected_failure = evmc_status_code::EVMC_OUT_OF_GAS,
+         .expected = evmc_status_code::EVMC_OUT_OF_GAS,
          .gas = 50'000,
          .gas_offset = -1}};
 
@@ -285,8 +296,7 @@ namespace
         char const *suite_name, std::span<test_case const> test_cases,
         monad::Address const &code_address)
     {
-        InMemoryMachine machine;
-        mpt::Db db{machine};
+        mpt::Db db{std::make_unique<InMemoryMachine>()};
         TrieDb tdb{db};
         vm::VM vm;
         BlockState bs{tdb, vm};
@@ -305,41 +315,43 @@ namespace
                     check_call_precompile<traits>(s, call_tracer, input)
                         .value();
 
-                if (test_case.expected) {
+                if (auto const *expected_value =
+                        std::get_if<evmc::bytes>(&test_case.expected)) {
                     EXPECT_EQ(
                         result.status_code, evmc_status_code::EVMC_SUCCESS)
                         << suite_name << " test case " << test_case.name;
-                }
 
-                if (test_case.expected_failure) {
-                    EXPECT_EQ(result.status_code, *test_case.expected_failure)
-                        << suite_name << " test case " << test_case.name;
-                }
-
-                if (result.status_code == evmc_status_code::EVMC_SUCCESS) {
                     EXPECT_EQ(result.gas_left, gas_offset)
                         << suite_name << " test case " << test_case.name
                         << " gas check failed.";
-                }
-                else {
-                    EXPECT_EQ(result.gas_left, 0)
-                        << suite_name << " test case " << test_case.name
-                        << " gas check failed. It should have cleared "
-                           "gas_left.";
-                }
 
-                if (test_case.expected) {
-                    auto &expected = *test_case.expected;
-
-                    ASSERT_EQ(result.output_size, expected.size())
+                    ASSERT_EQ(result.output_size, expected_value->size())
                         << suite_name << " test case " << test_case.name
                         << " output buffer size check failed.";
 
                     for (size_t i = 0; i < result.output_size; i++) {
-                        EXPECT_EQ(expected[i], result.output_data[i])
+                        EXPECT_EQ((*expected_value)[i], result.output_data[i])
                             << suite_name << " test case " << test_case.name
                             << " output buffer equality check failed.";
                     }
+                }
+                else {
+                    EXPECT_NE(
+                        result.status_code, evmc_status_code::EVMC_SUCCESS)
+                        << suite_name << " test case " << test_case.name;
+
+                    // expecting a specific error code
+                    if (auto const *expected_error_code =
+                            std::get_if<evmc_status_code>(
+                                &test_case.expected)) {
+                        EXPECT_EQ(result.status_code, *expected_error_code)
+                            << suite_name << " test case " << test_case.name;
+                    }
+
+                    EXPECT_EQ(result.gas_left, 0)
+                        << suite_name << " test case " << test_case.name
+                        << " gas check failed. It should have cleared "
+                           "gas_left.";
                 }
             };
 
@@ -348,7 +360,12 @@ namespace
             }
             else {
                 test_with_gas_offset(0);
-                test_with_gas_offset(100);
+                // only call for a test_case where gas isn't already set to
+                // int64_t max value to avoid gas overflow
+                if (test_case.gas <=
+                    std::numeric_limits<int64_t>::max() - 100) {
+                    test_with_gas_offset(100);
+                }
             }
         }
     }
@@ -400,10 +417,9 @@ TYPED_TEST(TraitsTest, identity)
 
 TYPED_TEST(TraitsTest, modular_exponentiation)
 {
-    if constexpr (TestFixture::Trait::evm_rev() < EVMC_BYZANTIUM) {
-        EXPECT_FALSE(is_precompile<typename TestFixture::Trait>(0x05_address));
-    }
-    else if constexpr (TestFixture::Trait::evm_rev() < EVMC_BERLIN) {
+    static_assert(TestFixture::Trait::evm_rev() > EVMC_SPURIOUS_DRAGON);
+
+    if constexpr (TestFixture::Trait::evm_rev() < EVMC_BERLIN) {
         do_geth_tests<typename TestFixture::Trait>(
             "Modular Exponentiation", "modexp.json", 0x05_address);
     }
@@ -421,86 +437,74 @@ TYPED_TEST(TraitsTest, modular_exponentiation)
 
 TYPED_TEST(TraitsTest, bn_add)
 {
-    if constexpr (TestFixture::Trait::evm_rev() < EVMC_BYZANTIUM) {
-        EXPECT_FALSE(is_precompile<typename TestFixture::Trait>(0x06_address));
-    }
-    else {
-        auto tests =
-            load_test_cases(test_resource::geth_vectors_dir / "bn256Add.json");
+    static_assert(TestFixture::Trait::evm_rev() > EVMC_SPURIOUS_DRAGON);
 
-        if constexpr (is_monad_trait_v<typename TestFixture::Trait>) {
-            if constexpr (TestFixture::Trait::monad_rev() >= MONAD_SEVEN) {
-                // MONAD_SEVEN doubles the price of bn_add
-                tests = transform_test_cases(
-                    tests, [](auto &test) { test.gas *= 2; });
-            }
-        }
-        else if constexpr (TestFixture::Trait::evm_rev() < EVMC_ISTANBUL) {
-            // Before https://eips.ethereum.org/EIPS/eip-1108
+    auto tests =
+        load_test_cases(test_resource::geth_vectors_dir / "bn256Add.json");
+
+    if constexpr (is_monad_trait_v<typename TestFixture::Trait>) {
+        if constexpr (TestFixture::Trait::monad_rev() >= MONAD_SEVEN) {
+            // MONAD_SEVEN doubles the price of bn_add
             tests =
-                transform_test_cases(tests, [](auto &test) { test.gas = 500; });
+                transform_test_cases(tests, [](auto &test) { test.gas *= 2; });
         }
-
-        do_geth_tests<typename TestFixture::Trait>(
-            "bn_add", tests, 0x06_address);
     }
+    else if constexpr (TestFixture::Trait::evm_rev() < EVMC_ISTANBUL) {
+        // Before https://eips.ethereum.org/EIPS/eip-1108
+        tests = transform_test_cases(tests, [](auto &test) { test.gas = 500; });
+    }
+
+    do_geth_tests<typename TestFixture::Trait>("bn_add", tests, 0x06_address);
 }
 
 TYPED_TEST(TraitsTest, bn_mul)
 {
-    if constexpr (TestFixture::Trait::evm_rev() < EVMC_BYZANTIUM) {
-        EXPECT_FALSE(is_precompile<typename TestFixture::Trait>(0x07_address));
-    }
-    else {
-        auto tests = load_test_cases(
-            test_resource::geth_vectors_dir / "bn256ScalarMul.json");
+    static_assert(TestFixture::Trait::evm_rev() > EVMC_SPURIOUS_DRAGON);
 
-        if constexpr (is_monad_trait_v<typename TestFixture::Trait>) {
-            if constexpr (TestFixture::Trait::monad_rev() >= MONAD_SEVEN) {
-                // MONAD_SEVEN increases the price of bn_mul by 5x
-                tests = transform_test_cases(
-                    tests, [](auto &test) { test.gas *= 5; });
-            }
-        }
-        else if constexpr (TestFixture::Trait::evm_rev() < EVMC_ISTANBUL) {
-            // Before https://eips.ethereum.org/EIPS/eip-1108
-            tests = transform_test_cases(
-                tests, [](auto &test) { test.gas = 40'000; });
-        }
+    auto tests = load_test_cases(
+        test_resource::geth_vectors_dir / "bn256ScalarMul.json");
 
-        do_geth_tests<typename TestFixture::Trait>(
-            "bn_mul", tests, 0x07_address);
+    if constexpr (is_monad_trait_v<typename TestFixture::Trait>) {
+        if constexpr (TestFixture::Trait::monad_rev() >= MONAD_SEVEN) {
+            // MONAD_SEVEN increases the price of bn_mul by 5x
+            tests =
+                transform_test_cases(tests, [](auto &test) { test.gas *= 5; });
+        }
     }
+    else if constexpr (TestFixture::Trait::evm_rev() < EVMC_ISTANBUL) {
+        // Before https://eips.ethereum.org/EIPS/eip-1108
+        tests =
+            transform_test_cases(tests, [](auto &test) { test.gas = 40'000; });
+    }
+
+    do_geth_tests<typename TestFixture::Trait>("bn_mul", tests, 0x07_address);
 }
 
 TYPED_TEST(TraitsTest, bn_pairing)
 {
-    if constexpr (TestFixture::Trait::evm_rev() < EVMC_BYZANTIUM) {
-        EXPECT_FALSE(is_precompile<typename TestFixture::Trait>(0x08_address));
-    }
-    else {
-        auto tests = load_test_cases(
-            test_resource::geth_vectors_dir / "bn256Pairing.json");
+    static_assert(TestFixture::Trait::evm_rev() > EVMC_SPURIOUS_DRAGON);
 
-        if constexpr (is_monad_trait_v<typename TestFixture::Trait>) {
-            if constexpr (TestFixture::Trait::monad_rev() >= MONAD_SEVEN) {
-                // MONAD_SEVEN increases the price of bn_pairing by 5x
-                tests = transform_test_cases(
-                    tests, [](auto &test) { test.gas *= 5; });
-            }
-        }
-        else if constexpr (TestFixture::Trait::evm_rev() < EVMC_ISTANBUL) {
-            // Before https://eips.ethereum.org/EIPS/eip-1108
-            tests = transform_test_cases(tests, [](auto &test) {
-                // k = input size in bytes / 192;
-                auto const k = test.input.size() / 192;
-                test.gas = static_cast<int64_t>(80'000 * k + 100'000);
-            });
-        }
+    auto tests =
+        load_test_cases(test_resource::geth_vectors_dir / "bn256Pairing.json");
 
-        do_geth_tests<typename TestFixture::Trait>(
-            "bn_pairing", tests, 0x08_address);
+    if constexpr (is_monad_trait_v<typename TestFixture::Trait>) {
+        if constexpr (TestFixture::Trait::monad_rev() >= MONAD_SEVEN) {
+            // MONAD_SEVEN increases the price of bn_pairing by 5x
+            tests =
+                transform_test_cases(tests, [](auto &test) { test.gas *= 5; });
+        }
     }
+    else if constexpr (TestFixture::Trait::evm_rev() < EVMC_ISTANBUL) {
+        // Before https://eips.ethereum.org/EIPS/eip-1108
+        tests = transform_test_cases(tests, [](auto &test) {
+            // k = input size in bytes / 192;
+            auto const k = test.input.size() / 192;
+            test.gas = static_cast<int64_t>(80'000 * k + 100'000);
+        });
+    }
+
+    do_geth_tests<typename TestFixture::Trait>(
+        "bn_pairing", tests, 0x08_address);
 }
 
 TYPED_TEST(TraitsTest, blake2f)
@@ -672,77 +676,72 @@ TYPED_TEST(TraitsTest, p256_verify)
 
 TYPED_TEST(TraitsTest, modexp_truncated_input)
 {
-    if constexpr (TestFixture::Trait::evm_rev() < EVMC_BYZANTIUM) {
-        GTEST_SKIP()
-            << "Modular Exponentiation precompile not available before "
-               "EVM Byzantium.";
-    }
-    else {
-        // Before Osaka, inputs to modexp could be arbitrarily large, and
-        // would just fail for gas reasons. After Osaka, the large padded
-        // modulus size in this example fails to validate.
-        static constexpr auto expected_failure =
-            TestFixture::Trait::eip_7823_active()
-                ? evmc_status_code::EVMC_FAILURE
-                : evmc_status_code::EVMC_OUT_OF_GAS;
+    static_assert(TestFixture::Trait::evm_rev() > EVMC_SPURIOUS_DRAGON);
 
-        static constexpr auto min_gas = [] {
-            if constexpr (TestFixture::Trait::evm_rev() >= EVMC_OSAKA) {
-                return 500;
-            }
-            else if constexpr (TestFixture::Trait::evm_rev() >= EVMC_BERLIN) {
-                return 200;
-            }
-            else {
-                return 10;
-            }
-        }();
+    // Before Osaka, inputs to modexp could be arbitrarily large, and
+    // would just fail for gas reasons. After Osaka, the large padded
+    // modulus size in this example fails to validate.
+    static constexpr auto expected_failure =
+        TestFixture::Trait::eip_7823_active()
+            ? evmc_status_code::EVMC_PRECOMPILE_FAILURE
+            : evmc_status_code::EVMC_OUT_OF_GAS;
 
-        auto const test_cases = std::array{
-            test_case{
-                .name = "truncated_modulus_len",
-                .input =
-                    from_hex("0x00000000000000000000000000000000000000000000000"
-                             "0000000000000000100000000000000000000000000000000"
-                             "0000000000000000000000000000000100000000000000000"
-                             "000000000000000000000000000000005")
-                        .value(),
-                .expected_failure = expected_failure,
-                .gas = 30'000'000,
-            },
-            test_case{
-                .name = "truncated_exponent_len",
-                .input = from_hex("0x00000000000000000000000000000000000000000"
-                                  "0000000000000000000000100000000000000000000"
-                                  "00000000000000000000000000000005")
-                             .value(),
-                .expected_failure = expected_failure,
-                .gas = 30'000'000,
-            },
-            test_case{
-                .name = "truncated_base_len",
-                .input = from_hex("0x000000000000000000000000000000000000"
-                                  "00000000000000000500")
-                             .value(),
-                .expected_failure = expected_failure,
-                .gas = 30'000'000,
-            },
-            test_case{
-                .name = "truncated_exponent",
-                .input = from_hex("0x00000000000000000000000000000000000"
-                                  "000000000000000000000"
-                                  "0000000100000000000000000000000000000"
-                                  "000000000000000000000"
-                                  "0000000000000200000000000000000000000"
-                                  "000000000000000000000"
-                                  "000000000000000000050201")
-                             .value(),
-                .expected = from_hex("0x0000000000").value(),
-                .gas = min_gas,
-            },
-        };
+    static constexpr auto min_gas = [] {
+        if constexpr (TestFixture::Trait::evm_rev() >= EVMC_OSAKA) {
+            return 500;
+        }
+        else if constexpr (TestFixture::Trait::evm_rev() >= EVMC_BERLIN) {
+            return 200;
+        }
+        else {
+            return 10;
+        }
+    }();
 
-        do_geth_tests<typename TestFixture::Trait>(
-            "modexp_truncated_input", test_cases, 0x05_address);
-    }
+    auto const test_cases = std::array{
+        test_case{
+            .name = "truncated_modulus_len",
+            .input =
+                from_hex("0x00000000000000000000000000000000000000000000000"
+                         "0000000000000000100000000000000000000000000000000"
+                         "0000000000000000000000000000000100000000000000000"
+                         "000000000000000000000000000000005")
+                    .value(),
+            .expected = expected_failure,
+            .gas = 30'000'000,
+        },
+        test_case{
+            .name = "truncated_exponent_len",
+            .input = from_hex("0x00000000000000000000000000000000000000000"
+                              "0000000000000000000000100000000000000000000"
+                              "00000000000000000000000000000005")
+                         .value(),
+            .expected = expected_failure,
+            .gas = 30'000'000,
+        },
+        test_case{
+            .name = "truncated_base_len",
+            .input = from_hex("0x000000000000000000000000000000000000"
+                              "00000000000000000500")
+                         .value(),
+            .expected = expected_failure,
+            .gas = 30'000'000,
+        },
+        test_case{
+            .name = "truncated_exponent",
+            .input = from_hex("0x00000000000000000000000000000000000"
+                              "000000000000000000000"
+                              "0000000100000000000000000000000000000"
+                              "000000000000000000000"
+                              "0000000000000200000000000000000000000"
+                              "000000000000000000000"
+                              "000000000000000000050201")
+                         .value(),
+            .expected = from_hex("0x0000000000").value(),
+            .gas = min_gas,
+        },
+    };
+
+    do_geth_tests<typename TestFixture::Trait>(
+        "modexp_truncated_input", test_cases, 0x05_address);
 }

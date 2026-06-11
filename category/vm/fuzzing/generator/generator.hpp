@@ -15,9 +15,11 @@
 
 #pragma once
 
+#include <category/core/address.hpp>
+#include <category/core/assert.h>
+#include <category/core/bytes.hpp>
+#include <category/core/cases.hpp>
 #include <category/core/runtime/uint256.hpp>
-#include <category/vm/core/assert.h>
-#include <category/vm/core/cases.hpp>
 #include <category/vm/fuzzing/generator/choice.hpp>
 #include <category/vm/fuzzing/generator/instruction_data.hpp>
 #include <category/vm/runtime/transmute.hpp>
@@ -36,10 +38,11 @@
 #include <vector>
 
 using json = nlohmann::json;
-using namespace evmc::literals;
 
 namespace monad::vm::fuzzing
 {
+    using namespace monad::literals;
+
     struct GeneratorFocus
     {
         // PUSH params
@@ -201,17 +204,17 @@ namespace monad::vm::fuzzing
 
     struct Constant
     {
-        runtime::uint256_t value;
+        uint256_t value;
     };
 
     template <typename Engine>
     Constant meaningful_constant(Engine &gen)
     {
-        static constexpr auto values = std::array<runtime::uint256_t, 4>{
+        static constexpr auto values = std::array<uint256_t, 4>{
             0,
             1,
-            exp(runtime::uint256_t(2), runtime::uint256_t(255)),
-            std::numeric_limits<runtime::uint256_t>::max(),
+            exp(uint256_t(2), uint256_t(255)),
+            std::numeric_limits<uint256_t>::max(),
         };
 
         return Constant{uniform_sample(gen, values)};
@@ -232,7 +235,7 @@ namespace monad::vm::fuzzing
         // mulmod/addmod/mul/div/sdiv/mod/smod optimization
         auto dist = std::uniform_int_distribution(1, 8);
         auto shift = 32 * dist(gen);
-        return Constant{runtime::uint256_t{1} << shift};
+        return Constant{uint256_t{1} << shift};
     }
 
     template <typename Engine>
@@ -247,8 +250,7 @@ namespace monad::vm::fuzzing
     {
         // To trigger mulmod/addmod/mul/div/sdiv/mod/smod optimization
         auto dist = std::uniform_int_distribution(1, 254);
-        return Constant{
-            exp(runtime::uint256_t(2), runtime::uint256_t(dist(gen)))};
+        return Constant{exp(uint256_t(2), uint256_t(dist(gen)))};
     }
 
     template <typename Engine>
@@ -259,21 +261,20 @@ namespace monad::vm::fuzzing
     }
 
     template <typename Engine>
-    std::uint32_t random_uint32(Engine &gen)
+    uint32_t random_uint32(Engine &gen)
     {
-        auto dist = std::uniform_int_distribution<std::uint32_t>();
+        auto dist = std::uniform_int_distribution<uint32_t>();
         return dist(gen);
     }
 
-    template <std::size_t Bits = 256, typename Engine = void>
+    template <size_t Bits = 256, typename Engine = void>
     Constant random_constant(Engine &gen)
         requires(Bits % 64 == 0 && Bits > 0 && Bits <= 256)
     {
         static constexpr auto words = Bits / 64;
-        auto dist =
-            std::uniform_int_distribution<runtime::uint256_t::word_type>();
+        auto dist = std::uniform_int_distribution<uint256_t::word_type>();
 
-        return Constant{runtime::uint256_t{
+        return Constant{uint256_t{
             words >= 0 ? dist(gen) : 0,
             words >= 1 ? dist(gen) : 0,
             words >= 2 ? dist(gen) : 0,
@@ -282,9 +283,9 @@ namespace monad::vm::fuzzing
     }
 
     template <typename Engine>
-    evmc::address random_address(Engine &eng)
+    Address random_address(Engine &eng)
     {
-        auto ret = evmc::address{};
+        auto ret = Address{};
         auto const value = random_constant<192>(eng);
 
         auto const *bytes = value.value.as_bytes();
@@ -307,7 +308,7 @@ namespace monad::vm::fuzzing
     template <typename Engine>
     Constant memory_constant(Engine &gen)
     {
-        auto dist = std::uniform_int_distribution<std::uint64_t>(0, 1 << 16);
+        auto dist = std::uniform_int_distribution<uint64_t>(0, 1 << 16);
         return Constant{dist(gen)};
     }
 
@@ -360,7 +361,7 @@ namespace monad::vm::fuzzing
 
     struct Call
     {
-        std::uint8_t opcode;
+        uint8_t opcode;
         uint8_t gasPct;
         uint8_t balancePct;
         Constant argsOffset;
@@ -423,7 +424,7 @@ namespace monad::vm::fuzzing
 
     struct Create
     {
-        std::uint8_t opcode;
+        uint8_t opcode;
         uint8_t balancePct;
         Constant offset;
         Constant salt;
@@ -455,12 +456,12 @@ namespace monad::vm::fuzzing
 
     struct NonTerminator
     {
-        std::uint8_t opcode;
+        uint8_t opcode;
     };
 
     struct Terminator
     {
-        std::uint8_t opcode;
+        uint8_t opcode;
     };
 
     using Instruction = std::variant<
@@ -496,7 +497,7 @@ namespace monad::vm::fuzzing
     template <typename Engine>
     NonTerminator generate_random_byte(Engine &eng)
     {
-        auto dist = std::uniform_int_distribution<std::uint8_t>();
+        auto dist = std::uniform_int_distribution<uint8_t>();
         return NonTerminator{dist(eng)};
     }
 
@@ -505,7 +506,7 @@ namespace monad::vm::fuzzing
         GeneratorFocus const &focus, Engine &eng, bool const is_exit,
         bool const is_main)
     {
-        static constexpr std::size_t max_block_insts = 10000;
+        static constexpr size_t max_block_insts = 10000;
 
         auto program = std::vector<Instruction>{};
 
@@ -513,7 +514,7 @@ namespace monad::vm::fuzzing
             1.0 - (focus.push_weight + focus.dup_weight + focus.call_weight +
                    focus.returndatacopy_weight + focus.create_weight +
                    focus.uncommon_non_term_weight);
-        MONAD_VM_ASSERT(common_non_term_weight >= 0);
+        MONAD_ASSERT(common_non_term_weight >= 0);
 
         auto push_prob = focus.total_non_term_prob * focus.push_weight;
         auto dup_prob = focus.total_non_term_prob * focus.dup_weight;
@@ -528,7 +529,7 @@ namespace monad::vm::fuzzing
 
         auto terminate_prob =
             (1 - focus.total_non_term_prob) - focus.random_byte_prob;
-        MONAD_VM_ASSERT(terminate_prob > 0);
+        MONAD_ASSERT(terminate_prob > 0);
 
         with_probability(eng, 0.66, [&](auto &) {
             program.push_back(NonTerminator{JUMPDEST});
@@ -566,7 +567,7 @@ namespace monad::vm::fuzzing
                 // - roughly 10% chance of 55 or less,
                 // - roughly 10% chance of 75 or more.
                 auto main_pushes_dist =
-                    std::binomial_distribution<std::size_t>(650, 0.1);
+                    std::binomial_distribution<size_t>(650, 0.1);
                 auto const main_initial_pushes = main_pushes_dist(g);
 
                 for (auto i = 0u; i < main_initial_pushes; ++i) {
@@ -631,13 +632,12 @@ namespace monad::vm::fuzzing
     }
 
     template <typename Engine>
-    evmc::address generate_precompile_address(Engine &eng, evmc_revision rev)
+    Address generate_precompile_address(Engine &eng, evmc_revision const rev)
     {
+        MONAD_ASSERT(rev > EVMC_SPURIOUS_DRAGON);
+
         auto addr = [rev, &eng]() {
-            if (rev <= EVMC_SPURIOUS_DRAGON) {
-                return uniform_sample(eng, std::array{1, 2, 3, 4});
-            }
-            else if (rev <= EVMC_PETERSBURG) {
+            if (rev <= EVMC_PETERSBURG) {
                 return uniform_sample(eng, std::array{1, 2, 3, 4, 5, 6, 7, 8});
             }
             else if (rev <= EVMC_SHANGHAI) {
@@ -695,23 +695,23 @@ namespace monad::vm::fuzzing
                         256});
             }
             else {
-                MONAD_VM_ASSERT(false);
+                MONAD_ABORT();
             }
         }();
 
-        return evmc::address{static_cast<uint64_t>(addr)};
+        return Address{static_cast<uint64_t>(addr)};
     }
 
     template <typename Engine>
     void compile_address(
-        Engine &eng, evmc_revision rev, std::vector<std::uint8_t> &program,
-        std::vector<evmc::address> const &valid_addresses)
+        Engine &eng, evmc_revision const rev, std::vector<uint8_t> &program,
+        std::vector<Address> const &valid_addresses)
     {
         auto const &addr = [&] {
             if (valid_addresses.empty()) {
                 return generate_precompile_address(eng, rev);
             }
-            return discrete_choice<evmc::address>(
+            return discrete_choice<Address>(
                 eng,
                 [&](auto &g) { return uniform_sample(g, valid_addresses); },
                 Choice(0.001, [rev](auto &g) {
@@ -725,7 +725,7 @@ namespace monad::vm::fuzzing
         }
     }
 
-    void compile_constant(std::vector<std::uint8_t> &program, Constant const &c)
+    void compile_constant(std::vector<uint8_t> &program, Constant const &c)
     {
         program.push_back(PUSH32);
 
@@ -735,7 +735,7 @@ namespace monad::vm::fuzzing
         }
     }
 
-    void compile_percent(std::vector<std::uint8_t> &program, uint8_t pct)
+    void compile_percent(std::vector<uint8_t> &program, uint8_t const pct)
     {
         program.push_back(PUSH1);
         program.push_back(10);
@@ -747,7 +747,7 @@ namespace monad::vm::fuzzing
     }
 
     void compile_returndatacopy(
-        std::vector<std::uint8_t> &program, ReturnDataCopy const &rdc)
+        std::vector<uint8_t> &program, ReturnDataCopy const &rdc)
     {
 
         if (!rdc.isTrivial) {
@@ -763,8 +763,8 @@ namespace monad::vm::fuzzing
 
     template <typename Engine>
     void compile_create(
-        Engine &eng, evmc_revision rev, std::vector<std::uint8_t> &program,
-        Create const &c, std::vector<evmc::address> const &valid_addresses)
+        Engine &eng, evmc_revision const rev, std::vector<uint8_t> &program,
+        Create const &c, std::vector<Address> const &valid_addresses)
     {
         if (!c.isTrivial) {
             if (c.opcode == CREATE2) {
@@ -804,8 +804,8 @@ namespace monad::vm::fuzzing
 
     template <typename Engine>
     void compile_call(
-        Engine &eng, evmc_revision rev, std::vector<std::uint8_t> &program,
-        Call const &call, std::vector<evmc::address> const &valid_addresses)
+        Engine &eng, evmc_revision const rev, std::vector<uint8_t> &program,
+        Call const &call, std::vector<Address> const &valid_addresses)
     {
         bool isTrivial = call.isTrivial;
 
@@ -831,9 +831,9 @@ namespace monad::vm::fuzzing
 
     template <typename Engine>
     void compile_push(
-        Engine &eng, std::vector<std::uint8_t> &program, Push const &push,
-        std::vector<evmc::address> const &valid_addresses,
-        std::vector<std::size_t> &jumpdest_patches)
+        Engine &eng, std::vector<uint8_t> &program, Push const &push,
+        std::vector<Address> const &valid_addresses,
+        std::vector<size_t> &jumpdest_patches)
     {
         std::visit(
             Cases{
@@ -872,26 +872,26 @@ namespace monad::vm::fuzzing
 
     template <typename Engine>
     void compile_push(
-        Engine &eng, std::vector<std::uint8_t> &program, Push const &push,
-        std::vector<evmc::address> const &valid_addresses)
+        Engine &eng, std::vector<uint8_t> &program, Push const &push,
+        std::vector<Address> const &valid_addresses)
     {
-        auto patches = std::vector<std::size_t>{};
+        auto patches = std::vector<size_t>{};
         compile_push(eng, program, push, valid_addresses, patches);
-        MONAD_VM_DEBUG_ASSERT(patches.empty());
+        MONAD_DEBUG_ASSERT(patches.empty());
     }
 
     template <typename Engine>
     void compile_block(
-        Engine &eng, evmc_revision rev, std::vector<std::uint8_t> &program,
+        Engine &eng, evmc_revision const rev, std::vector<uint8_t> &program,
         std::vector<Instruction> const &block,
-        std::vector<evmc::address> const &valid_addresses,
-        std::vector<std::uint32_t> &valid_jumpdests,
-        std::vector<std::size_t> &jumpdest_patches)
+        std::vector<Address> const &valid_addresses,
+        std::vector<uint32_t> &valid_jumpdests,
+        std::vector<size_t> &jumpdest_patches)
     {
         auto push_op = [&](auto op) {
             if (op == JUMPDEST) {
                 valid_jumpdests.push_back(
-                    static_cast<std::uint32_t>(program.size()));
+                    static_cast<uint32_t>(program.size()));
             }
 
             for (auto mem_op : memory_operands(op)) {
@@ -900,10 +900,9 @@ namespace monad::vm::fuzzing
 
                     auto const byte_size =
                         count_significant_bytes(safe_value.value);
-                    MONAD_VM_DEBUG_ASSERT(byte_size <= 32);
+                    MONAD_DEBUG_ASSERT(byte_size <= 32);
 
-                    program.push_back(
-                        PUSH0 + static_cast<std::uint8_t>(byte_size));
+                    program.push_back(PUSH0 + static_cast<uint8_t>(byte_size));
 
                     auto const *bs = safe_value.value.as_bytes();
                     for (auto i = 0u; i < byte_size; ++i) {
@@ -943,12 +942,12 @@ namespace monad::vm::fuzzing
 
     template <typename Engine>
     void patch_jumpdests(
-        Engine &eng, std::vector<std::uint8_t> &program,
-        std::vector<std::size_t> const &jumpdest_patches,
-        std::vector<std::uint32_t> const &valid_jumpdests)
+        Engine &eng, std::vector<uint8_t> &program,
+        std::vector<size_t> const &jumpdest_patches,
+        std::vector<uint32_t> const &valid_jumpdests)
     {
-        MONAD_VM_DEBUG_ASSERT(std::ranges::is_sorted(jumpdest_patches));
-        MONAD_VM_DEBUG_ASSERT(std::ranges::is_sorted(valid_jumpdests));
+        MONAD_DEBUG_ASSERT(std::ranges::is_sorted(jumpdest_patches));
+        MONAD_DEBUG_ASSERT(std::ranges::is_sorted(valid_jumpdests));
 
         // The valid jumpdests and path locations in this program appear in
         // sorted order, so we can bias the generator towards "forwards" jumps
@@ -960,8 +959,8 @@ namespace monad::vm::fuzzing
         auto const forward_jds_end = valid_jumpdests.end();
 
         for (auto const patch : jumpdest_patches) {
-            MONAD_VM_DEBUG_ASSERT(patch + 4 < program.size());
-            MONAD_VM_DEBUG_ASSERT(program[patch] == PUSH4);
+            MONAD_DEBUG_ASSERT(patch + 4 < program.size());
+            MONAD_DEBUG_ASSERT(program[patch] == PUSH4);
 
             forward_jds_begin = std::find_if(
                 forward_jds_begin, forward_jds_end, [patch](auto jd) {
@@ -974,7 +973,7 @@ namespace monad::vm::fuzzing
             auto const forward_prob =
                 (forward_jds_begin != forward_jds_end) ? 0.9 : 0.0;
 
-            auto const jd = discrete_choice<std::size_t>(
+            auto const jd = discrete_choice<size_t>(
                 eng,
                 [&](auto &g) {
                     if (valid_jumpdests.size() == 0) {
@@ -992,7 +991,7 @@ namespace monad::vm::fuzzing
             auto const *bs = reinterpret_cast<uint8_t const *>(&jd);
             for (auto i = 0u; i < 4; ++i) {
                 auto &dest = program[patch + i + 1];
-                MONAD_VM_DEBUG_ASSERT(dest == 0xFF);
+                MONAD_DEBUG_ASSERT(dest == 0xFF);
 
                 dest = bs[3 - i];
             }
@@ -1011,11 +1010,11 @@ namespace monad::vm::fuzzing
     }
 
     template <typename Engine>
-    std::vector<std::uint8_t> generate_program(
-        GeneratorFocus const &focus, Engine &eng, evmc_revision rev,
-        std::vector<evmc::address> const &valid_addresses)
+    std::vector<uint8_t> generate_program(
+        GeneratorFocus const &focus, Engine &eng, evmc_revision const rev,
+        std::vector<Address> const &valid_addresses)
     {
-        auto prog = std::vector<std::uint8_t>{};
+        auto prog = std::vector<uint8_t>{};
 
         auto const block_dist_p = discrete_choice<double>(
             eng,
@@ -1029,8 +1028,8 @@ namespace monad::vm::fuzzing
         auto exit_blocks_dist = std::uniform_int_distribution(1, n_blocks);
         auto const n_exit_blocks = exit_blocks_dist(eng);
 
-        auto valid_jumpdests = std::vector<std::uint32_t>{};
-        auto jumpdest_patches = std::vector<std::size_t>{};
+        auto valid_jumpdests = std::vector<uint32_t>{};
+        auto jumpdest_patches = std::vector<size_t>{};
 
         for (auto i = 0; i < n_blocks; ++i) {
             auto const is_main = (i == 0);
@@ -1054,8 +1053,8 @@ namespace monad::vm::fuzzing
 
     template <typename Engine, typename LookupFunc>
     auto message_gas(
-        Engine &eng, evmc::address const &target,
-        std::vector<evmc::address> const &contract_addresses,
+        Engine &eng, Address const &target,
+        std::vector<Address> const &contract_addresses,
         LookupFunc address_lookup) noexcept
     {
         using gas_t = decltype(evmc_message::gas);
@@ -1078,9 +1077,9 @@ namespace monad::vm::fuzzing
 
         auto const gas = base_gas + static_cast<double>(factor) * scale;
 
-        MONAD_VM_DEBUG_ASSERT(
+        MONAD_DEBUG_ASSERT(
             gas <= static_cast<double>(std::numeric_limits<gas_t>::max()));
-        MONAD_VM_DEBUG_ASSERT(gas >= 0);
+        MONAD_DEBUG_ASSERT(gas >= 0);
 
         return static_cast<gas_t>(gas);
     }
@@ -1108,15 +1107,15 @@ namespace monad::vm::fuzzing
      * `message_ptr`, or explicitly via `delete[]`).
      */
     template <typename Engine>
-    std::uint8_t const *generate_input_data(
-        GeneratorFocus const &focus, Engine &eng, std::size_t const size,
-        std::vector<evmc::address> const &contract_addresses)
+    uint8_t const *generate_input_data(
+        GeneratorFocus const &focus, Engine &eng, size_t const size,
+        std::vector<Address> const &contract_addresses)
     {
         if (size == 0) {
             return nullptr;
         }
 
-        auto data = std::vector<std::uint8_t>();
+        auto data = std::vector<uint8_t>();
         data.reserve(size);
 
         while (data.size() < size) {
@@ -1124,9 +1123,9 @@ namespace monad::vm::fuzzing
             compile_push(eng, data, next_item, contract_addresses);
         }
 
-        auto *const return_buf = new std::uint8_t[size];
+        auto *const return_buf = new uint8_t[size];
 
-        MONAD_VM_DEBUG_ASSERT(data.size() >= size);
+        MONAD_DEBUG_ASSERT(data.size() >= size);
         std::copy_n(data.begin(), size, &return_buf[0]);
 
         return return_buf;
@@ -1138,17 +1137,17 @@ namespace monad::vm::fuzzing
      * Returns a managed pointer to a message, rather than the message itself in
      * order that we can control the lifetime of the `input_data` buffer.
      *
-     * Additionally, the `lookup :: Address -> Code` argument here is passed as
-     * a lambda to decouple the message generator from any particular concrete
-     * state representation. The fuzzer implementation is responsible for
-     * instantiating this lookup as appropriate.
+     * Additionally, the `lookup :: Address -> Code` argument here is
+     * passed as a lambda to decouple the message generator from any particular
+     * concrete state representation. The fuzzer implementation is responsible
+     * for instantiating this lookup as appropriate.
      */
     template <typename Engine, typename LookupFunc>
     message_ptr generate_message(
         GeneratorFocus const &focus, Engine &eng,
-        std::vector<evmc::address> const &contract_addresses,
-        std::vector<evmc::address> const &known_eoas, LookupFunc address_lookup,
-        std::uint8_t *memory_handle, std::uint32_t memory_capacity) noexcept
+        std::vector<Address> const &contract_addresses,
+        std::vector<Address> const &known_eoas, LookupFunc address_lookup,
+        uint8_t *memory_handle, uint32_t const memory_capacity) noexcept
     {
         auto const kind = uniform_sample(
             eng, std::array{EVMC_CALL, EVMC_DELEGATECALL, EVMC_CALLCODE});
@@ -1174,7 +1173,7 @@ namespace monad::vm::fuzzing
         auto const recipient =
             (kind == EVMC_CALL)
                 ? target
-                : discrete_choice<evmc::address>(
+                : discrete_choice<Address>(
                       eng,
                       [&](auto &g) {
                           return uniform_sample(g, contract_addresses);
@@ -1183,7 +1182,7 @@ namespace monad::vm::fuzzing
                           0.001, [&](auto &g) { return random_address(g); }));
 
         auto const eoa_prob = known_eoas.empty() ? 0.0 : 0.5;
-        auto const sender = discrete_choice<evmc::address>(
+        auto const sender = discrete_choice<Address>(
             eng,
             [&](auto &g) { return uniform_sample(g, contract_addresses); },
             Choice(eoa_prob, [&](auto &g) {
@@ -1191,11 +1190,11 @@ namespace monad::vm::fuzzing
             }));
 
         auto const input_size =
-            std::uniform_int_distribution<std::size_t>(0, 1024)(eng);
+            std::uniform_int_distribution<size_t>(0, 1024)(eng);
         auto const *input_data =
             generate_input_data(focus, eng, input_size, contract_addresses);
 
-        auto const value = discrete_choice<runtime::uint256_t>(
+        auto const value = discrete_choice<uint256_t>(
             eng, [](auto &) { return 0; }, Choice(0.9, [&](auto &g) {
                 return random_constant<128>(g).value;
             }));
@@ -1212,8 +1211,10 @@ namespace monad::vm::fuzzing
             .sender = sender,
             .input_data = input_data,
             .input_size = input_size,
-            .value = value.template store_be<evmc::bytes32>(),
-            .create2_salt = salt.template store_be<evmc::bytes32>(),
+            .value = static_cast<evmc::bytes32>(
+                value.template store_be<bytes32_t>()),
+            .create2_salt =
+                static_cast<evmc::bytes32>(salt.template store_be<bytes32_t>()),
             .code_address = target,
             .memory_handle = memory_handle,
             .memory = memory_handle,

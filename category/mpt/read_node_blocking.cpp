@@ -20,25 +20,25 @@
 #include <category/mpt/trie.hpp>
 #include <category/mpt/util.hpp>
 
+#include <cstdint>
+
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
-#include <cstdint>
-
 MONAD_MPT_NAMESPACE_BEGIN
 
 Node::SharedPtr read_node_blocking(
-    UpdateAuxImpl const &aux, chunk_offset_t const node_offset,
+    UpdateAux const &aux, chunk_offset_t const node_offset,
     uint64_t const version)
 {
     MONAD_ASSERT(aux.is_on_disk());
-    if (!aux.version_is_valid_ondisk(version)) {
+    if (!aux.metadata_ctx().version_is_valid_ondisk(version)) {
         return {};
     }
     auto &pool = aux.io->storage_pool();
-    MONAD_DEBUG_ASSERT(
+    MONAD_ASSERT(
         node_offset.spare <=
         round_up_align<DISK_PAGE_BITS>(Node::max_disk_size));
     // spare bits are number of pages needed to load node
@@ -50,10 +50,11 @@ Node::SharedPtr read_node_blocking(
     uint16_t const buffer_off = uint16_t(node_offset.offset - rd_offset);
     auto *buffer =
         (unsigned char *)aligned_alloc(DISK_PAGE_SIZE, bytes_to_read);
-    auto unbuffer = make_scope_exit([buffer]() noexcept { ::free(buffer); });
+    auto const unbuffer =
+        make_scope_exit([buffer]() noexcept { ::free(buffer); });
 
-    auto &chunk = pool.chunk(pool.seq, node_offset.id);
-    auto fd = chunk.read_fd();
+    auto const &chunk = pool.chunk(pool.seq, node_offset.id);
+    auto const fd = chunk.read_fd();
     ssize_t const bytes_read = pread(
         fd.first,
         buffer,
@@ -66,7 +67,7 @@ Node::SharedPtr read_node_blocking(
             rd_offset,
             strerror(errno));
     }
-    return aux.version_is_valid_ondisk(version)
+    return aux.metadata_ctx().version_is_valid_ondisk(version)
                ? deserialize_node_from_buffer(
                      buffer + buffer_off, size_t(bytes_read) - buffer_off)
                : Node::SharedPtr{};

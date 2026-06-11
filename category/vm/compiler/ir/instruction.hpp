@@ -15,8 +15,8 @@
 
 #pragma once
 
+#include <category/core/assert.h>
 #include <category/core/runtime/uint256.hpp>
-#include <category/vm/core/assert.h>
 
 #include <evmc/evmc.hpp>
 
@@ -30,7 +30,7 @@
 
 namespace monad::vm::compiler
 {
-    enum class OpCode : std::uint8_t
+    enum class OpCode : uint8_t
     {
         Add = 0x01,
         Mul = 0x02,
@@ -114,23 +114,23 @@ namespace monad::vm::compiler
     {
     public:
         constexpr Instruction(
-            std::uint32_t pc, OpCode opcode, std::uint32_t static_gas_cost,
-            std::uint8_t stack_args, std::uint8_t index,
-            std::uint8_t stack_increase, bool dynamic_gas);
+            uint32_t pc, OpCode opcode, uint32_t static_gas_cost,
+            uint8_t stack_args, uint8_t index, uint8_t stack_increase,
+            bool dynamic_gas);
 
         constexpr Instruction(
-            std::uint32_t pc, OpCode opcode, runtime::uint256_t immediate_value,
-            std::uint32_t static_gas_cost, std::uint8_t stack_args,
-            std::uint8_t index, std::uint8_t stack_increase, bool dynamic_gas);
+            uint32_t pc, OpCode opcode, uint256_t immediate_value,
+            uint32_t static_gas_cost, uint8_t stack_args, uint8_t index,
+            uint8_t stack_increase, bool dynamic_gas);
 
-        constexpr runtime::uint256_t const &immediate_value() const noexcept;
-        constexpr std::uint32_t pc() const noexcept;
-        constexpr std::uint32_t static_gas_cost() const noexcept;
+        constexpr uint256_t const &immediate_value() const noexcept;
+        constexpr uint32_t pc() const noexcept;
+        constexpr uint32_t static_gas_cost() const noexcept;
         constexpr OpCode opcode() const noexcept;
-        constexpr std::uint8_t stack_args() const noexcept;
-        constexpr std::uint8_t index() const noexcept;
+        constexpr uint8_t stack_args() const noexcept;
+        constexpr uint8_t index() const noexcept;
         constexpr bool increases_stack() const noexcept;
-        constexpr std::uint8_t stack_increase() const noexcept;
+        constexpr uint8_t stack_increase() const noexcept;
         constexpr bool dynamic_gas() const noexcept;
 
         friend constexpr bool
@@ -139,13 +139,13 @@ namespace monad::vm::compiler
     private:
         constexpr auto as_tuple() const noexcept;
 
-        runtime::uint256_t immediate_value_;
-        std::uint32_t pc_;
-        std::uint32_t static_gas_cost_;
+        uint256_t immediate_value_;
+        uint32_t pc_;
+        uint32_t static_gas_cost_;
         OpCode opcode_;
-        std::uint8_t stack_args_;
-        std::uint8_t index_;
-        std::uint8_t stack_increase_;
+        uint8_t stack_args_;
+        uint8_t index_;
+        uint8_t stack_increase_;
         bool dynamic_gas_;
     };
 
@@ -154,9 +154,9 @@ namespace monad::vm::compiler
      */
 
     constexpr Instruction::Instruction(
-        std::uint32_t pc, OpCode op, std::uint32_t static_gas_cost,
-        std::uint8_t stack_args, std::uint8_t index,
-        std::uint8_t stack_increase, bool dynamic_gas)
+        uint32_t const pc, OpCode const op, uint32_t const static_gas_cost,
+        uint8_t const stack_args, uint8_t const index,
+        uint8_t const stack_increase, bool const dynamic_gas)
         : Instruction(
               pc, op, 0, static_gas_cost, stack_args, index, stack_increase,
               dynamic_gas)
@@ -164,9 +164,10 @@ namespace monad::vm::compiler
     }
 
     constexpr Instruction::Instruction(
-        std::uint32_t pc, OpCode op, runtime::uint256_t immediate_value,
-        std::uint32_t static_gas_cost, std::uint8_t stack_args,
-        std::uint8_t index, std::uint8_t stack_increase, bool dynamic_gas)
+        uint32_t const pc, OpCode const op, uint256_t const immediate_value,
+        uint32_t const static_gas_cost, uint8_t const stack_args,
+        uint8_t const index, uint8_t const stack_increase,
+        bool const dynamic_gas)
         : immediate_value_(immediate_value)
         , pc_(pc)
         , static_gas_cost_(static_gas_cost)
@@ -176,22 +177,21 @@ namespace monad::vm::compiler
         , stack_increase_(stack_increase)
         , dynamic_gas_(dynamic_gas)
     {
-        MONAD_VM_DEBUG_ASSERT(immediate_value == 0 || opcode() == OpCode::Push);
+        MONAD_DEBUG_ASSERT(immediate_value == 0 || opcode() == OpCode::Push);
     }
 
-    constexpr runtime::uint256_t const &
-    Instruction::immediate_value() const noexcept
+    constexpr uint256_t const &Instruction::immediate_value() const noexcept
     {
-        MONAD_VM_ASSERT(opcode() == OpCode::Push);
+        MONAD_ASSERT(opcode() == OpCode::Push);
         return immediate_value_;
     }
 
-    constexpr std::uint32_t Instruction::pc() const noexcept
+    constexpr uint32_t Instruction::pc() const noexcept
     {
         return pc_;
     }
 
-    constexpr std::uint32_t Instruction::static_gas_cost() const noexcept
+    constexpr uint32_t Instruction::static_gas_cost() const noexcept
     {
         return static_gas_cost_;
     }
@@ -201,14 +201,14 @@ namespace monad::vm::compiler
         return opcode_;
     }
 
-    constexpr std::uint8_t Instruction::stack_args() const noexcept
+    constexpr uint8_t Instruction::stack_args() const noexcept
     {
         return stack_args_;
     }
 
-    constexpr std::uint8_t Instruction::index() const noexcept
+    constexpr uint8_t Instruction::index() const noexcept
     {
-        MONAD_VM_ASSERT(
+        MONAD_ASSERT(
             opcode() == OpCode::Push || opcode() == OpCode::Swap ||
             opcode() == OpCode::Dup || opcode() == OpCode::Log);
         return index_;
@@ -219,7 +219,7 @@ namespace monad::vm::compiler
         return stack_increase_ > 0;
     }
 
-    constexpr std::uint8_t Instruction::stack_increase() const noexcept
+    constexpr uint8_t Instruction::stack_increase() const noexcept
     {
         return stack_increase_;
     }
@@ -248,7 +248,7 @@ namespace monad::vm::compiler
         return a.as_tuple() == b.as_tuple();
     }
 
-    constexpr std::string_view opcode_name(OpCode op)
+    constexpr std::string_view opcode_name(OpCode const op)
     {
         using enum monad::vm::compiler::OpCode;
 

@@ -13,6 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/core/address.hpp>
 #include <category/core/assert.h>
 #include <category/core/byte_string.hpp>
 #include <category/core/bytes.hpp>
@@ -20,7 +21,6 @@
 #include <category/core/int.hpp>
 #include <category/core/likely.h>
 #include <category/execution/ethereum/block_hash_history.hpp>
-#include <category/execution/ethereum/core/address.hpp>
 #include <category/execution/ethereum/core/block.hpp>
 #include <category/execution/ethereum/event/exec_event_ctypes.h>
 #include <category/execution/ethereum/event/exec_event_recorder.hpp>
@@ -33,6 +33,7 @@
 #include <cstdint>
 
 MONAD_ANONYMOUS_NAMESPACE_BEGIN
+using literals::operator""_bytes32;
 
 byte_string const BLOCK_HISTORY_CODE =
     from_hex(

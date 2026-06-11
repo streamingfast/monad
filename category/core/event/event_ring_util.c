@@ -66,8 +66,9 @@ static void cleanup_dstream(ZSTD_DStream *const *const ptr)
 }
 
 static int decompress_snapshot(
-    void const *input_base, size_t input_size, int decompfd, size_t max_size,
-    char const *error_name, bool *is_snapshot)
+    void const *const input_base, size_t const input_size, int const decompfd,
+    size_t const max_size, char const *const error_name,
+    bool *const is_snapshot)
 {
     // NOLINTBEGIN(clang-analyzer-unix.Malloc)
     ZSTD_DStream *zds [[gnu::cleanup(cleanup_dstream)]] = nullptr;
@@ -169,8 +170,8 @@ struct decompress_output
 };
 
 static int decompress_snap_buf_to_temp_file(
-    void const *buf, size_t buf_size, size_t max_size, char const *error_name,
-    struct decompress_output *out)
+    void const *const buf, size_t const buf_size, size_t const max_size,
+    char const *error_name, struct decompress_output *const out)
 {
     int rc;
     char error_name_buf[64];
@@ -218,8 +219,8 @@ Done:
 }
 
 static int decompress_snap_fd_to_temp_file(
-    int fd_in, size_t max_size, char const *error_name,
-    struct decompress_output *out)
+    int const fd_in, size_t const max_size, char const *error_name,
+    struct decompress_output *const out)
 {
     int rc;
     struct stat file_stat;
@@ -257,8 +258,8 @@ static int decompress_snap_fd_to_temp_file(
 }
 
 int monad_event_ring_init_simple(
-    struct monad_event_ring_simple_config const *ring_config, int ring_fd,
-    off_t ring_offset, char const *error_name)
+    struct monad_event_ring_simple_config const *const ring_config,
+    int const ring_fd, off_t const ring_offset, char const *const error_name)
 {
     struct monad_event_ring_size ring_size;
     int rc = monad_event_ring_init_size(
@@ -299,8 +300,9 @@ int monad_event_ring_init_simple(
 }
 
 int monad_event_ring_check_content_type(
-    struct monad_event_ring const *event_ring,
-    enum monad_event_content_type content_type, uint8_t const *schema_hash)
+    struct monad_event_ring const *const event_ring,
+    enum monad_event_content_type const content_type,
+    uint8_t const *const schema_hash)
 {
     if (event_ring == nullptr || event_ring->header == nullptr) {
         return FORMAT_ERRC(EFAULT, "event ring is not mapped");
@@ -321,7 +323,7 @@ int monad_event_ring_check_content_type(
     return 0;
 }
 
-int monad_event_ring_query_excl_writer_pid(int ring_fd, pid_t *pid)
+int monad_event_ring_query_excl_writer_pid(int const ring_fd, pid_t *const pid)
 {
     int rc;
     struct monad_event_flock_info fl_info;
@@ -351,7 +353,7 @@ int monad_event_open_hugetlbfs_dir_fd(int *, char *, size_t)
 #else
 
 int monad_event_open_hugetlbfs_dir_fd(
-    int *dirfd, char *pathbuf, size_t pathbuf_size)
+    int *const dirfd, char *const pathbuf, size_t const pathbuf_size)
 {
     struct monad_hugetlbfs_resolve_params const params = {
         .page_size = 1UL << 21,
@@ -373,7 +375,7 @@ int monad_event_open_hugetlbfs_dir_fd(
 #endif
 
 int monad_event_resolve_ring_file(
-    char const *default_path, char const *file, char *pathbuf,
+    char const *const default_path, char const *const file, char *const pathbuf,
     size_t pathbuf_size)
 {
     int rc;
@@ -435,7 +437,7 @@ int monad_event_resolve_ring_file(
 }
 
 int monad_event_is_snapshot_file(
-    int fd, char const *error_name, bool *is_snapshot)
+    int const fd, char const *const error_name, bool *const is_snapshot)
 {
     struct decompress_output out;
     if (is_snapshot == nullptr) {
@@ -462,7 +464,8 @@ int monad_event_is_snapshot_file(
 }
 
 int monad_event_decompress_snapshot_fd(
-    int fd_in, size_t max_size, char const *error_name, int *fd_out)
+    int const fd_in, size_t const max_size, char const *const error_name,
+    int *const fd_out)
 {
     struct decompress_output out;
     if (fd_out == nullptr) {
@@ -476,8 +479,8 @@ int monad_event_decompress_snapshot_fd(
 }
 
 int monad_event_decompress_snapshot_mem(
-    void const *buf, size_t buf_size, size_t max_size, char const *error_name,
-    int *fd_out)
+    void const *const buf, size_t const buf_size, size_t const max_size,
+    char const *const error_name, int *const fd_out)
 {
     struct decompress_output out;
     if (fd_out == nullptr) {

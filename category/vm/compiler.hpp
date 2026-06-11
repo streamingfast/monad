@@ -15,6 +15,7 @@
 
 #pragma once
 
+#include <category/core/bytes.hpp>
 #include <category/vm/code.hpp>
 #include <category/vm/compiler/ir/x86.hpp>
 #include <category/vm/evm/traits.hpp>
@@ -23,7 +24,6 @@
 #include <category/vm/varcode_cache.hpp>
 
 #include <evmc/evmc.h>
-#include <evmc/evmc.hpp>
 
 #include <tbb/concurrent_hash_map.h>
 #include <tbb/concurrent_queue.h>
@@ -33,6 +33,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <mutex>
 #include <span>
 #include <thread>
 
@@ -42,6 +43,7 @@ namespace monad::vm
 
     struct CompilerStats
     {
+        std::mutex mutex_;
         utils::EuclidMean<uint64_t> avg_native_code_size_;
         utils::EuclidMean<uint64_t> avg_compiled_bytecode_size_;
         utils::GeoMean<double> avg_native_code_ratio_;
@@ -53,12 +55,12 @@ namespace monad::vm
         std::atomic<uint64_t> num_unexpected_compilation_errors_{0};
         std::atomic<uint64_t> num_size_out_of_bound_compilation_errors_{0};
 
-        // must be called non-concurrently
         void event_new_compiled_code_cached(
             SharedIntercode const &icode, SharedNativecode const &ncode,
             auto compile_start, auto compile_end) noexcept
         {
             if constexpr (utils::collect_monad_compiler_stats) {
+                std::lock_guard<std::mutex> const lock_{mutex_};
                 switch (ncode->error_code()) {
                 case Nativecode::ErrorCode::Unexpected:
                     num_unexpected_compilation_errors_.fetch_add(
@@ -103,8 +105,8 @@ namespace monad::vm
             }
         }
 
-        std::string
-        print_stats(uint64_t cache_size, uint64_t cache_weight) const
+        std::string print_stats(
+            uint64_t const cache_size, uint64_t const cache_weight) const
         {
             if constexpr (utils::collect_monad_compiler_stats) {
                 return std::format(
@@ -140,15 +142,13 @@ namespace monad::vm
     class Compiler
     {
         using CompileJobMap = tbb::concurrent_hash_map<
-            evmc::bytes32,
-            std::tuple<
-                std::function<SharedNativecode(
-                    evmc::bytes32 const &, SharedIntercode const &,
-                    CompilerConfig const &)>,
-                uint64_t, SharedIntercode, CompilerConfig>,
-            utils::Hash32Compare>;
+            bytes32_t, std::tuple<
+                           std::function<SharedNativecode(
+                               bytes32_t const &, SharedIntercode const &,
+                               CompilerConfig const &)>,
+                           uint64_t, SharedIntercode, CompilerConfig>>;
         using CompileJobAccessor = CompileJobMap::accessor;
-        using CompileJobQueue = tbb::concurrent_queue<evmc::bytes32>;
+        using CompileJobQueue = tbb::concurrent_queue<bytes32_t>;
 
     public:
         explicit Compiler(
@@ -164,7 +164,7 @@ namespace monad::vm
         /// Find nativecode in cache, else compile and add to cache.
         template <Traits traits>
         SharedNativecode cached_compile(
-            evmc::bytes32 const &code_hash, SharedIntercode const &,
+            bytes32_t const &code_hash, SharedIntercode const &,
             CompilerConfig const & = {});
 
         /// Asynchronously compile intercode with given code hash for
@@ -173,24 +173,23 @@ namespace monad::vm
         /// are too many compile jobs, so unable to submit the new job.
         template <Traits traits>
         bool async_compile(
-            evmc::bytes32 const &code_hash, SharedIntercode const &,
+            bytes32_t const &code_hash, SharedIntercode const &,
             CompilerConfig const & = {});
 
         /// Lookup in the cache.
-        std::optional<SharedVarcode>
-        find_varcode(evmc::bytes32 const &code_hash)
+        std::optional<SharedVarcode> find_varcode(bytes32_t const &code_hash)
         {
             return varcode_cache_.get(code_hash);
         }
 
         SharedVarcode try_insert_varcode(
-            evmc::bytes32 const &code_hash, SharedIntercode const &icode)
+            bytes32_t const &code_hash, SharedIntercode const &icode)
         {
             return varcode_cache_.try_set(code_hash, icode);
         }
 
         SharedVarcode try_insert_varcode_raw(
-            evmc::bytes32 const &code_hash, std::span<uint8_t const> code)
+            bytes32_t const &code_hash, std::span<uint8_t const> const code)
         {
             return varcode_cache_.try_set_raw(code_hash, code);
         }
@@ -200,7 +199,12 @@ namespace monad::vm
             return varcode_cache_.is_warm();
         }
 
-        void set_varcode_cache_warm_kb_threshold(std::uint32_t warm_kb)
+        void enable_always_cold_cache()
+        {
+            varcode_cache_.enable_always_cold();
+        }
+
+        void set_varcode_cache_warm_kb_threshold(uint32_t const warm_kb)
         {
             return varcode_cache_.set_warm_cache_kb(warm_kb);
         }

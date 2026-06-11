@@ -15,12 +15,14 @@
 
 #include <category/async/config.hpp>
 #include <category/async/util.hpp>
+#include <category/core/address.hpp>
 #include <category/core/assert.h>
 #include <category/core/byte_string.hpp>
 #include <category/core/bytes.hpp>
 #include <category/core/hex.hpp>
 #include <category/core/int.hpp>
 #include <category/core/keccak.hpp>
+#include <category/core/runtime/uint256.hpp>
 #include <category/execution/ethereum/block_hash_buffer.hpp>
 #include <category/execution/ethereum/chain/chain_config.h>
 #include <category/execution/ethereum/core/account.hpp>
@@ -32,6 +34,7 @@
 #include <category/execution/ethereum/core/rlp/transaction_rlp.hpp>
 #include <category/execution/ethereum/core/signature.hpp>
 #include <category/execution/ethereum/core/transaction.hpp>
+#include <category/execution/ethereum/db/test/commit_simple.hpp>
 #include <category/execution/ethereum/db/trie_db.hpp>
 #include <category/execution/ethereum/db/util.hpp>
 #include <category/execution/ethereum/reserve_balance.hpp>
@@ -67,11 +70,8 @@
 #include <boost/fiber/future/promise.hpp>
 
 #include <evmc/evmc.h>
-#include <evmc/evmc.hpp>
 
 #include <gtest/gtest.h>
-
-#include <intx/intx.hpp>
 
 #include <nlohmann/json_fwd.hpp>
 
@@ -88,6 +88,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <unistd.h>
@@ -126,7 +127,6 @@ namespace
     struct EthCallFixture : public ::testing::Test
     {
         std::filesystem::path dbname;
-        OnDiskMachine machine;
         mpt::Db db;
         TrieDb tdb;
         vm::VM vm;
@@ -145,7 +145,7 @@ namespace
                 ::close(fd);
                 return dbname;
             }()}
-            , db{machine,
+            , db{std::make_unique<OnDiskMachine>(),
                  mpt::OnDiskDbConfig{.append = false, .dbname_paths = {dbname}}}
             , tdb{db}
         {
@@ -170,7 +170,8 @@ namespace
         }
     };
 
-    void complete_callback(monad_executor_result *result, void *user)
+    void
+    complete_callback(monad_executor_result *const result, void *const user)
     {
         auto *c = (callback_context *)user;
 
@@ -181,15 +182,14 @@ namespace
     void EthCallFixture::test_transfer_call_with_trace(bool const gas_specified)
     {
         for (uint64_t i = 0; i < 256; ++i) {
-            commit_sequential(tdb, {}, {}, BlockHeader{.number = i});
+            commit_sequential(tdb, sd({}), {}, BlockHeader{.number = i});
         }
 
         BlockHeader const header{.number = 256};
 
         commit_sequential(
             tdb,
-            StateDeltas{
-                {ADDR_A,
+            sd({{ADDR_A,
                  StateDelta{
                      .account =
                          {std::nullopt,
@@ -201,7 +201,7 @@ namespace
                  StateDelta{
                      .account =
                          {std::nullopt,
-                          Account{.balance = 0, .code_hash = NULL_HASH}}}}},
+                          Account{.balance = 0, .code_hash = NULL_HASH}}}}}),
             Code{},
             header);
 
@@ -286,7 +286,7 @@ namespace
 TEST_F(EthCallFixture, simple_success_call)
 {
     for (uint64_t i = 0; i < 256; ++i) {
-        commit_sequential(tdb, {}, {}, BlockHeader{.number = i});
+        commit_sequential(tdb, sd({}), {}, BlockHeader{.number = i});
     }
 
     static constexpr auto from{
@@ -298,7 +298,7 @@ TEST_F(EthCallFixture, simple_success_call)
         .gas_limit = 100000u, .to = to, .type = TransactionType::eip1559};
     BlockHeader const header{.number = 256};
 
-    commit_sequential(tdb, {}, {}, header);
+    commit_sequential(tdb, sd({}), {}, header);
 
     auto const rlp_tx = to_vec(rlp::encode_transaction(tx));
     auto const rlp_header = to_vec(rlp::encode_block_header(header));
@@ -342,7 +342,7 @@ TEST_F(EthCallFixture, simple_success_call)
 TEST_F(EthCallFixture, insufficient_balance)
 {
     for (uint64_t i = 0; i < 256; ++i) {
-        commit_sequential(tdb, {}, {}, BlockHeader{.number = i});
+        commit_sequential(tdb, sd({}), {}, BlockHeader{.number = i});
     }
 
     static constexpr auto from{
@@ -357,7 +357,7 @@ TEST_F(EthCallFixture, insufficient_balance)
         .type = TransactionType::eip1559};
     BlockHeader const header{.number = 256};
 
-    commit_sequential(tdb, {}, {}, header);
+    commit_sequential(tdb, sd({}), {}, header);
 
     auto const rlp_tx = to_vec(rlp::encode_transaction(tx));
     auto const rlp_header = to_vec(rlp::encode_block_header(header));
@@ -402,7 +402,7 @@ TEST_F(EthCallFixture, insufficient_balance)
 TEST_F(EthCallFixture, on_proposed_block)
 {
     for (uint64_t i = 0; i < 256; ++i) {
-        commit_sequential(tdb, {}, {}, BlockHeader{.number = i});
+        commit_sequential(tdb, sd({}), {}, BlockHeader{.number = i});
     }
 
     static constexpr auto from{
@@ -414,7 +414,7 @@ TEST_F(EthCallFixture, on_proposed_block)
         .gas_limit = 100000u, .to = to, .type = TransactionType::eip1559};
     BlockHeader const header{.number = 256};
 
-    tdb.commit({}, {}, bytes32_t{256}, header);
+    commit_simple(tdb, sd({}), {}, bytes32_t{256}, header);
     tdb.set_block_and_prefix(header.number, bytes32_t{256});
 
     auto const rlp_tx = to_vec(rlp::encode_transaction(tx));
@@ -462,7 +462,7 @@ TEST_F(EthCallFixture, blockhash_before_fork)
 
     // The behavior in evmc is that, if eip-2935 is
     for (uint64_t i = 0; i < 256; ++i) {
-        commit_sequential(tdb, {}, {}, BlockHeader{.number = i});
+        commit_sequential(tdb, sd({}), {}, BlockHeader{.number = i});
     }
 
     static constexpr auto from{
@@ -492,7 +492,7 @@ TEST_F(EthCallFixture, blockhash_before_fork)
         .data = byte_string{bytecode.data(), bytecode.size()}};
     BlockHeader const header{.number = 256};
 
-    tdb.commit({}, {}, bytes32_t{256}, header);
+    commit_simple(tdb, sd({}), {}, bytes32_t{256}, header);
     tdb.set_block_and_prefix(header.number, bytes32_t{256});
 
     auto const rlp_tx = to_vec(rlp::encode_transaction(tx));
@@ -550,7 +550,7 @@ TEST_F(EthCallFixture, failed_to_read)
     // missing 256 previous blocks
     tdb.reset_root(load_header(nullptr, db, BlockHeader{.number = 1199}), 1199);
     for (uint64_t i = 1200; i < 1256; ++i) {
-        commit_sequential(tdb, {}, {}, BlockHeader{.number = i});
+        commit_sequential(tdb, sd({}), {}, BlockHeader{.number = i});
     }
 
     static constexpr auto from{
@@ -570,7 +570,7 @@ TEST_F(EthCallFixture, failed_to_read)
         .data = byte_string{bytecode.data(), bytecode.size()}};
     BlockHeader const header{.number = 1256};
 
-    commit_sequential(tdb, {}, {}, header);
+    commit_sequential(tdb, sd({}), {}, header);
 
     auto const rlp_tx = to_vec(rlp::encode_transaction(tx));
     auto const rlp_header = to_vec(rlp::encode_block_header(header));
@@ -615,7 +615,7 @@ TEST_F(EthCallFixture, failed_to_read)
 TEST_F(EthCallFixture, contract_deployment_success)
 {
     for (uint64_t i = 0; i < 256; ++i) {
-        commit_sequential(tdb, {}, {}, BlockHeader{.number = i});
+        commit_sequential(tdb, sd({}), {}, BlockHeader{.number = i});
     }
 
     static constexpr auto from = Address{};
@@ -626,7 +626,7 @@ TEST_F(EthCallFixture, contract_deployment_success)
     Transaction const tx{.gas_limit = 200000u, .data = tx_data};
     BlockHeader const header{.number = 256};
 
-    commit_sequential(tdb, {}, {}, header);
+    commit_sequential(tdb, sd({}), {}, header);
 
     auto const rlp_tx = to_vec(rlp::encode_transaction(tx));
     auto const rlp_header = to_vec(rlp::encode_block_header(header));
@@ -686,8 +686,7 @@ TEST_F(EthCallFixture, assertion_exception_depth1)
 
     commit_sequential(
         tdb,
-        StateDeltas{
-            {from,
+        sd({{from,
              StateDelta{
                  .account =
                      {std::nullopt,
@@ -698,7 +697,7 @@ TEST_F(EthCallFixture, assertion_exception_depth1)
                      {std::nullopt,
                       Account{
                           .balance = std::numeric_limits<uint256_t>::max(),
-                          .code_hash = NULL_HASH}}}}},
+                          .code_hash = NULL_HASH}}}}}),
         Code{},
         BlockHeader{.number = 0});
 
@@ -754,9 +753,9 @@ TEST_F(EthCallFixture, assertion_exception_depth1)
 
 TEST_F(EthCallFixture, assertion_exception_depth2)
 {
-    auto const addr1 = evmc::address{253};
-    auto const addr2 = evmc::address{254};
-    auto const addr3 = evmc::address{255};
+    auto const addr1 = Address{253};
+    auto const addr2 = Address{254};
+    auto const addr3 = Address{255};
 
     EXPECT_EQ(addr3.bytes[19], 255);
     for (size_t i = 0; i < 19; ++i) {
@@ -777,8 +776,7 @@ TEST_F(EthCallFixture, assertion_exception_depth2)
 
     commit_sequential(
         tdb,
-        StateDeltas{
-            {addr1,
+        sd({{addr1,
              StateDelta{
                  .account =
                      {std::nullopt,
@@ -794,7 +792,7 @@ TEST_F(EthCallFixture, assertion_exception_depth2)
                      {std::nullopt,
                       Account{
                           .balance = std::numeric_limits<uint256_t>::max() - 1,
-                          .code_hash = NULL_HASH}}}}},
+                          .code_hash = NULL_HASH}}}}}),
         Code{{hash2, icode2}},
         BlockHeader{.number = 0});
 
@@ -858,12 +856,12 @@ TEST_F(EthCallFixture, loop_out_of_gas)
 
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ca,
-             StateDelta{
-                 .account =
-                     {std::nullopt,
-                      Account{.balance = 0x1b58, .code_hash = code_hash}}}}},
+        sd(
+            {{ca,
+              StateDelta{
+                  .account =
+                      {std::nullopt,
+                       Account{.balance = 0x1b58, .code_hash = code_hash}}}}}),
         Code{{code_hash, icode}},
         BlockHeader{.number = 0});
 
@@ -977,12 +975,12 @@ TEST_F(EthCallFixture, expensive_read_out_of_gas)
 
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ca,
-             StateDelta{
-                 .account =
-                     {std::nullopt,
-                      Account{.balance = 0x1b58, .code_hash = code_hash}}}}},
+        sd(
+            {{ca,
+              StateDelta{
+                  .account =
+                      {std::nullopt,
+                       Account{.balance = 0x1b58, .code_hash = code_hash}}}}}),
         Code{{code_hash, icode}},
         BlockHeader{.number = 0});
 
@@ -1033,8 +1031,6 @@ TEST_F(EthCallFixture, expensive_read_out_of_gas)
 
 TEST_F(EthCallFixture, from_contract_account)
 {
-    using namespace intx;
-
     auto const code =
         0x6000600155600060025560006003556000600455600060055500_bytes;
     auto const code_hash = to_bytes(keccak256(code));
@@ -1044,12 +1040,12 @@ TEST_F(EthCallFixture, from_contract_account)
 
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ca,
-             StateDelta{
-                 .account =
-                     {std::nullopt,
-                      Account{.balance = 0x1b58, .code_hash = code_hash}}}}},
+        sd(
+            {{ca,
+              StateDelta{
+                  .account =
+                      {std::nullopt,
+                       Account{.balance = 0x1b58, .code_hash = code_hash}}}}}),
         Code{{code_hash, icode}},
         BlockHeader{.number = 0});
 
@@ -1099,8 +1095,6 @@ TEST_F(EthCallFixture, from_contract_account)
 
 TEST_F(EthCallFixture, concurrent_eth_calls)
 {
-    using namespace intx;
-
     auto const ca = 0xaaaf5374fce5edbc8e2a8697c15331677e6ebf0b_address;
 
     for (uint64_t i = 0; i < 300; ++i) {
@@ -1112,19 +1106,19 @@ TEST_F(EthCallFixture, concurrent_eth_calls)
 
             commit_sequential(
                 tdb,
-                StateDeltas{
-                    {ca,
-                     StateDelta{
-                         .account =
-                             {std::nullopt,
-                              Account{
-                                  .balance = 0x1b58,
-                                  .code_hash = code_hash}}}}},
+                sd(
+                    {{ca,
+                      StateDelta{
+                          .account =
+                              {std::nullopt,
+                               Account{
+                                   .balance = 0x1b58,
+                                   .code_hash = code_hash}}}}}),
                 Code{{code_hash, icode}},
                 BlockHeader{.number = i});
         }
         else {
-            commit_sequential(tdb, {}, {}, BlockHeader{.number = i});
+            commit_sequential(tdb, sd({}), {}, BlockHeader{.number = i});
         }
     }
 
@@ -1236,8 +1230,7 @@ TEST_F(EthCallFixture, call_trace_with_logs)
 
     commit_sequential(
         tdb,
-        StateDeltas{
-            {sender,
+        sd({{sender,
              StateDelta{
                  .account =
                      {std::nullopt,
@@ -1263,7 +1256,7 @@ TEST_F(EthCallFixture, call_trace_with_logs)
              StateDelta{
                  .account =
                      {std::nullopt,
-                      Account{.balance = 0, .code_hash = d_code_hash}}}}},
+                      Account{.balance = 0, .code_hash = d_code_hash}}}}}),
         Code{
             {a_code_hash, a_icode},
             {b_code_hash, b_icode},
@@ -1343,8 +1336,8 @@ TEST_F(EthCallFixture, call_trace_with_logs)
                         {.data = {},
                          .topics =
                              {
-                                 intx::be::store<bytes32_t, uint256_t>(2),
-                                 intx::be::store<bytes32_t, uint256_t>(1),
+                                 store_be_as<bytes32_t, uint256_t>(2),
+                                 store_be_as<bytes32_t, uint256_t>(1),
                              },
                          .address = a_address},
                     .position = 0,
@@ -1354,7 +1347,7 @@ TEST_F(EthCallFixture, call_trace_with_logs)
                         {.data = {},
                          .topics =
                              {
-                                 intx::be::store<bytes32_t, uint256_t>(3),
+                                 store_be_as<bytes32_t, uint256_t>(3),
                              },
                          .address = a_address},
                     .position = 2,
@@ -1410,9 +1403,9 @@ TEST_F(EthCallFixture, call_trace_with_logs)
         .depth = 1,
         .logs = std::vector{CallFrame::Log{
             .log =
-                {.data = byte_string{intx::be::store<bytes32_t>(
+                {.data = byte_string{store_be_as<bytes32_t>(
                      std::numeric_limits<uint256_t>::max() - 1)},
-                 .topics = {intx::be::store<bytes32_t, uint256_t>(1)},
+                 .topics = {store_be_as<bytes32_t, uint256_t>(1)},
                  .address = c_address},
             .position = 0,
         }},
@@ -1434,15 +1427,14 @@ TEST_F(EthCallFixture, static_precompile_OOG_with_call_trace)
     byte_string_view const data = to_byte_string_view(s);
 
     for (uint64_t i = 0; i < 256; ++i) {
-        commit_sequential(tdb, {}, {}, BlockHeader{.number = i});
+        commit_sequential(tdb, sd({}), {}, BlockHeader{.number = i});
     }
 
     BlockHeader const header{.number = 256};
 
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ADDR_A,
+        sd({{ADDR_A,
              StateDelta{
                  .account =
                      {std::nullopt,
@@ -1451,7 +1443,7 @@ TEST_F(EthCallFixture, static_precompile_OOG_with_call_trace)
                           .code_hash = NULL_HASH,
                           .nonce = 0x0}}}},
             {precompile_address,
-             StateDelta{.account = {std::nullopt, Account{.nonce = 6}}}}},
+             StateDelta{.account = {std::nullopt, Account{.nonce = 6}}}}}),
         Code{},
         header);
 
@@ -1534,7 +1526,7 @@ TEST_F(EthCallFixture, static_precompile_OOG_with_call_trace)
 TEST_F(EthCallFixture, transfer_success_with_state_trace)
 {
     for (uint64_t i = 0; i < 256; ++i) {
-        commit_sequential(tdb, {}, {}, BlockHeader{.number = i});
+        commit_sequential(tdb, sd({}), {}, BlockHeader{.number = i});
     }
 
     BlockHeader const header{.number = 256};
@@ -1549,9 +1541,8 @@ TEST_F(EthCallFixture, transfer_success_with_state_trace)
 
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ADDR_A, StateDelta{.account = {std::nullopt, acct_from}}},
-            {ADDR_B, StateDelta{.account = {std::nullopt, acct_to}}}},
+        sd({{ADDR_A, StateDelta{.account = {std::nullopt, acct_from}}},
+            {ADDR_B, StateDelta{.account = {std::nullopt, acct_to}}}}),
         Code{},
         header);
 
@@ -1684,7 +1675,7 @@ TEST_F(EthCallFixture, transfer_success_with_state_trace)
 TEST_F(EthCallFixture, contract_deployment_success_with_state_trace)
 {
     for (uint64_t i = 0; i < 256; ++i) {
-        commit_sequential(tdb, {}, {}, BlockHeader{.number = i});
+        commit_sequential(tdb, sd({}), {}, BlockHeader{.number = i});
     }
 
     static constexpr auto from = Address{};
@@ -1695,7 +1686,7 @@ TEST_F(EthCallFixture, contract_deployment_success_with_state_trace)
     Transaction const tx{.gas_limit = 200000u, .data = tx_data};
     BlockHeader const header{.number = 256};
 
-    commit_sequential(tdb, {}, {}, header);
+    commit_sequential(tdb, sd({}), {}, header);
 
     auto const rlp_tx = to_vec(rlp::encode_transaction(tx));
     auto const rlp_header = to_vec(rlp::encode_block_header(header));
@@ -1817,7 +1808,7 @@ TEST_F(EthCallFixture, trace_block_with_prestate)
         0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_address;
     {
         // Initial state.
-        StateDeltas const deltas{
+        StateDeltas deltas{
             {ADDR_A,
              StateDelta{
                  .account =
@@ -1826,12 +1817,13 @@ TEST_F(EthCallFixture, trace_block_with_prestate)
                           .balance = uint256_t{uint64_t{0x01}}, .nonce = 1}}}},
         };
 
-        commit_sequential(tdb, deltas, {}, BlockHeader{.number = 0});
+        commit_sequential(
+            tdb, sd(std::move(deltas)), {}, BlockHeader{.number = 0});
     }
 
     // Advance to block 256
     for (uint64_t i = 1; i < 255; ++i) {
-        commit_sequential(tdb, {}, {}, BlockHeader{.number = i});
+        commit_sequential(tdb, sd({}), {}, BlockHeader{.number = i});
     }
 
     // Setup block 256 transactions. Before committing them, we setup the
@@ -1870,7 +1862,8 @@ TEST_F(EthCallFixture, trace_block_with_prestate)
                         .balance = std::numeric_limits<uint256_t>::max(),
                         .nonce = transaction.nonce}}});
     }
-    commit_sequential(tdb, senders_state, {}, BlockHeader{.number = 255});
+    commit_sequential(
+        tdb, sd(std::move(senders_state)), {}, BlockHeader{.number = 255});
 
     // Now commit block 256.
     BlockHeader const header{.number = 256};
@@ -1887,7 +1880,7 @@ TEST_F(EthCallFixture, trace_block_with_prestate)
 
     commit_sequential(
         tdb,
-        {},
+        sd({}),
         {},
         BlockHeader{.number = 256},
         receipts,
@@ -2053,7 +2046,7 @@ TEST_F(EthCallFixture, trace_transaction_with_prestate)
         0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_address;
     {
         // Initial state.
-        StateDeltas const deltas{
+        StateDeltas deltas{
             {ADDR_A,
              StateDelta{
                  .account =
@@ -2062,12 +2055,13 @@ TEST_F(EthCallFixture, trace_transaction_with_prestate)
                           .balance = uint256_t{uint64_t{0x01}}, .nonce = 1}}}},
         };
 
-        commit_sequential(tdb, deltas, {}, BlockHeader{.number = 0});
+        commit_sequential(
+            tdb, sd(std::move(deltas)), {}, BlockHeader{.number = 0});
     }
 
     // Advance to block 256
     for (uint64_t i = 1; i < 255; ++i) {
-        commit_sequential(tdb, {}, {}, BlockHeader{.number = i});
+        commit_sequential(tdb, sd({}), {}, BlockHeader{.number = i});
     }
 
     // Setup block 256 transactions. Before committing them, we setup the
@@ -2106,7 +2100,8 @@ TEST_F(EthCallFixture, trace_transaction_with_prestate)
                         .balance = std::numeric_limits<uint256_t>::max(),
                         .nonce = transaction.nonce}}});
     }
-    commit_sequential(tdb, senders_state, {}, BlockHeader{.number = 255});
+    commit_sequential(
+        tdb, sd(std::move(senders_state)), {}, BlockHeader{.number = 255});
 
     // Now commit block 256.
     BlockHeader const header{.number = 256};
@@ -2123,7 +2118,7 @@ TEST_F(EthCallFixture, trace_transaction_with_prestate)
 
     commit_sequential(
         tdb,
-        {},
+        sd({}),
         {},
         BlockHeader{.number = 256},
         receipts,
@@ -2380,19 +2375,20 @@ TEST_F(EthCallFixture, monad_executor_run_reserve_balance)
         .nonce = 1};
     {
         // Initial state.
-        StateDeltas const deltas{
+        StateDeltas deltas{
             {
                 sender,
                 StateDelta{.account = {std::nullopt, sender_acc}},
             },
         };
 
-        commit_sequential(tdb, deltas, {}, BlockHeader{.number = 0});
+        commit_sequential(
+            tdb, sd(std::move(deltas)), {}, BlockHeader{.number = 0});
     }
 
     // Advance to block 255
     for (uint64_t i = 1; i < 254; ++i) {
-        commit_sequential(tdb, {}, {}, BlockHeader{.number = i});
+        commit_sequential(tdb, sd({}), {}, BlockHeader{.number = i});
     }
 
     // Setup parent block transactions.
@@ -2425,12 +2421,12 @@ TEST_F(EthCallFixture, monad_executor_run_reserve_balance)
 
         commit_sequential(
             tdb,
-            StateDeltas{
+            sd({
                 {
                     sender,
                     StateDelta{.account = {sender_acc, sender_acc2}},
                 },
-            },
+            }),
             {},
             header,
             receipts,
@@ -2455,12 +2451,12 @@ TEST_F(EthCallFixture, monad_executor_run_reserve_balance)
 
     commit_sequential(
         tdb,
-        StateDeltas{
+        sd({
             {
                 sender,
                 StateDelta{.account = {sender_acc2, sender_acc3}},
             },
-        },
+        }),
         {},
         header,
         receipts,
@@ -2600,7 +2596,7 @@ TEST_F(EthCallFixture, prestate_trace_near_genesis)
 
     {
         // Initial state.
-        StateDeltas const deltas{
+        StateDeltas deltas{
             {ADDR_A,
              StateDelta{
                  .account =
@@ -2623,7 +2619,8 @@ TEST_F(EthCallFixture, prestate_trace_near_genesis)
                              uint256_t{std::numeric_limits<uint64_t>::max()},
                          .nonce = block2_tx.nonce}}}}};
 
-        commit_sequential(tdb, deltas, {}, BlockHeader{.number = 0});
+        commit_sequential(
+            tdb, sd(std::move(deltas)), {}, BlockHeader{.number = 0});
     }
 
     // Genesis block
@@ -2678,7 +2675,14 @@ TEST_F(EthCallFixture, prestate_trace_near_genesis)
         auto const rlp_header = to_vec(rlp::encode_block_header(header));
 
         commit_sequential(
-            tdb, {}, {}, header, receipts, call_frames, senders, transactions);
+            tdb,
+            sd({}),
+            {},
+            header,
+            receipts,
+            call_frames,
+            senders,
+            transactions);
 
         boost::fibers::future<void> f =
             block1_prestate_ctx.promise.get_future();
@@ -2734,7 +2738,14 @@ TEST_F(EthCallFixture, prestate_trace_near_genesis)
         auto const rlp_header = to_vec(rlp::encode_block_header(header));
 
         commit_sequential(
-            tdb, {}, {}, header, receipts, call_frames, senders, transactions);
+            tdb,
+            sd({}),
+            {},
+            header,
+            receipts,
+            call_frames,
+            senders,
+            transactions);
 
         boost::fibers::future<void> f =
             block2_prestate_ctx.promise.get_future();
@@ -2785,7 +2796,7 @@ TEST_F(EthCallFixture, prestate_trace_near_genesis)
 TEST_F(EthCallFixture, access_list_trace)
 {
     for (uint64_t i = 0; i < 256; ++i) {
-        commit_sequential(tdb, {}, {}, BlockHeader{.number = i});
+        commit_sequential(tdb, sd({}), {}, BlockHeader{.number = i});
     }
 
     static constexpr auto sender =
@@ -2802,8 +2813,7 @@ TEST_F(EthCallFixture, access_list_trace)
 
     commit_sequential(
         tdb,
-        StateDeltas{
-            {sender,
+        sd({{sender,
              StateDelta{
                  .account =
                      {std::nullopt,
@@ -2815,7 +2825,7 @@ TEST_F(EthCallFixture, access_list_trace)
                  .account =
                      {std::nullopt,
                       Account{
-                          .balance = 0, .code_hash = contract_code_hash}}}}},
+                          .balance = 0, .code_hash = contract_code_hash}}}}}),
         Code{
             {contract_code_hash, contract_icode},
         },
@@ -2884,10 +2894,115 @@ TEST_F(EthCallFixture, access_list_trace)
     monad_executor_destroy(executor);
 }
 
+TEST_F(EthCallFixture, access_list_trace_reverted_call)
+{
+    for (uint64_t i = 0; i < 256; ++i) {
+        commit_sequential(tdb, sd({}), {}, BlockHeader{.number = i});
+    }
+
+    static constexpr auto sender =
+        0x00000000000000000000000000000000deadbeef_address;
+
+    static constexpr auto contract_address =
+        0x00000000000000000000000000000000aaaaaaaa_address;
+    // CALLDATALOAD(0); SLOAD; REVERT(0, 0)
+    auto const contract_code = 0x6000355460006000fd_bytes;
+    auto const contract_code_hash = to_bytes(keccak256(contract_code));
+    auto const contract_icode = monad::vm::make_shared_intercode(contract_code);
+
+    auto const header = BlockHeader{.number = 256};
+
+    commit_sequential(
+        tdb,
+        sd({{sender,
+             StateDelta{
+                 .account =
+                     {std::nullopt,
+                      Account{
+                          .balance = std::numeric_limits<uint256_t>::max(),
+                          .code_hash = NULL_HASH}}}},
+            {contract_address,
+             StateDelta{
+                 .account =
+                     {std::nullopt,
+                      Account{
+                          .balance = 0, .code_hash = contract_code_hash}}}}}),
+        Code{
+            {contract_code_hash, contract_icode},
+        },
+        header);
+
+    Transaction const tx{
+        .max_fee_per_gas = 1,
+        .gas_limit = 1'000'000,
+        .value = 0,
+        .to = contract_address,
+        .data =
+            0x7300000000000000000000000000000000000000000000000000000000000000_bytes,
+    };
+
+    auto const rlp_tx = to_vec(rlp::encode_transaction(tx));
+    auto const rlp_header = to_vec(rlp::encode_block_header(header));
+    auto const rlp_sender =
+        to_vec(rlp::encode_address(std::make_optional(sender)));
+    auto const rlp_block_id = to_vec(rlp_finalized_id);
+
+    auto *executor = create_executor(dbname.string());
+    auto *state_override = monad_state_override_create();
+
+    struct callback_context ctx;
+
+    {
+        boost::fibers::future<void> f = ctx.promise.get_future();
+        monad_executor_eth_call_submit(
+            executor,
+            CHAIN_CONFIG_MONAD_DEVNET,
+            rlp_tx.data(),
+            rlp_tx.size(),
+            rlp_header.data(),
+            rlp_header.size(),
+            rlp_sender.data(),
+            rlp_sender.size(),
+            header.number,
+            rlp_block_id.data(),
+            rlp_block_id.size(),
+            state_override,
+            complete_callback,
+            (void *)&ctx,
+            ACCESS_LIST_TRACER,
+            true);
+        f.get();
+
+        ASSERT_TRUE(ctx.result->status_code == EVMC_REVERT);
+        ASSERT_NE(ctx.result->encoded_trace, nullptr);
+        ASSERT_GT(ctx.result->encoded_trace_len, 0);
+
+        std::vector<uint8_t> const encoded_trace(
+            ctx.result->encoded_trace,
+            ctx.result->encoded_trace + ctx.result->encoded_trace_len);
+
+        auto const *const expected = R"([
+            {
+                "address" : "0x00000000000000000000000000000000aaaaaaaa",
+                "storageKeys" : [
+                    "0x7300000000000000000000000000000000000000000000000000000000000000"
+                ]
+            }
+        ])";
+
+        EXPECT_EQ(
+            nlohmann::json::parse(expected),
+            nlohmann::json::from_cbor(encoded_trace));
+    }
+
+    monad_state_override_destroy(state_override);
+    monad_executor_destroy(executor);
+}
+
 TEST_F(EthCallFixture, access_list_trace_empty)
 {
     for (uint64_t i = 0; i < 256; ++i) {
-        commit_sequential(tdb, {}, {}, BlockHeader{.number = i});
+        commit_sequential(tdb, sd({}), {}, BlockHeader{.number = i});
     }
 
     static constexpr auto sender =
@@ -2904,8 +3019,7 @@ TEST_F(EthCallFixture, access_list_trace_empty)
 
     commit_sequential(
         tdb,
-        StateDeltas{
-            {sender,
+        sd({{sender,
              StateDelta{
                  .account =
                      {std::nullopt,
@@ -2917,7 +3031,7 @@ TEST_F(EthCallFixture, access_list_trace_empty)
                  .account =
                      {std::nullopt,
                       Account{
-                          .balance = 0, .code_hash = contract_code_hash}}}}},
+                          .balance = 0, .code_hash = contract_code_hash}}}}}),
         Code{
             {contract_code_hash, contract_icode},
         },
@@ -2976,25 +3090,24 @@ TEST_F(EthCallFixture, access_list_trace_nested)
     static constexpr auto sender =
         0x00000000000000000000000000000000deadbeef_address;
 
-    // SSTORE(0, 2); CALL(b)
     static constexpr auto a_address =
         0x00000000000000000000000000000000aaaaaaaa_address;
+    // SSTORE(0, 2); CALL(b)
     auto const a_code =
         0x60025f555f5f5f5f5f7300000000000000000000000000000000bbbbbbbb5af1_bytes;
     auto const a_code_hash = to_bytes(keccak256(a_code));
     auto const a_icode = monad::vm::make_shared_intercode(a_code);
 
-    // SSTORE(1, 1)
     static constexpr auto b_address =
         0x00000000000000000000000000000000bbbbbbbb_address;
+    // SSTORE(1, 1)
     auto const b_code = 0x6001600155_bytes;
     auto const b_code_hash = to_bytes(keccak256(b_code));
     auto const b_icode = monad::vm::make_shared_intercode(b_code);
 
     commit_sequential(
         tdb,
-        StateDeltas{
-            {sender,
+        sd({{sender,
              StateDelta{
                  .account =
                      {std::nullopt,
@@ -3010,7 +3123,7 @@ TEST_F(EthCallFixture, access_list_trace_nested)
              StateDelta{
                  .account =
                      {std::nullopt,
-                      Account{.balance = 0, .code_hash = b_code_hash}}}}},
+                      Account{.balance = 0, .code_hash = b_code_hash}}}}}),
         Code{
             {a_code_hash, a_icode},
             {b_code_hash, b_icode},
@@ -3086,10 +3199,126 @@ TEST_F(EthCallFixture, access_list_trace_nested)
     monad_executor_destroy(executor);
 }
 
+TEST_F(EthCallFixture, access_list_trace_nested_reverted_call)
+{
+    static constexpr auto sender =
+        0x00000000000000000000000000000000deadbeef_address;
+
+    static constexpr auto a_address =
+        0x00000000000000000000000000000000aaaaaaaa_address;
+    // SSTORE(0, 2); CALL(b)
+    auto const a_code =
+        0x60025f555f5f5f5f5f7300000000000000000000000000000000bbbbbbbb5af1_bytes;
+    auto const a_code_hash = to_bytes(keccak256(a_code));
+    auto const a_icode = monad::vm::make_shared_intercode(a_code);
+
+    static constexpr auto b_address =
+        0x00000000000000000000000000000000bbbbbbbb_address;
+    // SLOAD(2); REVERT(0, 0)
+    auto const b_code = 0x60025460006000fd_bytes;
+    auto const b_code_hash = to_bytes(keccak256(b_code));
+    auto const b_icode = monad::vm::make_shared_intercode(b_code);
+
+    commit_sequential(
+        tdb,
+        sd({{sender,
+             StateDelta{
+                 .account =
+                     {std::nullopt,
+                      Account{
+                          .balance = std::numeric_limits<uint256_t>::max(),
+                          .code_hash = NULL_HASH}}}},
+            {a_address,
+             StateDelta{
+                 .account =
+                     {std::nullopt,
+                      Account{.balance = 0, .code_hash = a_code_hash}}}},
+            {b_address,
+             StateDelta{
+                 .account =
+                     {std::nullopt,
+                      Account{.balance = 0, .code_hash = b_code_hash}}}}}),
+        Code{
+            {a_code_hash, a_icode},
+            {b_code_hash, b_icode},
+        },
+        BlockHeader{.number = 0});
+    BlockHeader const header{.number = 0};
+
+    Transaction const tx{
+        .max_fee_per_gas = 1,
+        .gas_limit = 1'000'000,
+        .value = 0,
+        .to = a_address,
+        .data = byte_string{},
+    };
+
+    auto const rlp_tx = to_vec(rlp::encode_transaction(tx));
+    auto const rlp_header = to_vec(rlp::encode_block_header(header));
+    auto const rlp_sender =
+        to_vec(rlp::encode_address(std::make_optional(sender)));
+    auto const rlp_block_id = to_vec(rlp_finalized_id);
+
+    auto *executor = create_executor(dbname.string());
+    auto *state_override = monad_state_override_create();
+
+    struct callback_context ctx;
+    boost::fibers::future<void> f = ctx.promise.get_future();
+
+    monad_executor_eth_call_submit(
+        executor,
+        CHAIN_CONFIG_MONAD_DEVNET,
+        rlp_tx.data(),
+        rlp_tx.size(),
+        rlp_header.data(),
+        rlp_header.size(),
+        rlp_sender.data(),
+        rlp_sender.size(),
+        header.number,
+        rlp_block_id.data(),
+        rlp_block_id.size(),
+        state_override,
+        complete_callback,
+        (void *)&ctx,
+        ACCESS_LIST_TRACER,
+        true);
+    f.get();
+
+    EXPECT_TRUE(ctx.result->status_code == EVMC_SUCCESS);
+    ASSERT_NE(ctx.result->encoded_trace, nullptr);
+    ASSERT_GT(ctx.result->encoded_trace_len, 0);
+
+    std::vector<uint8_t> const encoded_trace(
+        ctx.result->encoded_trace,
+        ctx.result->encoded_trace + ctx.result->encoded_trace_len);
+
+    auto const *const expected = R"([
+        {
+            "address" : "0x00000000000000000000000000000000aaaaaaaa",
+            "storageKeys" : [
+                "0x0000000000000000000000000000000000000000000000000000000000000000"
+            ]
+        },
+        {
+            "address" : "0x00000000000000000000000000000000bbbbbbbb",
+            "storageKeys" : [
+                "0x0000000000000000000000000000000000000000000000000000000000000002"
+            ]
+        }
+    ])";
+
+    EXPECT_EQ(
+        nlohmann::json::parse(expected),
+        nlohmann::json::from_cbor(encoded_trace));
+
+    monad_state_override_destroy(state_override);
+    monad_executor_destroy(executor);
+}
+
 TEST_F(EthCallFixture, prestate_state_overrides)
 {
     for (uint64_t i = 0; i < 256; ++i) {
-        commit_sequential(tdb, {}, {}, BlockHeader{.number = i});
+        commit_sequential(tdb, sd({}), {}, BlockHeader{.number = i});
     }
 
     static constexpr auto from = Address{};
@@ -3103,7 +3332,7 @@ TEST_F(EthCallFixture, prestate_state_overrides)
         .gas_limit = 200000u, .data = from_hex(tx_data).value()};
     BlockHeader const header{.number = 256};
 
-    commit_sequential(tdb, {}, {}, header);
+    commit_sequential(tdb, sd({}), {}, header);
 
     auto const rlp_tx = to_vec(rlp::encode_transaction(tx));
     auto const rlp_header = to_vec(rlp::encode_block_header(header));
@@ -3232,7 +3461,6 @@ TEST_F(EthCallFixture, prestate_state_overrides)
 
 TEST_F(EthCallFixture, prestate_override_state)
 {
-
     static constexpr Address CONTRACT_ADDR =
         0xcccccccccccccccccccccccccccccccccccccccc_address;
 
@@ -3268,7 +3496,7 @@ TEST_F(EthCallFixture, prestate_override_state)
     bytes32_t const untouched_storage_value =
         to_bytes(to_big_endian(uint256_t{256}));
 
-    StateDeltas const deltas{
+    StateDeltas deltas{
         {CONTRACT_ADDR,
          StateDelta{
              .account =
@@ -3283,7 +3511,10 @@ TEST_F(EthCallFixture, prestate_override_state)
                  StorageDeltas{{storage_key, {bytes32_t{}, storage_value}}}}}};
 
     commit_sequential(
-        tdb, deltas, {{code_hash, compiled_code}}, BlockHeader{.number = 0});
+        tdb,
+        sd(std::move(deltas)),
+        {{code_hash, compiled_code}},
+        BlockHeader{.number = 0});
 
     auto const storage = tdb.read_storage(
         CONTRACT_ADDR,
@@ -3292,7 +3523,7 @@ TEST_F(EthCallFixture, prestate_override_state)
     ASSERT_EQ(storage, to_bytes(to_big_endian(uint256_t{uint64_t{64}})));
 
     for (uint64_t i = 1; i < 256; ++i) {
-        commit_sequential(tdb, {}, {}, BlockHeader{.number = i});
+        commit_sequential(tdb, sd({}), {}, BlockHeader{.number = i});
     }
 
     static constexpr auto from = Address{};
@@ -3300,7 +3531,7 @@ TEST_F(EthCallFixture, prestate_override_state)
     Transaction const tx{.gas_limit = 200000u, .to = CONTRACT_ADDR};
     BlockHeader const header{.number = 256};
 
-    commit_sequential(tdb, {}, {}, header);
+    commit_sequential(tdb, sd({}), {}, header);
 
     auto const rlp_tx = to_vec(rlp::encode_transaction(tx));
     auto const rlp_header = to_vec(rlp::encode_block_header(header));
@@ -3484,7 +3715,7 @@ TEST_F(EthCallFixture, prestate_override_state)
 TEST_F(EthCallFixture, eth_call_reserve_balance)
 {
     for (uint64_t i = 0; i < 256; ++i) {
-        commit_sequential(tdb, {}, {}, BlockHeader{.number = i});
+        commit_sequential(tdb, sd({}), {}, BlockHeader{.number = i});
     }
 
     // Scenario:
@@ -3532,7 +3763,7 @@ TEST_F(EthCallFixture, eth_call_reserve_balance)
 
     commit_sequential(
         tdb,
-        StateDeltas{
+        sd({
             {sender,
              StateDelta{
                  .account =
@@ -3563,7 +3794,7 @@ TEST_F(EthCallFixture, eth_call_reserve_balance)
                      {std::nullopt,
                       Account{
                           .balance = 0, .code_hash = NULL_HASH, .nonce = 0}}}},
-        },
+        }),
         Code{
             {contract_code_hash, contract_icode},
             {delegated_eoa_code_hash, delegated_eoa_icode},
@@ -3619,7 +3850,7 @@ TEST_F(EthCallFixture, eth_call_reserve_balance)
 TEST_F(EthCallFixture, eth_call_reserve_balance_emptying)
 {
     for (uint64_t i = 0; i < 256; ++i) {
-        commit_sequential(tdb, {}, {}, BlockHeader{.number = i});
+        commit_sequential(tdb, sd({}), {}, BlockHeader{.number = i});
     }
 
     static constexpr auto sender =
@@ -3632,7 +3863,7 @@ TEST_F(EthCallFixture, eth_call_reserve_balance_emptying)
 
     commit_sequential(
         tdb,
-        StateDeltas{
+        sd({
             {sender,
              StateDelta{
                  .account =
@@ -3647,7 +3878,7 @@ TEST_F(EthCallFixture, eth_call_reserve_balance_emptying)
                      {std::nullopt,
                       Account{
                           .balance = 0, .code_hash = NULL_HASH, .nonce = 0}}}},
-        },
+        }),
         Code{},
         header);
 
@@ -3698,7 +3929,7 @@ TEST_F(EthCallFixture, eth_call_reserve_balance_emptying)
 TEST_F(EthCallFixture, eth_call_reserve_balance_assertion)
 {
     for (uint64_t i = 0; i < 256; ++i) {
-        commit_sequential(tdb, {}, {}, BlockHeader{.number = i});
+        commit_sequential(tdb, sd({}), {}, BlockHeader{.number = i});
     }
 
     static constexpr auto sender =
@@ -3732,7 +3963,7 @@ TEST_F(EthCallFixture, eth_call_reserve_balance_assertion)
 
     commit_sequential(
         tdb,
-        StateDeltas{
+        sd({
             {sender,
              StateDelta{
                  .account =
@@ -3755,7 +3986,7 @@ TEST_F(EthCallFixture, eth_call_reserve_balance_assertion)
                      {std::nullopt,
                       Account{
                           .balance = 0, .code_hash = NULL_HASH, .nonce = 0}}}},
-        },
+        }),
         Code{
             {delegated_eoa_code_hash, delegated_eoa_icode},
             {contract_code_hash, contract_icode},
@@ -3818,7 +4049,7 @@ TEST_F(EthCallFixture, trace_transaction_with_rewards_prestate)
 
     {
         // Initial state.
-        StateDeltas const deltas{
+        StateDeltas deltas{
             {ADDR_A,
              StateDelta{
                  .account =
@@ -3833,12 +4064,13 @@ TEST_F(EthCallFixture, trace_transaction_with_rewards_prestate)
                           .balance = uint256_t{uint64_t{0x0}}, .nonce = 1}}}},
         };
 
-        commit_sequential(tdb, deltas, {}, BlockHeader{.number = 0});
+        commit_sequential(
+            tdb, sd(std::move(deltas)), {}, BlockHeader{.number = 0});
     }
 
     // Advance to block 256
     for (uint64_t i = 1; i < 255; ++i) {
-        commit_sequential(tdb, {}, {}, BlockHeader{.number = i});
+        commit_sequential(tdb, sd({}), {}, BlockHeader{.number = i});
     }
 
     // Setup block 256 transactions. Before committing them, we setup the
@@ -3878,7 +4110,8 @@ TEST_F(EthCallFixture, trace_transaction_with_rewards_prestate)
                         .balance = std::numeric_limits<uint256_t>::max(),
                         .nonce = transaction.nonce}}});
     }
-    commit_sequential(tdb, senders_state, {}, BlockHeader{.number = 255});
+    commit_sequential(
+        tdb, sd(std::move(senders_state)), {}, BlockHeader{.number = 255});
 
     // Now commit block 256.
     BlockHeader const header{
@@ -3895,7 +4128,7 @@ TEST_F(EthCallFixture, trace_transaction_with_rewards_prestate)
     auto const rlp_grandparent_id = to_vec(rlp::encode_bytes32(bytes32_t{254}));
 
     commit_sequential(
-        tdb, {}, {}, header, receipts, call_frames, senders, transactions);
+        tdb, sd({}), {}, header, receipts, call_frames, senders, transactions);
 
     auto *executor = create_executor(dbname.string());
 

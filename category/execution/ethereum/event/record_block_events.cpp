@@ -34,8 +34,8 @@ MONAD_NAMESPACE_BEGIN
 void record_block_start(
     bytes32_t const &bft_block_id, uint256_t const &chain_id,
     BlockHeader const &eth_block_header, bytes32_t const &eth_parent_hash,
-    uint64_t block_round, uint64_t epoch, uint128_t epoch_nano_timestamp,
-    size_t txn_count,
+    uint64_t const block_round, uint64_t const epoch,
+    uint128_t const epoch_nano_timestamp, size_t const txn_count,
     std::optional<monad_c_secp256k1_pubkey> const &opt_block_author,
     std::optional<monad_c_native_block_input> const &opt_monad_input)
 {
@@ -71,7 +71,7 @@ void record_block_start(
              .nonce = std::bit_cast<monad_c_b64>(eth_block_header.nonce),
              .base_fee_per_gas = eth_block_header.base_fee_per_gas.value_or(0),
              .withdrawals_root =
-                 eth_block_header.withdrawals_root.value_or(evmc_bytes32{}),
+                 eth_block_header.withdrawals_root.value_or(bytes32_t{}),
              .txn_count = txn_count},
         .monad_block_input = opt_monad_input.value_or({})};
     memcpy(

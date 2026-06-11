@@ -15,6 +15,8 @@
 
 #include "fixture.hpp"
 
+#include <category/core/address.hpp>
+#include <category/core/bytes.hpp>
 #include <category/core/runtime/uint256.hpp>
 #include <category/vm/runtime/transmute.hpp>
 
@@ -30,19 +32,19 @@ using namespace monad::vm::compiler::test;
 
 namespace
 {
-    evmc::bytes32 get_test_bytes32()
+    bytes32_t get_test_bytes32()
     {
-        evmc::bytes32 b;
-        for (std::uint8_t i = 0; i < 32; ++i) {
+        bytes32_t b;
+        for (uint8_t i = 0; i < 32; ++i) {
             b.bytes[31 - i] = i + 1;
         }
         return b;
     }
 
-    evmc::address get_test_address()
+    Address get_test_address()
     {
-        evmc::address b;
-        for (std::uint8_t i = 0; i < 20; ++i) {
+        Address b;
+        for (uint8_t i = 0; i < 20; ++i) {
             b.bytes[19 - i] = i + 1;
         }
         return b;
@@ -52,7 +54,7 @@ namespace
     {
         uint256_t u;
         uint8_t *b = u.as_bytes();
-        for (std::uint8_t i = 0; i < 32; ++i) {
+        for (uint8_t i = 0; i < 32; ++i) {
             b[i] = i + 1;
         }
         return u;
@@ -61,7 +63,7 @@ namespace
 
 TEST_F(RuntimeTest, TransmuteBytes32)
 {
-    evmc::bytes32 const b = get_test_bytes32();
+    bytes32_t const b = get_test_bytes32();
     uint256_t const u = get_test_uint256();
     ASSERT_EQ(bytes32_from_uint256(u), b);
     ASSERT_EQ(u, uint256_from_bytes32(b));
@@ -69,7 +71,7 @@ TEST_F(RuntimeTest, TransmuteBytes32)
 
 TEST_F(RuntimeTest, TransmuteAddress)
 {
-    evmc::address const a = get_test_address();
+    Address const a = get_test_address();
     uint256_t u = get_test_uint256();
     ASSERT_EQ(address_from_uint256(u), a);
     uint8_t *b = u.as_bytes();

@@ -15,6 +15,7 @@
 
 #include <category/execution/ethereum/state3/state.hpp>
 
+#include <category/core/address.hpp>
 #include <category/core/assert.h>
 #include <category/core/byte_string.hpp>
 #include <category/core/bytes.hpp>
@@ -24,7 +25,6 @@
 #include <category/core/likely.h>
 #include <category/core/monad_exception.hpp>
 #include <category/execution/ethereum/core/account.hpp>
-#include <category/execution/ethereum/core/address.hpp>
 #include <category/execution/ethereum/core/receipt.hpp>
 #include <category/execution/ethereum/state2/block_state.hpp>
 #include <category/execution/ethereum/state3/account_state.hpp>
@@ -36,8 +36,6 @@
 #include <category/vm/vm.hpp>
 
 #include <evmc/evmc.h>
-
-#include <intx/intx.hpp>
 
 #include <immer/vector.hpp>
 
@@ -117,6 +115,14 @@ State::Map<Address, VersionStack<AccountState>> const &State::current() const
 State::Map<bytes32_t, vm::SharedVarcode> const &State::code() const
 {
     return code_;
+}
+
+State::Set<Address> const &State::current_frame_dirty_accounts() const
+{
+    MONAD_ASSERT(version_);
+    MONAD_ASSERT(dirty_.size() == version_);
+
+    return dirty_.back();
 }
 
 void State::push()
@@ -312,8 +318,8 @@ State::get_transient_storage(Address const &address, bytes32_t const &key)
 
 bool State::is_touched(Address const &address)
 {
-    auto const &account_state = recent_account_state(address);
-    return account_state.is_touched();
+    auto const it = current_.find(address);
+    return it != current_.end() && it->second.recent().is_touched();
 }
 
 void State::set_nonce(Address const &address, uint64_t const nonce)

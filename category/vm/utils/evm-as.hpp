@@ -31,24 +31,10 @@ namespace monad::vm::utils::evm_as
         return EvmBuilder<EvmTraits<EVMC_LATEST_STABLE_REVISION>>{};
     }
 
-    inline EvmBuilder<EvmTraits<EVMC_FRONTIER>> frontier()
+    inline EvmBuilder<EvmTraits<constants::EARLIEST_SUPPORTED_EVM_FORK>>
+    earliest()
     {
-        return EvmBuilder<EvmTraits<EVMC_FRONTIER>>{};
-    }
-
-    inline EvmBuilder<EvmTraits<EVMC_HOMESTEAD>> homestead()
-    {
-        return EvmBuilder<EvmTraits<EVMC_HOMESTEAD>>{};
-    }
-
-    inline EvmBuilder<EvmTraits<EVMC_TANGERINE_WHISTLE>> tangerine_whistle()
-    {
-        return EvmBuilder<EvmTraits<EVMC_TANGERINE_WHISTLE>>{};
-    }
-
-    inline EvmBuilder<EvmTraits<EVMC_SPURIOUS_DRAGON>> spurious_dragon()
-    {
-        return EvmBuilder<EvmTraits<EVMC_SPURIOUS_DRAGON>>{};
+        return EvmBuilder<EvmTraits<constants::EARLIEST_SUPPORTED_EVM_FORK>>{};
     }
 
     inline EvmBuilder<EvmTraits<EVMC_BYZANTIUM>> byzantium()

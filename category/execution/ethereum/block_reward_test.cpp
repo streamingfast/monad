@@ -13,23 +13,21 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-#include <category/core/int.hpp>
 #include <category/execution/ethereum/block_reward.hpp>
 #include <category/execution/ethereum/core/account.hpp>
-#include <category/execution/ethereum/core/address.hpp>
 #include <category/execution/ethereum/core/block.hpp>
 #include <category/execution/ethereum/db/trie_db.hpp>
+#include <category/execution/ethereum/db/util.hpp>
 #include <category/execution/ethereum/state2/block_state.hpp>
 #include <category/execution/ethereum/state2/state_deltas.hpp>
 #include <category/execution/ethereum/state3/state.hpp>
-#include <category/vm/evm/traits.hpp>
+#include <category/mpt/db.hpp>
+#include <category/vm/vm.hpp>
 #include <monad/test/traits_test.hpp>
 #include <test_resource_data.h>
 
 #include <evmc/evmc.h>
 #include <evmc/evmc.hpp>
-
-#include <intx/intx.hpp>
 
 #include <gtest/gtest.h>
 
@@ -46,13 +44,14 @@ constexpr auto c{0xa5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5_address};
 
 TYPED_TEST(TraitsTest, apply_block_reward)
 {
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    static_assert(TestFixture::Trait::evm_rev() > EVMC_SPURIOUS_DRAGON);
+
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     db_t tdb{db};
     vm::VM vm;
     commit_sequential(
         tdb,
-        StateDeltas{{a, StateDelta{.account = {std::nullopt, Account{}}}}},
+        sd({{a, StateDelta{.account = {std::nullopt, Account{}}}}}),
         Code{},
         BlockHeader{});
 
@@ -69,12 +68,7 @@ TYPED_TEST(TraitsTest, apply_block_reward)
             BlockHeader{.number = 8, .beneficiary = c}}};
     apply_block_reward<typename TestFixture::Trait>(as, block);
 
-    if constexpr (TestFixture::Trait::evm_rev() < EVMC_BYZANTIUM) {
-        EXPECT_EQ(as.get_balance(a), 5'312'500'000'000'000'000);
-        EXPECT_EQ(as.get_balance(b), 4'375'000'000'000'000'000);
-        EXPECT_EQ(as.get_balance(c), 3'750'000'000'000'000'000);
-    }
-    else if constexpr (TestFixture::Trait::evm_rev() < EVMC_PETERSBURG) {
+    if constexpr (TestFixture::Trait::evm_rev() < EVMC_PETERSBURG) {
         EXPECT_EQ(as.get_balance(a), 3'187'500'000'000'000'000);
         EXPECT_EQ(as.get_balance(b), 2'625'000'000'000'000'000);
         EXPECT_EQ(as.get_balance(c), 2'250'000'000'000'000'000);

@@ -13,13 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/core/address.hpp>
 #include <category/core/assert.h>
 #include <category/core/bytes.hpp>
 #include <category/core/config.hpp>
 #include <category/core/int.hpp>
 #include <category/core/monad_exception.hpp>
 #include <category/execution/ethereum/chain/chain.hpp>
-#include <category/execution/ethereum/core/address.hpp>
 #include <category/execution/ethereum/core/transaction.hpp>
 #include <category/execution/ethereum/reserve_balance.hpp>
 #include <category/execution/ethereum/state3/state.hpp>
@@ -35,8 +35,6 @@
 #include <category/vm/evm/traits.hpp>
 
 #include <ankerl/unordered_dense.h>
-
-#include <intx/intx.hpp>
 
 #include <algorithm>
 #include <cstddef>
@@ -163,7 +161,7 @@ MONAD_ANONYMOUS_NAMESPACE_END
 
 MONAD_NAMESPACE_BEGIN
 
-ReserveBalance::ReserveBalance(State *state)
+ReserveBalance::ReserveBalance(State *const state)
     : state_{state}
 {
 }

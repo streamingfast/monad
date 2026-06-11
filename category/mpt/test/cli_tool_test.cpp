@@ -16,8 +16,6 @@
 #include "test_fixtures_base.hpp"
 #include "test_fixtures_gtest.hpp"
 
-#include "../cli_tool_impl.hpp"
-
 #include <category/async/config.hpp>
 #include <category/async/detail/scope_polyfill.hpp>
 #include <category/async/io.hpp>
@@ -25,9 +23,13 @@
 #include <category/core/io/buffers.hpp>
 #include <category/core/io/ring.hpp>
 #include <category/core/test_util/gtest_signal_stacktrace_printer.hpp> // NOLINT
+#include <category/mpt/cli_tool_impl.hpp>
 #include <category/mpt/node.hpp>
+#include <category/mpt/node_cursor.hpp>
 #include <category/mpt/trie.hpp>
 
+#include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <future>
 #include <iostream>
@@ -50,7 +52,11 @@ TEST(cli_tool, no_args_prints_fatal_and_help)
     int const retcode = main_impl(cout, cerr, args);
     ASSERT_EQ(retcode, 1);
     EXPECT_TRUE(cerr.str().starts_with("FATAL:"));
-    EXPECT_NE(std::string::npos, cerr.str().find("Options:"));
+    {
+        std::string out = cerr.str();
+        std::transform(out.begin(), out.end(), out.begin(), ::tolower);
+        EXPECT_NE(std::string::npos, out.find("options:"));
+    }
 }
 
 TEST(cli_tool, help_prints_help)
@@ -60,7 +66,11 @@ TEST(cli_tool, help_prints_help)
     std::string_view args[] = {"monad-mpt", "--help"};
     int const retcode = main_impl(cout, cerr, args);
     ASSERT_EQ(retcode, 0);
-    EXPECT_NE(std::string::npos, cout.str().find("Options:"));
+    {
+        std::string out = cout.str();
+        std::transform(out.begin(), out.end(), out.begin(), ::tolower);
+        EXPECT_NE(std::string::npos, out.find("options:"));
+    }
 }
 
 TEST(cli_tool, create)
@@ -71,7 +81,7 @@ TEST(cli_tool, create)
         abort();
     }
     ::close(fd);
-    auto untempfile =
+    auto const untempfile =
         monad::make_scope_exit([&]() noexcept { unlink(temppath); });
     if (-1 == truncate(temppath, 6ULL * 1024 * 1024 * 1024)) {
         abort();
@@ -128,7 +138,7 @@ struct cli_tool_fixture
             abort();
         }
         ::close(fd);
-        auto untempfile = monad::make_scope_exit([&]() noexcept {
+        auto const untempfile = monad::make_scope_exit([&]() noexcept {
             unlink(temppath1);
             unlink(dbpath2a);
             unlink(dbpath2b);
@@ -184,7 +194,7 @@ struct cli_tool_fixture
         }
         {
             std::cout << "restoring from file " << temppath1 << " to";
-            for (auto &i : dbpath2) {
+            for (auto const &i : dbpath2) {
                 std::cout << " " << i;
             }
             std::cout << std::endl;
@@ -197,7 +207,7 @@ struct cli_tool_fixture
                 "--yes",
                 "--restore",
                 temppath1};
-            for (auto &i : dbpath2) {
+            for (auto const &i : dbpath2) {
                 args.push_back("--storage");
                 args.push_back(i.native());
             }
@@ -225,23 +235,28 @@ struct cli_tool_fixture
                         monad::async::AsyncIO::MONAD_IO_BUFFERS_READ_SIZE);
                 monad::async::AsyncIO testio(pool, testrwbuf);
                 monad::mpt::UpdateAux const aux{testio};
-                monad::mpt::Node::SharedPtr root_ptr{read_node_blocking(
+                monad::mpt::Node::SharedPtr const root_ptr{read_node_blocking(
                     aux,
-                    aux.get_latest_root_offset(),
-                    aux.db_history_max_version())};
+                    aux.metadata_ctx().get_latest_root_offset(),
+                    aux.metadata_ctx().db_history_max_version())};
                 monad::mpt::NodeCursor const root(root_ptr);
 
-                for (auto &key : this->state()->keys) {
-                    auto ret = monad::mpt::find_blocking(
-                        aux, root, key.first, aux.db_history_max_version());
+                for (auto const &key : this->state()->keys) {
+                    auto const ret = monad::mpt::find_blocking(
+                        aux,
+                        root,
+                        key.first,
+                        aux.metadata_ctx().db_history_max_version());
                     EXPECT_EQ(ret.second, monad::mpt::find_result::success);
                 }
                 EXPECT_EQ(
-                    this->state()->aux.db_history_min_valid_version(),
-                    aux.db_history_min_valid_version());
+                    this->state()
+                        ->aux.metadata_ctx()
+                        .db_history_min_valid_version(),
+                    aux.metadata_ctx().db_history_min_valid_version());
                 EXPECT_EQ(
-                    this->state()->aux.db_history_max_version(),
-                    aux.db_history_max_version());
+                    this->state()->aux.metadata_ctx().db_history_max_version(),
+                    aux.metadata_ctx().db_history_max_version());
             }).get();
         }
         if (Config.interleave_multiple_sources) {
@@ -268,7 +283,7 @@ struct cli_tool_fixture
                 abort();
             }
             ::close(fd);
-            auto untempfile2 = monad::make_scope_exit([&]() noexcept {
+            auto const untempfile2 = monad::make_scope_exit([&]() noexcept {
                 unlink(temppath2);
                 unlink(dbpath3);
             });
@@ -278,7 +293,7 @@ struct cli_tool_fixture
                 std::stringstream cerr;
                 std::vector<std::string_view> args{
                     "monad-mpt", "--archive", temppath2};
-                for (auto &i : dbpath2) {
+                for (auto const &i : dbpath2) {
                     args.push_back("--storage");
                     args.push_back(i.native());
                 }
@@ -328,23 +343,31 @@ struct cli_tool_fixture
                             monad::async::AsyncIO::MONAD_IO_BUFFERS_READ_SIZE);
                     monad::async::AsyncIO testio(pool, testrwbuf);
                     monad::mpt::UpdateAux const aux{testio};
-                    monad::mpt::Node::SharedPtr root_ptr{read_node_blocking(
-                        aux,
-                        aux.get_latest_root_offset(),
-                        aux.db_history_max_version())};
+                    monad::mpt::Node::SharedPtr const root_ptr{
+                        read_node_blocking(
+                            aux,
+                            aux.metadata_ctx().get_latest_root_offset(),
+                            aux.metadata_ctx().db_history_max_version())};
                     monad::mpt::NodeCursor const root(root_ptr);
 
-                    for (auto &key : this->state()->keys) {
-                        auto ret = monad::mpt::find_blocking(
-                            aux, root, key.first, aux.db_history_max_version());
+                    for (auto const &key : this->state()->keys) {
+                        auto const ret = monad::mpt::find_blocking(
+                            aux,
+                            root,
+                            key.first,
+                            aux.metadata_ctx().db_history_max_version());
                         EXPECT_EQ(ret.second, monad::mpt::find_result::success);
                     }
                     EXPECT_EQ(
-                        this->state()->aux.db_history_min_valid_version(),
-                        aux.db_history_min_valid_version());
+                        this->state()
+                            ->aux.metadata_ctx()
+                            .db_history_min_valid_version(),
+                        aux.metadata_ctx().db_history_min_valid_version());
                     EXPECT_EQ(
-                        this->state()->aux.db_history_max_version(),
-                        aux.db_history_max_version());
+                        this->state()
+                            ->aux.metadata_ctx()
+                            .db_history_max_version(),
+                        aux.metadata_ctx().db_history_max_version());
                 }).get();
             }
         }

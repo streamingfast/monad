@@ -20,6 +20,7 @@
 #include <instrumentation_device.hpp>
 #include <stopwatch.hpp>
 
+#include <category/core/log.hpp>
 #include <category/core/runtime/uint256.hpp>
 #include <category/vm/compiler/ir/basic_blocks.hpp>
 #include <category/vm/compiler/ir/x86/types.hpp>
@@ -35,8 +36,6 @@
 
 #include <nlohmann/json.hpp>
 #include <nlohmann/json_fwd.hpp>
-
-#include <quill/Quill.h>
 
 #include <algorithm>
 #include <cctype>
@@ -65,7 +64,6 @@ struct arguments
     std::optional<std::string> asm_log_file;
     bool wall_clock_time = false;
     bool report_result = false;
-    bool use_llvm = false;
 };
 
 static arguments parse_args(int const argc, char **const argv)
@@ -114,10 +112,6 @@ static arguments parse_args(int const argc, char **const argv)
         "-u",
         args.timeunit_s,
         std::format("Wall clock time unit (default: {})", args.timeunit_s));
-    app.add_flag(
-        "--llvm",
-        args.use_llvm,
-        std::format("Use llvm backend (default: {})", args.use_llvm));
     try {
         app.parse(argc, argv);
         args.timeunit = timeunit_of_short_string(args.timeunit_s);
@@ -129,7 +123,7 @@ static arguments parse_args(int const argc, char **const argv)
         std::exit(app.exit(e));
     }
 
-    quill::start(true);
+    monad::start_logger_minimal();
 
     return args;
 }
@@ -213,7 +207,7 @@ int mce_main(arguments const &args)
     }();
     if (!ir) {
         LOG_ERROR("Parsing failed.");
-        quill::flush();
+        monad::flush_logger();
         abort();
     }
 
@@ -227,11 +221,11 @@ int mce_main(arguments const &args)
     }
     if (args.instrument_compile) {
         InstrumentableCompiler<true> compiler(rt, config);
-        bin = compiler.compile<traits>(*ir, device, args.use_llvm);
+        bin = compiler.compile<traits>(*ir, device);
     }
     else {
         InstrumentableCompiler<false> compiler(rt, config);
-        bin = compiler.compile<traits>(*ir, device, args.use_llvm);
+        bin = compiler.compile<traits>(*ir, device);
     }
 
     evmc::Result const result = [&]() {
@@ -265,19 +259,7 @@ int main(int argc, char **argv)
     std::ios_base::sync_with_stdio(false);
     auto args = parse_args(argc, argv);
     std::string const rev = uppercase(args.revision);
-    if (rev == "FRONTIER") {
-        return mce_main<EvmTraits<EVMC_FRONTIER>>(args);
-    }
-    else if (rev == "HOMESTEAD") {
-        return mce_main<EvmTraits<EVMC_HOMESTEAD>>(args);
-    }
-    else if (rev == "TANGERINE_WHISTLE") {
-        return mce_main<EvmTraits<EVMC_TANGERINE_WHISTLE>>(args);
-    }
-    else if (rev == "SPURIOUS_DRAGON") {
-        return mce_main<EvmTraits<EVMC_SPURIOUS_DRAGON>>(args);
-    }
-    else if (rev == "BYZANTIUM") {
+    if (rev == "BYZANTIUM") {
         return mce_main<EvmTraits<EVMC_BYZANTIUM>>(args);
     }
     else if (rev == "CONSTANTINOPLE") {

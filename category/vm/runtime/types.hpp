@@ -15,9 +15,11 @@
 
 #pragma once
 
+#include <category/core/address.hpp>
+#include <category/core/assert.h>
+#include <category/core/bytes.hpp>
 #include <category/core/runtime/non_temporal_memory.hpp>
 #include <category/core/runtime/uint256.hpp>
-#include <category/vm/core/assert.h>
 #include <category/vm/evm/traits.hpp>
 #include <category/vm/runtime/bin.hpp>
 #include <category/vm/runtime/transmute.hpp>
@@ -49,20 +51,20 @@ namespace monad::vm::runtime
 
     struct Environment
     {
-        std::uint32_t evmc_flags;
-        std::int32_t depth;
-        evmc::address recipient;
-        evmc::address sender;
-        evmc::bytes32 value;
-        evmc::bytes32 create2_salt;
+        uint32_t evmc_flags;
+        int32_t depth;
+        Address recipient;
+        Address sender;
+        bytes32_t value;
+        bytes32_t create2_salt;
 
-        std::uint8_t const *input_data;
-        std::uint8_t const *code;
-        std::uint8_t const *return_data;
+        uint8_t const *input_data;
+        uint8_t const *code;
+        uint8_t const *return_data;
 
-        std::uint32_t input_data_size;
-        std::uint32_t code_size;
-        std::size_t return_data_size;
+        uint32_t input_data_size;
+        uint32_t code_size;
+        size_t return_data_size;
 
         evmc_tx_context const *tx_context;
 
@@ -73,9 +75,9 @@ namespace monad::vm::runtime
 
         [[gnu::always_inline]]
         void set_return_data(
-            std::uint8_t const *output_data, std::size_t output_size)
+            uint8_t const *const output_data, size_t const output_size)
         {
-            MONAD_VM_DEBUG_ASSERT(return_data_size == 0);
+            MONAD_DEBUG_ASSERT(return_data_size == 0);
             return_data = output_data;
             return_data_size = output_size;
         }
@@ -92,18 +94,18 @@ namespace monad::vm::runtime
     struct Memory
     {
         // Size of the memory region for current call frame:
-        std::uint32_t size;
+        uint32_t size;
         // Capacity of the memory region for current call frame:
-        std::uint32_t capacity;
+        uint32_t capacity;
         // Start of memory region for current call frame:
-        std::uint8_t *data;
+        uint8_t *data;
         // Current accumulated memory cost for current call frame:
-        std::int64_t cost;
+        int64_t cost;
         // Pointer to the beginning of the transaction wide memory:
-        std::uint8_t *data_handle;
+        uint8_t *data_handle;
         // The `parent_capacity` is the original capacity (the capacity at
         // the beginning of the current call frame).
-        std::uint32_t const parent_capacity;
+        uint32_t const parent_capacity;
         // The `parent_handle` is a pointer to the original transaction wide
         // memory (the transaction wide memory at the beginning of the
         // current call frame).
@@ -111,7 +113,7 @@ namespace monad::vm::runtime
         // memory pointed to by `parent_handle`. This memory is lazily freed,
         // because the call data for the current call frame is potentially a
         // pointer into the `parent_handle` memory.
-        std::uint8_t *const parent_handle;
+        uint8_t *const parent_handle;
 
         static constexpr auto offset_bits = 28;
 
@@ -125,7 +127,8 @@ namespace monad::vm::runtime
 
         Memory() = delete;
 
-        explicit Memory(std::uint8_t *han, std::uint8_t *dat, std::uint32_t cap)
+        explicit Memory(
+            uint8_t *const han, uint8_t *const dat, uint32_t const cap)
             : size{}
             , capacity{cap}
             , data{dat}
@@ -134,8 +137,8 @@ namespace monad::vm::runtime
             , parent_capacity{cap}
             , parent_handle{han}
         {
-            MONAD_VM_DEBUG_ASSERT(han != nullptr);
-            MONAD_VM_DEBUG_ASSERT(dat != nullptr);
+            MONAD_DEBUG_ASSERT(han != nullptr);
+            MONAD_DEBUG_ASSERT(dat != nullptr);
         }
 
         Memory(Memory &&m) = delete;
@@ -149,9 +152,9 @@ namespace monad::vm::runtime
             // necessary, because the `Context::return_to` function will take
             // care of clearing and freeing memory. However relying on calling
             // `Context::return_to` seems unreasonable in general.
-            if (MONAD_VM_UNLIKELY(data_handle)) {
-                MONAD_VM_ASSERT(size <= capacity);
-                MONAD_VM_ASSERT(data == data_handle);
+            if (MONAD_UNLIKELY(data_handle)) {
+                MONAD_ASSERT(size <= capacity);
+                MONAD_ASSERT(data == data_handle);
                 clear();
             }
         }
@@ -159,11 +162,11 @@ namespace monad::vm::runtime
         [[gnu::always_inline]]
         Bin<30> parent_total_size() const
         {
-            MONAD_VM_DEBUG_ASSERT(data >= data_handle);
+            MONAD_DEBUG_ASSERT(data >= data_handle);
 
-            auto const x = static_cast<std::uintptr_t>(data - data_handle);
+            auto const x = static_cast<uintptr_t>(data - data_handle);
 
-            MONAD_VM_DEBUG_ASSERT((x & 31) == 0);
+            MONAD_DEBUG_ASSERT((x & 31) == 0);
 
             // The following check is a non-debug assertion, because it is not
             // an internal invariant, and not part of the fast path. The check
@@ -188,15 +191,15 @@ namespace monad::vm::runtime
             // This means that more than 2 billion gas must have been consumed
             // already by the current transaction for the following assertion
             // to fail:
-            MONAD_VM_ASSERT(x <= Bin<30>::upper);
+            MONAD_ASSERT(x <= Bin<30>::upper);
 
-            return Bin<30>::unsafe_from(static_cast<std::uint32_t>(x));
+            return Bin<30>::unsafe_from(static_cast<uint32_t>(x));
         }
 
         [[gnu::always_inline]]
         void clear()
         {
-            if (MONAD_VM_LIKELY(parent_handle == data_handle)) {
+            if (MONAD_LIKELY(parent_handle == data_handle)) {
                 non_temporal_bzero(data_handle, size);
             }
             else {
@@ -208,7 +211,7 @@ namespace monad::vm::runtime
         [[gnu::always_inline]]
         void release()
         {
-            if (MONAD_VM_UNLIKELY(data_handle != parent_handle)) {
+            if (MONAD_UNLIKELY(data_handle != parent_handle)) {
                 // Only free if data_handle is not the parent_handle. The
                 // parent_handle is potentially used for call data.
                 // Note that data_handle will never be the initial memory
@@ -224,18 +227,16 @@ namespace monad::vm::runtime
     {
         static Context from(
             evmc_host_interface const *host, evmc_host_context *context,
-            evmc_message const *msg,
-            std::span<std::uint8_t const> code) noexcept;
+            evmc_message const *msg, std::span<uint8_t const> code) noexcept;
 
-        static Context empty(
-            std::uint8_t *const memory_handle,
-            std::uint32_t memory_capacity) noexcept;
+        static Context
+        empty(uint8_t *memory_handle, uint32_t memory_capacity) noexcept;
 
         evmc_host_interface const *host;
         evmc_host_context *context;
 
-        std::int64_t gas_remaining;
-        std::int64_t gas_refund;
+        int64_t gas_remaining;
+        int64_t gas_refund;
 
         Environment env;
 
@@ -247,10 +248,10 @@ namespace monad::vm::runtime
         bool is_stack_unwinding_active = false;
 
         [[gnu::always_inline]]
-        constexpr void deduct_gas(std::int64_t const gas) noexcept
+        constexpr void deduct_gas(int64_t const gas) noexcept
         {
             gas_remaining -= gas;
-            if (MONAD_VM_UNLIKELY(gas_remaining < 0)) {
+            if (MONAD_UNLIKELY(gas_remaining < 0)) {
                 exit(StatusCode::OutOfGas);
             }
         }
@@ -289,14 +290,14 @@ namespace monad::vm::runtime
 
         [[gnu::always_inline]]
         static constexpr Bin<30>
-        word_count_to_memory_size(Bin<25> word_count) noexcept
+        word_count_to_memory_size(Bin<25> const word_count) noexcept
         {
             return shl<5>(word_count);
         }
 
         template <Traits traits>
         [[gnu::always_inline]]
-        bool is_memory_size_in_bound(Bin<30> mem_size)
+        bool is_memory_size_in_bound(Bin<30> const mem_size)
         {
             if constexpr (traits::mip_3_active()) {
                 Bin<31> const total_size =
@@ -310,7 +311,7 @@ namespace monad::vm::runtime
         void increase_capacity(uint32_t old_size, Bin<30> new_size);
 
         template <Traits traits>
-        void expand_memory(Bin<29> min_size)
+        void expand_memory(Bin<29> const min_size)
         {
             if (memory.size < *min_size) {
                 auto const word_count = memory_size_to_word_count(min_size);
@@ -319,15 +320,15 @@ namespace monad::vm::runtime
                 Bin<30> const new_size = word_count_to_memory_size(word_count);
 
                 // Bound check before increasing size or capacity:
-                if (MONAD_VM_UNLIKELY(
+                if (MONAD_UNLIKELY(
                         !is_memory_size_in_bound<traits>(new_size))) {
                     // Return out-of-gas error code, similar to when the
                     // `get_memory_offset` functions fails.
                     exit(StatusCode::OutOfGas);
                 }
 
-                MONAD_VM_DEBUG_ASSERT(new_cost >= memory.cost);
-                std::int64_t const expansion_cost = new_cost - memory.cost;
+                MONAD_DEBUG_ASSERT(new_cost >= memory.cost);
+                int64_t const expansion_cost = new_cost - memory.cost;
 
                 // Gas check before increasing size or capacity:
                 deduct_gas(expansion_cost);
@@ -335,7 +336,7 @@ namespace monad::vm::runtime
                 memory.size = *new_size;
                 memory.cost = new_cost;
 
-                if (MONAD_VM_UNLIKELY(memory.capacity < *new_size)) {
+                if (MONAD_UNLIKELY(memory.capacity < *new_size)) {
                     increase_capacity(old_size, new_size);
                 }
             }
@@ -344,7 +345,7 @@ namespace monad::vm::runtime
         [[gnu::always_inline]]
         Memory::Offset get_memory_offset(uint256_t const &offset)
         {
-            if (MONAD_VM_UNLIKELY(
+            if (MONAD_UNLIKELY(
                     !is_bounded_by_bits<Memory::offset_bits>(offset))) {
                 exit(StatusCode::OutOfGas);
             }
@@ -358,8 +359,8 @@ namespace monad::vm::runtime
             if (parent != nullptr) {
                 non_temporal_bzero(memory.data, memory.size);
                 auto &p = parent->memory;
-                MONAD_VM_DEBUG_ASSERT(memory.parent_handle == p.data_handle);
-                if (MONAD_VM_UNLIKELY(
+                MONAD_DEBUG_ASSERT(memory.parent_handle == p.data_handle);
+                if (MONAD_UNLIKELY(
                         memory.data_handle != memory.parent_handle)) {
                     p.release();
                     p.data = memory.data - p.size;
@@ -378,7 +379,7 @@ namespace monad::vm::runtime
         [[gnu::always_inline]]
         void propagate_stack_unwind() noexcept
         {
-            if (MONAD_VM_UNLIKELY(is_stack_unwinding_active)) {
+            if (MONAD_UNLIKELY(is_stack_unwinding_active)) {
                 stack_unwind();
             }
         }
@@ -392,7 +393,7 @@ namespace monad::vm::runtime
 
     private:
         template <Traits traits>
-        std::variant<std::span<std::uint8_t const>, evmc_status_code>
+        std::variant<std::span<uint8_t const>, evmc_status_code>
         copy_result_data();
     };
 

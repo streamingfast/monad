@@ -15,8 +15,8 @@
 
 #pragma once
 
+#include <category/core/assert.h>
 #include <category/vm/compiler/ir/x86/types.hpp>
-#include <category/vm/core/assert.h>
 #include <category/vm/interpreter/intercode.hpp>
 
 #include <atomic>
@@ -33,7 +33,7 @@ namespace monad::vm
     }
 
     inline SharedIntercode
-    make_shared_intercode(std::initializer_list<uint8_t> a)
+    make_shared_intercode(std::initializer_list<uint8_t> const a)
     {
         return std::make_shared<Intercode const>(a);
     }
@@ -60,13 +60,13 @@ namespace monad::vm
         Varcode(Varcode const &) = delete;
         Varcode &operator=(Varcode const &) = delete;
 
-        std::uint64_t intercode_gas_used(std::uint64_t gas_used)
+        uint64_t intercode_gas_used(uint64_t const gas_used)
         {
             return gas_used + intercode_gas_used_.fetch_add(
                                   gas_used, std::memory_order_acq_rel);
         }
 
-        std::uint64_t get_intercode_gas_used()
+        uint64_t get_intercode_gas_used()
         {
             return intercode_gas_used_.load(std::memory_order_acquire);
         }
@@ -85,7 +85,7 @@ namespace monad::vm
         }
 
     private:
-        std::atomic<std::uint64_t> intercode_gas_used_;
+        std::atomic<uint64_t> intercode_gas_used_;
         SharedIntercode intercode_;
         SharedNativecode nativecode_;
     };

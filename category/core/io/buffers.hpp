@@ -113,39 +113,37 @@ public:
 
     [[gnu::always_inline]] unsigned char *get_read_buffer(size_t const i) const
     {
-        MONAD_DEBUG_ASSERT(i < read_count_);
+        MONAD_ASSERT(i < read_count_);
         unsigned char *const ret = read_buf_.get_data() + (i << read_bits_);
-        MONAD_DEBUG_ASSERT(((void)ret[0], true));
         return ret;
     }
 
     [[gnu::always_inline]] unsigned char *get_write_buffer(size_t const i) const
     {
-        MONAD_DEBUG_ASSERT(i < write_count_);
+        MONAD_ASSERT(i < write_count_);
         unsigned char *const ret =
             write_buf_.value().get_data() + (i << write_bits_);
-        MONAD_DEBUG_ASSERT(((void)ret[0], true));
         return ret;
     }
 };
 
-[[gnu::always_inline]] inline Buffers
-make_buffers_for_read_only(Ring &ring, size_t read_count, size_t read_size)
+[[gnu::always_inline]] inline Buffers make_buffers_for_read_only(
+    Ring &ring, size_t const read_count, size_t const read_size)
 {
     return Buffers(ring, nullptr, read_count, 0, read_size, 0);
 }
 
 [[gnu::always_inline]] inline Buffers make_buffers_for_mixed_read_write(
-    Ring &ring, size_t read_count, size_t write_count, size_t read_size,
-    size_t write_size)
+    Ring &ring, size_t const read_count, size_t const write_count,
+    size_t const read_size, size_t const write_size)
 {
     return Buffers(
         ring, nullptr, read_count, write_count, read_size, write_size);
 }
 
 [[gnu::always_inline]] inline Buffers make_buffers_for_segregated_read_write(
-    Ring &ring, Ring &wr_ring, size_t read_count, size_t write_count,
-    size_t read_size, size_t write_size)
+    Ring &ring, Ring &wr_ring, size_t const read_count,
+    size_t const write_count, size_t const read_size, size_t const write_size)
 {
     return Buffers(
         ring, &wr_ring, read_count, write_count, read_size, write_size);

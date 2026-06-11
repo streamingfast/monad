@@ -17,13 +17,11 @@
 #include "test_fixtures_gtest.hpp"
 
 #include <category/core/byte_string.hpp>
-#include <category/mpt/state_machine.hpp>
-#include <category/mpt/trie.hpp>
-#include <category/mpt/update.hpp>
-#include <cstddef>
-#include <memory>
-
+#include <category/core/hex.hpp>
 #include <category/core/test_util/gtest_signal_stacktrace_printer.hpp> // NOLINT
+#include <category/mpt/compute.hpp>
+#include <category/mpt/state_machine.hpp>
+#include <category/mpt/update.hpp>
 
 #include <gmock/gmock.h>
 
@@ -68,7 +66,7 @@ namespace
             return std::make_unique<TestStateMachine>(*this);
         }
 
-        virtual void down(unsigned char nibble) override
+        virtual void down(unsigned char const nibble) override
         {
             EXPECT_LE(nibble, 0xf);
             auto const [_, success] = down_calls.emplace(path, nibble);
@@ -76,7 +74,7 @@ namespace
             path.push_back(nibble);
         }
 
-        virtual void up(size_t n) override
+        virtual void up(size_t const n) override
         {
             EXPECT_LE(n, path.size());
             // can invoke up() at same path for multiple times with async
@@ -86,7 +84,7 @@ namespace
 
         virtual Compute &get_compute() const override
         {
-            static test::EmptyCompute compute{};
+            static monad::test::EmptyCompute compute{};
             compute_calls.emplace(path);
             return compute;
         }

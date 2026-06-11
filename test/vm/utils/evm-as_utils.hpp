@@ -28,17 +28,16 @@ namespace monad::vm::test
             uint8_t dims[32]{};
         };
 
-        explicit KernelCalldata(size_t calldata_size)
-            : data_(calldata_size >> 5){MONAD_VM_ASSERT(
-                  (calldata_size & 31) == 0)}
+        explicit KernelCalldata(size_t const calldata_size)
+            : data_(calldata_size >> 5){MONAD_ASSERT((calldata_size & 31) == 0)}
 
             uint8_t
-            & operator[](size_t i)
+            & operator[](size_t const i)
         {
             return data_[i >> 5].dims[i & 31];
         }
 
-        uint8_t const &operator[](size_t i) const
+        uint8_t const &operator[](size_t const i) const
         {
             return data_[i >> 5].dims[i & 31];
         }
@@ -73,8 +72,8 @@ namespace monad::vm::test
         auto const outer_step = max_stack_values * 32;
         auto const n = args_size == 0 ? 1 : args_size;
 
-        MONAD_VM_ASSERT(base_calldata.size() % 32 == 0);
-        MONAD_VM_ASSERT(base_calldata.size() >= outer_step);
+        MONAD_ASSERT(base_calldata.size() % 32 == 0);
+        MONAD_ASSERT(base_calldata.size() >= outer_step);
 
         KernelCalldata ret(base_calldata.size());
 
@@ -83,8 +82,7 @@ namespace monad::vm::test
             for (size_t j = 0; j < max_stack_values; j += n) {
                 for (size_t k = 0; k < n; ++k) {
                     size_t const c = i + 32 * (max_stack_values - j - n + k);
-                    runtime::uint256_t::load_be_unsafe(
-                        &base_calldata[count * 32])
+                    uint256_t::load_be_unsafe(&base_calldata[count * 32])
                         .store_be(&ret[c]);
                     ++count;
                 }
@@ -122,9 +120,9 @@ namespace monad::vm::test
         size_t n = 32 * args_size *
                    KB::get_sequence_repetition_count(
                        args_size, throughput_calldata.size());
-        MONAD_VM_ASSERT(ctx->result.status == runtime::StatusCode::Success);
-        MONAD_VM_ASSERT(runtime::uint256_t::load_le(ctx->result.size) == n);
-        MONAD_VM_ASSERT(runtime::uint256_t::load_le(ctx->result.offset) == 0);
+        MONAD_ASSERT(ctx->result.status == runtime::StatusCode::Success);
+        MONAD_ASSERT(uint256_t::load_le(ctx->result.size) == n);
+        MONAD_ASSERT(uint256_t::load_le(ctx->result.offset) == 0);
 
         KernelCalldata ret{throughput_calldata.size()};
         std::memcpy(ret.data(), ctx->memory.data, n);

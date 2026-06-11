@@ -125,7 +125,7 @@ TEST(Rlp_Receipt, DecodeEncodeBloom)
 
 TEST(Rlp_Receipt, DecodeEncodeEip155Receipt)
 {
-    using namespace evmc::literals;
+    using namespace monad::literals;
 
     static constexpr uint64_t gas{2'850'010};
     static constexpr auto addr{
@@ -210,7 +210,7 @@ TEST(Rlp_Receipt, DecodeEncodeEip155Receipt)
 
 TEST(Rlp_Receipt, DecodeEncodeReceiptLogSize)
 {
-    using namespace evmc::literals;
+    using namespace monad::literals;
 
     static constexpr uint64_t gas{2'850'010};
     static constexpr auto addr{
@@ -275,7 +275,7 @@ TEST(Rlp_Receipt, DecodeEncodeReceiptLogSize)
 
 TEST(Rlp_Receipt, EncodeEip1559Receipt)
 {
-    using namespace evmc::literals;
+    using namespace monad::literals;
 
     static constexpr uint64_t gas{2'850'010};
     static constexpr auto addr{
@@ -361,7 +361,7 @@ TEST(Rlp_Receipt, EncodeEip1559Receipt)
 
 TEST(Rlp_Receipt, EncodeEip2930Receipt)
 {
-    using namespace evmc::literals;
+    using namespace monad::literals;
 
     static constexpr uint64_t gas{2'850'010};
     static constexpr auto addr{

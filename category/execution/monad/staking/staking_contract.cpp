@@ -13,12 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/core/address.hpp>
 #include <category/core/byte_string.hpp>
 #include <category/core/int.hpp>
 #include <category/core/likely.h>
+#include <category/core/log.hpp>
 #include <category/core/monad_exception.hpp>
-#include <category/core/unaligned.hpp>
-#include <category/execution/ethereum/core/address.hpp>
+#include <category/core/runtime/unaligned.hpp>
 #include <category/execution/ethereum/core/contract/abi_decode.hpp>
 #include <category/execution/ethereum/core/contract/abi_encode.hpp>
 #include <category/execution/ethereum/core/contract/abi_signatures.hpp>
@@ -38,13 +39,12 @@
 #include <boost/outcome/success_failure.hpp>
 #include <boost/outcome/try.hpp>
 
-#include <quill/Quill.h>
-
 #include <algorithm>
 #include <cstring>
 #include <memory>
 
 MONAD_STAKING_ANONYMOUS_NAMESPACE_BEGIN
+using namespace monad::literals;
 
 ////////////////////////
 // Function Selectors //
@@ -345,11 +345,11 @@ Result<uint256_t> calculate_rewards(
     return checked_mul_div(delta, stake, UNIT_BIAS);
 }
 
-Result<void> function_not_payable(evmc_uint256be const &value)
+Result<void> function_not_payable(uint256_be_t const &value)
 {
     bool const all_zero = std::all_of(
         value.bytes,
-        value.bytes + sizeof(evmc_uint256be),
+        value.bytes + sizeof(uint256_be_t),
         [](uint8_t const byte) { return byte == 0; });
 
     if (MONAD_UNLIKELY(!all_zero)) {
@@ -774,8 +774,7 @@ StakingContract::precompile_dispatch(byte_string_view &input)
         return make_pair(&StakingContract::precompile_fallback, 40000);
     }
 
-    auto const signature =
-        intx::be::unsafe::load<uint32_t>(input.substr(0, 4).data());
+    auto const signature = load_be_unsafe<uint32_t>(input.substr(0, 4).data());
     input.remove_prefix(4);
 
     switch (signature) {
@@ -890,7 +889,7 @@ std::tuple<bool, u32_be, std::vector<u64_be>> StakingContract::get_valset(
 
 std::tuple<bool, Address, std::vector<Address>>
 StakingContract::get_delegators_for_validator(
-    u64_be val_id, Address const &start_delegator, uint32_t const limit)
+    u64_be const val_id, Address const &start_delegator, uint32_t const limit)
 {
     return linked_list_traverse<u64_be, Address>(
         val_id, start_delegator, limit);
@@ -905,8 +904,7 @@ StakingContract::get_validators_for_delegator(
 }
 
 Result<byte_string> StakingContract::precompile_get_validator(
-    byte_string_view input, evmc_address const &,
-    evmc_uint256be const &msg_value)
+    byte_string_view input, Address const &, uint256_be_t const &msg_value)
 {
     BOOST_OUTCOME_TRY(function_not_payable(msg_value));
 
@@ -940,8 +938,7 @@ Result<byte_string> StakingContract::precompile_get_validator(
 }
 
 Result<byte_string> StakingContract::precompile_get_delegator(
-    byte_string_view input, evmc_address const &,
-    evmc_uint256be const &msg_value)
+    byte_string_view input, Address const &, uint256_be_t const &msg_value)
 {
     BOOST_OUTCOME_TRY(function_not_payable(msg_value));
 
@@ -995,24 +992,21 @@ Result<byte_string> StakingContract::get_valset(
 }
 
 Result<byte_string> StakingContract::precompile_get_consensus_valset(
-    byte_string_view const input, evmc_address const &,
-    evmc_uint256be const &msg_value)
+    byte_string_view input, Address const &, uint256_be_t const &msg_value)
 {
     BOOST_OUTCOME_TRY(function_not_payable(msg_value));
     return get_valset(input, vars.valset_consensus);
 }
 
 Result<byte_string> StakingContract::precompile_get_snapshot_valset(
-    byte_string_view const input, evmc_address const &,
-    evmc_uint256be const &msg_value)
+    byte_string_view input, Address const &, uint256_be_t const &msg_value)
 {
     BOOST_OUTCOME_TRY(function_not_payable(msg_value));
     return get_valset(input, vars.valset_snapshot);
 }
 
 Result<byte_string> StakingContract::precompile_get_execution_valset(
-    byte_string_view const input, evmc_address const &,
-    evmc_uint256be const &msg_value)
+    byte_string_view input, Address const &, uint256_be_t const &msg_value)
 {
     BOOST_OUTCOME_TRY(function_not_payable(msg_value));
     auto const valset = vars.valset_execution;
@@ -1021,8 +1015,7 @@ Result<byte_string> StakingContract::precompile_get_execution_valset(
 
 template <Traits traits>
 Result<byte_string> StakingContract::precompile_get_delegations(
-    byte_string_view input, evmc_address const &,
-    evmc_uint256be const &msg_value)
+    byte_string_view input, Address const &, uint256_be_t const &msg_value)
 {
     BOOST_OUTCOME_TRY(function_not_payable(msg_value));
 
@@ -1046,8 +1039,7 @@ EXPLICIT_MONAD_TRAITS_MEMBER(StakingContract::precompile_get_delegations);
 
 template <Traits traits>
 Result<byte_string> StakingContract::precompile_get_delegators(
-    byte_string_view input, evmc_address const &,
-    evmc_uint256be const &msg_value)
+    byte_string_view input, Address const &, uint256_be_t const &msg_value)
 {
     BOOST_OUTCOME_TRY(function_not_payable(msg_value));
 
@@ -1073,8 +1065,7 @@ Result<byte_string> StakingContract::precompile_get_delegators(
 EXPLICIT_MONAD_TRAITS_MEMBER(StakingContract::precompile_get_delegators);
 
 Result<byte_string> StakingContract::precompile_get_epoch(
-    byte_string_view const, evmc_address const &,
-    evmc_uint256be const &msg_value)
+    byte_string_view const, Address const &, uint256_be_t const &msg_value)
 {
     BOOST_OUTCOME_TRY(function_not_payable(msg_value));
 
@@ -1085,7 +1076,7 @@ Result<byte_string> StakingContract::precompile_get_epoch(
 }
 
 Result<byte_string> StakingContract::precompile_get_proposer_val_id(
-    byte_string_view, evmc_address const &, evmc_uint256be const &msg_value)
+    byte_string_view, Address const &, uint256_be_t const &msg_value)
 {
     BOOST_OUTCOME_TRY(function_not_payable(msg_value));
 
@@ -1095,8 +1086,7 @@ Result<byte_string> StakingContract::precompile_get_proposer_val_id(
 }
 
 Result<byte_string> StakingContract::precompile_get_withdrawal_request(
-    byte_string_view input, evmc_address const &,
-    evmc_uint256be const &msg_value)
+    byte_string_view input, Address const &, uint256_be_t const &msg_value)
 {
     BOOST_OUTCOME_TRY(function_not_payable(msg_value));
 
@@ -1118,15 +1108,14 @@ Result<byte_string> StakingContract::precompile_get_withdrawal_request(
 }
 
 Result<byte_string> StakingContract::precompile_fallback(
-    byte_string_view const, evmc_address const &, evmc_uint256be const &)
+    byte_string_view const, Address const &, uint256_be_t const &)
 {
     return StakingError::MethodNotSupported;
 }
 
 template <Traits traits>
 Result<byte_string> StakingContract::precompile_add_validator(
-    byte_string_view input, evmc_address const &,
-    evmc_uint256be const &msg_value)
+    byte_string_view input, Address const &, uint256_be_t const &msg_value)
 {
     constexpr size_t MESSAGE_SIZE = 33 /* compressed secp pubkey */ +
                                     48 /* compressed bls pubkey */ +
@@ -1161,19 +1150,19 @@ Result<byte_string> StakingContract::precompile_add_validator(
         unaligned_load<byte_string_fixed<48>>(consume_bytes(reader, 48).data());
     auto const auth_address =
         unaligned_load<Address>(consume_bytes(reader, sizeof(Address)).data());
-    auto const signed_stake = unaligned_load<evmc_uint256be>(
-        consume_bytes(reader, sizeof(evmc_uint256be)).data());
+    auto const signed_stake = unaligned_load<uint256_be_t>(
+        consume_bytes(reader, sizeof(uint256_be_t)).data());
     auto const commission =
         unaligned_load<u256_be>(consume_bytes(reader, sizeof(u256_be)).data());
 
     if (MONAD_UNLIKELY(
             0 !=
             memcmp(
-                signed_stake.bytes, msg_value.bytes, sizeof(evmc_uint256be)))) {
+                signed_stake.bytes, msg_value.bytes, sizeof(uint256_be_t)))) {
         return StakingError::InvalidInput;
     }
 
-    auto const stake = intx::be::load<uint256_t>(msg_value);
+    auto const stake = uint256_t::load_be(msg_value.bytes);
     if (MONAD_UNLIKELY(stake < limits::min_auth_address_stake())) {
         return StakingError::InsufficientStake;
     }
@@ -1334,14 +1323,14 @@ EXPLICIT_MONAD_TRAITS_MEMBER(StakingContract::delegate);
 
 template <Traits traits>
 Result<byte_string> StakingContract::precompile_delegate(
-    byte_string_view input, evmc_address const &msg_sender,
-    evmc_uint256be const &msg_value)
+    byte_string_view input, Address const &msg_sender,
+    uint256_be_t const &msg_value)
 {
     BOOST_OUTCOME_TRY(auto const val_id, abi_decode_fixed<u64_be>(input));
     if (MONAD_UNLIKELY(!input.empty())) {
         return StakingError::InvalidInput;
     }
-    auto const stake = intx::be::load<uint256_t>(msg_value);
+    auto const stake = uint256_t::load_be(msg_value.bytes);
 
     if (MONAD_LIKELY(stake != 0)) {
         BOOST_OUTCOME_TRY(delegate<traits>(val_id, stake, msg_sender));
@@ -1353,8 +1342,8 @@ EXPLICIT_MONAD_TRAITS_MEMBER(StakingContract::precompile_delegate);
 
 template <Traits traits>
 Result<byte_string> StakingContract::precompile_undelegate(
-    byte_string_view input, evmc_address const &msg_sender,
-    evmc_uint256be const &msg_value)
+    byte_string_view input, Address const &msg_sender,
+    uint256_be_t const &msg_value)
 {
     BOOST_OUTCOME_TRY(function_not_payable(msg_value));
 
@@ -1447,8 +1436,8 @@ EXPLICIT_MONAD_TRAITS_MEMBER(StakingContract::precompile_undelegate);
 // TODO: No compounds allowed if auth_address is under sufficent amount.
 template <Traits traits>
 Result<byte_string> StakingContract::precompile_compound(
-    byte_string_view input, evmc_address const &msg_sender,
-    evmc_uint256be const &msg_value)
+    byte_string_view input, Address const &msg_sender,
+    uint256_be_t const &msg_value)
 {
     BOOST_OUTCOME_TRY(function_not_payable(msg_value));
 
@@ -1478,8 +1467,8 @@ Result<byte_string> StakingContract::precompile_compound(
 EXPLICIT_MONAD_TRAITS_MEMBER(StakingContract::precompile_compound);
 
 Result<byte_string> StakingContract::precompile_withdraw(
-    byte_string_view input, evmc_address const &msg_sender,
-    evmc_uint256be const &msg_value)
+    byte_string_view input, Address const &msg_sender,
+    uint256_be_t const &msg_value)
 {
     BOOST_OUTCOME_TRY(function_not_payable(msg_value));
 
@@ -1527,8 +1516,8 @@ Result<byte_string> StakingContract::precompile_withdraw(
 }
 
 Result<byte_string> StakingContract::precompile_claim_rewards(
-    byte_string_view input, evmc_address const &msg_sender,
-    evmc_uint256be const &msg_value)
+    byte_string_view input, Address const &msg_sender,
+    uint256_be_t const &msg_value)
 {
     BOOST_OUTCOME_TRY(function_not_payable(msg_value));
 
@@ -1550,8 +1539,8 @@ Result<byte_string> StakingContract::precompile_claim_rewards(
 }
 
 Result<byte_string> StakingContract::precompile_change_commission(
-    byte_string_view input, evmc_address const &msg_sender,
-    evmc_uint256be const &msg_value)
+    byte_string_view input, Address const &msg_sender,
+    uint256_be_t const &msg_value)
 {
     BOOST_OUTCOME_TRY(function_not_payable(msg_value));
 
@@ -1586,10 +1575,10 @@ Result<byte_string> StakingContract::precompile_change_commission(
 }
 
 Result<byte_string> StakingContract::precompile_external_reward(
-    byte_string_view input, evmc_address const &sender,
-    evmc_uint256be const &msg_value)
+    byte_string_view input, Address const &sender,
+    uint256_be_t const &msg_value)
 {
-    auto const external_reward = intx::be::load<uint256_t>(msg_value);
+    auto const external_reward = uint256_t::load_be(msg_value.bytes);
     BOOST_OUTCOME_TRY(auto const val_id, abi_decode_fixed<u64_be>(input));
     if (MONAD_UNLIKELY(!input.empty())) {
         return StakingError::InvalidInput;
@@ -1741,7 +1730,7 @@ Result<void> StakingContract::syscall_reward(
 EXPLICIT_MONAD_TRAITS_MEMBER(StakingContract::syscall_reward);
 
 Result<void> StakingContract::syscall_snapshot(
-    byte_string_view const input, uint256_t const &value)
+    byte_string_view input, uint256_t const &value)
 {
     if (MONAD_UNLIKELY(value != 0)) {
         return StakingError::ValueNonZero;
@@ -1821,7 +1810,7 @@ Result<void> StakingContract::syscall_snapshot(
         std::min(candidates.size(), limits::active_valset_size());
     std::partial_sort(
         candidates.begin(),
-        candidates.begin() + static_cast<std::ptrdiff_t>(n),
+        candidates.begin() + static_cast<ptrdiff_t>(n),
         candidates.end(),
         cmp);
     for (uint64_t i = 0; i < n; ++i) {

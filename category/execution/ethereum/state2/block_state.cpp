@@ -13,12 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/core/address.hpp>
 #include <category/core/assert.h>
 #include <category/core/bytes.hpp>
 #include <category/core/config.hpp>
 #include <category/core/likely.h>
+#include <category/core/log.hpp>
 #include <category/execution/ethereum/core/account.hpp>
-#include <category/execution/ethereum/core/address.hpp>
 #include <category/execution/ethereum/core/block.hpp>
 #include <category/execution/ethereum/core/fmt/bytes_fmt.hpp> // NOLINT
 #include <category/execution/ethereum/core/receipt.hpp>
@@ -36,9 +37,6 @@
 #include <category/vm/vm.hpp>
 
 #include <ankerl/unordered_dense.h>
-
-#include <quill/Quill.h>
-#include <quill/bundled/fmt/format.h>
 
 #include <memory>
 #include <optional>
@@ -231,31 +229,26 @@ void BlockState::merge(State const &state)
             }
         }
         else {
+            if (it->second.account.first.has_value()) {
+                auto const [iter, inserted] =
+                    self_destruct_storage_reads_.try_emplace(address);
+                if (inserted) {
+                    for (auto const &kv : it->second.storage) {
+                        iter->second.insert(kv.first);
+                    }
+                }
+            }
             it->second.storage.clear();
         }
     }
 }
 
-void BlockState::commit(
-    bytes32_t const &block_id, BlockHeader const &header,
-    std::vector<Receipt> const &receipts,
-    std::vector<std::vector<CallFrame>> const &call_frames,
-    std::vector<Address> const &senders,
-    std::vector<Transaction> const &transactions,
-    std::vector<BlockHeader> const &ommers,
-    std::optional<std::vector<Withdrawal>> const &withdrawals)
+BlockState::ReleasedState BlockState::release() &&
 {
-    db_.commit(
+    return {
         std::move(state_),
-        code_,
-        block_id,
-        header,
-        receipts,
-        call_frames,
-        senders,
-        transactions,
-        ommers,
-        withdrawals);
+        std::move(code_),
+        std::move(self_destruct_storage_reads_)};
 }
 
 void BlockState::log_debug()

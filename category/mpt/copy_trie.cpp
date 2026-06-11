@@ -15,7 +15,6 @@
 
 #include <category/core/assert.h>
 #include <category/core/byte_string.hpp>
-#include <category/core/mem/allocators.hpp>
 #include <category/mpt/config.hpp>
 #include <category/mpt/nibbles_view.hpp>
 #include <category/mpt/node.hpp>
@@ -28,15 +27,16 @@
 #include <limits>
 #include <optional>
 #include <stack>
+#include <tuple>
 #include <utility>
 #include <vector>
 
 MONAD_MPT_NAMESPACE_BEGIN
 
 Node::SharedPtr create_node_add_new_branch(
-    UpdateAuxImpl &aux, Node *const node, unsigned char const new_branch,
+    UpdateAux &aux, Node *const node, unsigned char const new_branch,
     Node::SharedPtr new_child, uint64_t const new_version,
-    std::optional<byte_string_view> opt_value)
+    std::optional<byte_string_view> const opt_value)
 {
     uint16_t const mask =
         static_cast<uint16_t>(node->mask | (1u << new_branch));
@@ -47,12 +47,9 @@ Node::SharedPtr create_node_add_new_branch(
             child.branch = (unsigned char)i;
             child.ptr = std::move(new_child);
             child.subtrie_min_version = calc_min_version(*child.ptr);
-            if (aux.is_on_disk()) {
-                child.offset =
-                    async_write_node_set_spare(aux, *child.ptr, true);
-                child.min_offsets = calc_min_offsets(
-                    *child.ptr, aux.physical_to_virtual(child.offset));
-            }
+            child.offset = async_write_node_set_spare(aux, *child.ptr, true);
+            child.min_offsets = calc_min_offsets(
+                *child.ptr, aux.physical_to_virtual(child.offset));
             ++j;
         }
         else if (mask & bit) {
@@ -60,11 +57,9 @@ Node::SharedPtr create_node_add_new_branch(
             child.branch = (unsigned char)i;
             child.ptr = node->move_next(old_j);
             child.subtrie_min_version = node->subtrie_min_version(old_j);
-            if (aux.is_on_disk()) {
-                child.min_offsets = node->min_offsets(old_j);
-                child.offset = node->fnext(old_j);
-                MONAD_ASSERT(child.offset != INVALID_OFFSET);
-            }
+            child.min_offsets = node->min_offsets(old_j);
+            child.offset = node->fnext(old_j);
+            MONAD_ASSERT(child.offset != INVALID_OFFSET);
             ++old_j;
             ++j;
         }
@@ -79,9 +74,9 @@ Node::SharedPtr create_node_add_new_branch(
 }
 
 Node::SharedPtr create_node_with_two_children(
-    UpdateAuxImpl &aux, NibblesView const path, unsigned char const branch0,
+    UpdateAux &aux, NibblesView const path, unsigned char const branch0,
     Node::SharedPtr child0, unsigned char const branch1, Node::SharedPtr child1,
-    uint64_t const new_version, std::optional<byte_string_view> opt_value)
+    uint64_t const new_version, std::optional<byte_string_view> const opt_value)
 {
     // mismatch: split node's path: turn node to a branch node with two
     // children
@@ -94,20 +89,16 @@ Node::SharedPtr create_node_with_two_children(
         child.ptr = std::move(child0);
         child.subtrie_min_version = calc_min_version(*child.ptr);
         child.branch = branch0;
-        if (aux.is_on_disk()) {
-            child.offset = async_write_node_set_spare(aux, *child.ptr, true);
-            child.min_offsets = calc_min_offsets(*child.ptr);
-        }
+        child.offset = async_write_node_set_spare(aux, *child.ptr, true);
+        child.min_offsets = calc_min_offsets(*child.ptr);
     }
     {
         auto &child = children[zero_comes_first];
         child.ptr = std::move(child1);
         child.subtrie_min_version = calc_min_version(*child.ptr);
         child.branch = branch1;
-        if (aux.is_on_disk()) {
-            child.offset = async_write_node_set_spare(aux, *child.ptr, true);
-            child.min_offsets = calc_min_offsets(*child.ptr);
-        }
+        child.offset = async_write_node_set_spare(aux, *child.ptr, true);
+        child.min_offsets = calc_min_offsets(*child.ptr);
     }
     return make_node(
         mask,
@@ -119,12 +110,13 @@ Node::SharedPtr create_node_with_two_children(
 }
 
 Node::SharedPtr copy_trie_impl(
-    UpdateAuxImpl &aux, Node::SharedPtr src_root, NibblesView const src_prefix,
-    Node::SharedPtr dest_root, NibblesView const dest_prefix,
-    uint64_t const dest_version)
+    UpdateAux &aux, Node::SharedPtr const src_root,
+    NibblesView const src_prefix, Node::SharedPtr dest_root,
+    NibblesView const dest_prefix, uint64_t const dest_version)
 {
-    auto [src_cursor, res] =
-        find_blocking(aux, src_root, src_prefix, aux.db_history_max_version());
+    MONAD_ASSERT(aux.is_on_disk());
+    auto [src_cursor, res] = find_blocking(
+        aux, src_root, src_prefix, aux.metadata_ctx().db_history_max_version());
     MONAD_ASSERT(res == find_result::success);
     Node &src_node = *src_cursor.node;
     if (!dest_root) {
@@ -136,11 +128,9 @@ Node::SharedPtr copy_trie_impl(
         ChildData child{
             .ptr = std::move(new_node), .branch = dest_prefix.get(0)};
         child.subtrie_min_version = calc_min_version(*child.ptr);
-        if (aux.is_on_disk()) {
-            child.offset = async_write_node_set_spare(aux, *child.ptr, true);
-            child.min_offsets = calc_min_offsets(
-                *child.ptr, aux.physical_to_virtual(child.offset));
-        }
+        child.offset = async_write_node_set_spare(aux, *child.ptr, true);
+        child.min_offsets =
+            calc_min_offsets(*child.ptr, aux.physical_to_virtual(child.offset));
         return make_node(
             static_cast<uint16_t>(1u << child.branch),
             {&child, 1},
@@ -177,7 +167,7 @@ Node::SharedPtr copy_trie_impl(
                 ++node_prefix_index;
                 continue;
             }
-            MONAD_DEBUG_ASSERT(
+            MONAD_ASSERT(
                 prefix_index < std::numeric_limits<unsigned char>::max());
             auto const node_path = node->path_nibble_view();
             // copy children of src_node to under `dest` prefix, move the in
@@ -219,14 +209,13 @@ Node::SharedPtr copy_trie_impl(
             // there is a matched branch, go to next child
             parent = node.get();
             branch = nibble;
-            parents_and_indexes.emplace(std::make_pair(parent, index));
+            parents_and_indexes.emplace(parent, index);
             node = node->next(index);
             node_prefix_index = 0;
             ++prefix_index;
             continue;
         }
-        MONAD_DEBUG_ASSERT(
-            prefix_index < std::numeric_limits<unsigned char>::max());
+        MONAD_ASSERT(prefix_index < std::numeric_limits<unsigned char>::max());
         auto dest_node = make_node(
             src_node,
             dest_prefix.substr(static_cast<unsigned char>(prefix_index) + 1u),
@@ -262,7 +251,7 @@ Node::SharedPtr copy_trie_impl(
         auto const child_index = parent->to_child_index(branch);
         // reset child at `branch` to the new_node
         parent->set_next(child_index, std::move(new_node));
-        parents_and_indexes.emplace(std::make_pair(parent, child_index));
+        parents_and_indexes.emplace(parent, child_index);
         // serialize nodes of insert path up until root (excludes root)
         while (!parents_and_indexes.empty()) {
             auto const &[p, i] = parents_and_indexes.top();
@@ -278,10 +267,14 @@ Node::SharedPtr copy_trie_impl(
 }
 
 Node::SharedPtr copy_trie_to_dest(
-    UpdateAuxImpl &aux, Node::SharedPtr src_root, NibblesView const src_prefix,
+    UpdateAux &aux, Node::SharedPtr src_root, NibblesView const src_prefix,
     Node::SharedPtr dest_root, NibblesView const dest_prefix,
     uint64_t const dest_version, bool const write_root)
 {
+    MONAD_ASSERT(aux.is_on_disk());
+    auto const expected_compact_offset =
+        dest_root ? compact_offset_pair::deserialize(dest_root->value())
+                  : compact_offset_pair::deserialize(src_root->value());
     dest_root = copy_trie_impl(
         aux,
         std::move(src_root),
@@ -289,13 +282,15 @@ Node::SharedPtr copy_trie_to_dest(
         std::move(dest_root),
         dest_prefix,
         dest_version);
-    if (aux.is_on_disk() && write_root) {
+    if (write_root) {
         write_new_root_node(aux, *dest_root, dest_version);
-        MONAD_ASSERT(aux.db_history_max_version() >= dest_version);
+        MONAD_ASSERT(
+            aux.metadata_ctx().db_history_max_version() >= dest_version);
     }
-    if (aux.is_on_disk()) {
-        MONAD_ASSERT(dest_root->value_len == sizeof(uint32_t) * 2);
-    }
+    // invariant: copy_trie must preserve compaction offsets
+    MONAD_ASSERT(
+        compact_offset_pair::deserialize(dest_root->value()) ==
+        expected_compact_offset);
     return dest_root;
 }
 

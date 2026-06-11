@@ -15,8 +15,8 @@
 
 #pragma once
 
-#include <category/vm/core/assert.h>
-#include <category/vm/core/cases.hpp>
+#include <category/core/assert.h>
+#include <category/core/cases.hpp>
 #include <category/vm/evm/opcodes.hpp>
 #include <category/vm/evm/traits.hpp>
 #include <category/vm/utils/evm-as/builder.hpp>
@@ -52,10 +52,12 @@ namespace monad::vm::utils::evm_as::internal
     struct EvmDebugValidator
     {
 
-        explicit EvmDebugValidator(std::vector<ValidationError> &errors)
+        EvmDebugValidator(
+            std::vector<ValidationError> &errors, bool const allow_invalid)
             : errors(errors)
             , vstack_size(0)
             , pos(0)
+            , allow_invalid(allow_invalid)
         {
         }
 
@@ -151,6 +153,10 @@ namespace monad::vm::utils::evm_as::internal
 
         bool operator()(InvalidI const &invalid)
         {
+            if (allow_invalid) {
+                return true;
+            }
+
             if (invalid.has_name()) {
                 error(
                     pos, std::format("Invalid instruction '{}'", invalid.name));
@@ -186,7 +192,7 @@ namespace monad::vm::utils::evm_as::internal
             return true;
         }
 
-        void error(size_t pos, std::string &&msg)
+        void error(size_t const pos, std::string &&msg)
         {
             result = false;
             if constexpr (collect_errors) {
@@ -202,25 +208,36 @@ namespace monad::vm::utils::evm_as::internal
         size_t vstack_size = 0;
         size_t pos = 0;
         bool result = true;
+        bool allow_invalid = false;
     };
 
 }
 
 namespace monad::vm::utils::evm_as
 {
-    template <Traits traits>
-    bool
-    validate(EvmBuilder<traits> const &eb, std::vector<ValidationError> &errors)
+
+    struct validation_config
     {
-        internal::EvmDebugValidator<traits, true> v(errors);
+        bool const allow_invalid = false;
+    };
+
+    template <Traits traits>
+    bool validate(
+        EvmBuilder<traits> const &eb, std::vector<ValidationError> &errors,
+        validation_config const &config = {})
+    {
+        internal::EvmDebugValidator<traits, true> v(
+            errors, config.allow_invalid);
         return v.validate(eb);
     }
 
     template <Traits traits>
-    bool validate(EvmBuilder<traits> const &eb)
+    bool
+    validate(EvmBuilder<traits> const &eb, validation_config const &config = {})
     {
         std::vector<ValidationError> errors;
-        internal::EvmDebugValidator<traits, false> v(errors);
+        internal::EvmDebugValidator<traits, false> v(
+            errors, config.allow_invalid);
         return v.validate(eb);
     }
 }

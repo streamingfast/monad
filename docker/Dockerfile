@@ -32,11 +32,12 @@ COPY . src
 ARG CC
 ARG CXX
 ARG CMAKE_BUILD_TYPE
+ARG TOOLCHAIN
 ARG GIT_COMMIT_HASH
 
 ENV GIT_COMMIT_HASH=$GIT_COMMIT_HASH
 
-RUN cd src && CC=${CC:?} CXX=${CXX:?} CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE:?} CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" ASMFLAGS="-march=haswell" ./scripts/configure.sh
+RUN cd src && CC=${CC:?} CXX=${CXX:?} CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE:?} CMAKE_TOOLCHAIN_FILE=category/core/toolchains/${TOOLCHAIN:?}.cmake ./scripts/configure.sh
 
 # Clean up to save disk space before the heavy build
 RUN apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
@@ -44,7 +45,7 @@ RUN apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 RUN cd src && ./scripts/build.sh
 
 # security=insecure for tests which use io_uring
-# RUN --security=insecure cd src && if [ "${CMAKE_BUILD_TYPE:?}" != "Debug" ]; then CC=${CC:?} CXX=${CXX:?} CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE:?} ./scripts/test.sh; fi
+RUN --security=insecure cd src && CC=${CC:?} CXX=${CXX:?} CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE:?} ./scripts/test.sh
 
 FROM base AS build_and_test_vm
 
@@ -56,7 +57,7 @@ ARG CMAKE_BUILD_TYPE
 ARG TOOLCHAIN
 
 RUN cd src && CC=${CC:?} CXX=${CXX:?} CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE:?} CMAKE_TOOLCHAIN_FILE=category/core/toolchains/${TOOLCHAIN:?}.cmake ./scripts/configure.sh
-RUN cd src && cmake build -DMONAD_COMPILER_TESTING=On -DMONAD_COMPILER_LLVM=Off
+RUN cd src && cmake build -DMONAD_COMPILER_TESTING=On
 
 RUN cd src && ./scripts/vm/build-tests.sh
 RUN cd src && ./scripts/vm/test.sh
@@ -80,7 +81,6 @@ COPY . src
 
 RUN cd src && CMAKE_TOOLCHAIN_FILE=category/core/toolchains/gcc-avx2.cmake cmake -S . -B build           \
   -DMONAD_COMPILER_BENCHMARKS=On  \
-  -DMONAD_COMPILER_LLVM=Off       \
   -DMONAD_COMPILER_TESTING=On     \
   -DCMAKE_BUILD_TYPE=Debug        \
   -DCMAKE_C_COMPILER=clang-19     \
@@ -132,7 +132,6 @@ COPY . src
 RUN cd src && CMAKE_TOOLCHAIN_FILE=category/core/toolchains/gcc-avx2.cmake cmake -S . -B build \
   -GNinja \
   -DCMAKE_BUILD_TYPE=Release \
-  -DMONAD_COMPILER_LLVM=Off \
   -DMONAD_COMPILER_TESTING=On \
   -DCMAKE_C_COMPILER=clang-19 \
   -DCMAKE_CXX_COMPILER=clang++-19

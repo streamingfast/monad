@@ -15,10 +15,10 @@
 
 #pragma once
 
+#include <category/core/assert.h>
+#include <category/core/cases.hpp>
 #include <category/vm/compiler/ir/instruction.hpp>
 #include <category/vm/compiler/types.hpp>
-#include <category/vm/core/assert.h>
-#include <category/vm/core/cases.hpp>
 #include <category/vm/evm/opcodes.hpp>
 #include <category/vm/evm/traits.hpp>
 #include <category/vm/interpreter/intercode.hpp>
@@ -61,10 +61,10 @@ namespace monad::vm::compiler::basic_blocks
 
     struct JumpDest
     {
-        std::uint32_t pc;
+        uint32_t pc;
     };
 
-    constexpr OpCode evm_op_to_opcode(std::uint8_t op)
+    constexpr OpCode evm_op_to_opcode(uint8_t const op)
     {
         using enum OpCode;
 
@@ -91,7 +91,7 @@ namespace monad::vm::compiler::basic_blocks
      * Return true if this terminator can implicitly fall through to the next
      * block in sequence.
      */
-    constexpr bool is_fallthrough_terminator(Terminator t)
+    constexpr bool is_fallthrough_terminator(Terminator const t)
     {
         return t == Terminator::FallThrough || t == Terminator::JumpI;
     }
@@ -99,8 +99,7 @@ namespace monad::vm::compiler::basic_blocks
     /**
      * Base gas usage for a given terminator.
      */
-    template <Traits traits>
-    constexpr std::uint16_t terminator_static_gas(Terminator t)
+    inline constexpr uint16_t terminator_static_gas(Terminator const t)
     {
         using enum Terminator;
         switch (t) {
@@ -113,12 +112,7 @@ namespace monad::vm::compiler::basic_blocks
         case Jump:
             return 8;
         case SelfDestruct: {
-            if constexpr (traits::evm_rev() < EVMC_TANGERINE_WHISTLE) {
-                return 0;
-            }
-            else {
-                return 5000;
-            }
+            return 5000;
         }
         case Stop:
             return 0;
@@ -135,7 +129,7 @@ namespace monad::vm::compiler::basic_blocks
      * Return the number of input stack elements consumed by each block
      * terminator.
      */
-    constexpr std::size_t terminator_inputs(Terminator t)
+    constexpr size_t terminator_inputs(Terminator const t)
     {
         using enum Terminator;
         switch (t) {
@@ -195,8 +189,7 @@ namespace monad::vm::compiler::basic_blocks
          *   `JUMPI` instruction or an implicit fallthrough.
          */
         bool is_valid() const;
-        std::tuple<std::int32_t, std::int32_t, std::int32_t>
-        stack_deltas() const;
+        std::tuple<int32_t, int32_t, int32_t> stack_deltas() const;
     };
 
     bool operator==(Block const &a, Block const &b);
@@ -223,16 +216,16 @@ namespace monad::vm::compiler::basic_blocks
          */
         template <Traits traits = EvmTraits<EVMC_LATEST_STABLE_REVISION>>
         BasicBlocksIR(
-            std::uint8_t const *, interpreter::code_size_t,
+            uint8_t const *, interpreter::code_size_t,
             ChainMarker<traits> = {});
 
         template <Traits traits = EvmTraits<EVMC_LATEST_STABLE_REVISION>>
         [[gnu::always_inline]]
         static constexpr BasicBlocksIR unsafe_from(
-            std::initializer_list<std::uint8_t const> bytes,
+            std::initializer_list<uint8_t const> bytes,
             ChainMarker<traits> rm = {})
         {
-            MONAD_VM_ASSERT(bytes.size() <= *interpreter::code_size_t::max());
+            MONAD_ASSERT(bytes.size() <= *interpreter::code_size_t::max());
             return BasicBlocksIR(
                 std::data(bytes),
                 interpreter::code_size_t::unsafe_from(
@@ -242,10 +235,10 @@ namespace monad::vm::compiler::basic_blocks
 
         template <Traits traits = EvmTraits<EVMC_LATEST_STABLE_REVISION>>
         [[gnu::always_inline]]
-        static constexpr BasicBlocksIR unsafe_from(
-            std::span<std::uint8_t const> bytes, ChainMarker<traits> rm = {})
+        static constexpr BasicBlocksIR
+        unsafe_from(std::span<uint8_t const> bytes, ChainMarker<traits> rm = {})
         {
-            MONAD_VM_ASSERT(bytes.size() <= *interpreter::code_size_t::max());
+            MONAD_ASSERT(bytes.size() <= *interpreter::code_size_t::max());
             return BasicBlocksIR(
                 bytes.data(),
                 interpreter::code_size_t::unsafe_from(
@@ -275,7 +268,7 @@ namespace monad::vm::compiler::basic_blocks
         /**
          * Retrieve a block by its identifier.
          */
-        Block const &block(block_id id) const
+        Block const &block(block_id const id) const
         {
             return blocks_.at(id);
         }
@@ -303,8 +296,8 @@ namespace monad::vm::compiler::basic_blocks
 
     private:
         template <Traits traits>
-        static std::variant<Instruction, Terminator, JumpDest> scan_from(
-            std::span<std::uint8_t const> bytes, std::uint32_t &current_offset);
+        static std::variant<Instruction, Terminator, JumpDest>
+        scan_from(std::span<uint8_t const> bytes, uint32_t &current_offset);
 
         std::vector<Block> blocks_;
         std::unordered_map<byte_offset, block_id> jump_dests_;
@@ -332,7 +325,7 @@ namespace monad::vm::compiler::basic_blocks
          */
         void add_jump_dest()
         {
-            MONAD_VM_DEBUG_ASSERT(blocks_.back().instrs.empty());
+            MONAD_DEBUG_ASSERT(blocks_.back().instrs.empty());
             jump_dests_.emplace(curr_block_offset(), curr_block_id());
         }
 
@@ -363,9 +356,9 @@ namespace monad::vm::compiler::basic_blocks
 
     template <Traits traits>
     std::variant<Instruction, Terminator, JumpDest> BasicBlocksIR::scan_from(
-        std::span<std::uint8_t const> bytes, std::uint32_t &current_offset)
+        std::span<uint8_t const> bytes, uint32_t &current_offset)
     {
-        MONAD_VM_DEBUG_ASSERT(current_offset < bytes.size());
+        MONAD_DEBUG_ASSERT(current_offset < bytes.size());
 
         auto const opcode = bytes[current_offset];
         auto const opcode_offset = current_offset;
@@ -400,7 +393,7 @@ namespace monad::vm::compiler::basic_blocks
         uint256_t imm_value{0};
 
         if (imm_size > 0) {
-            imm_value = runtime::from_bytes(
+            imm_value = from_bytes(
                 imm_size,
                 bytes.size() - current_offset,
                 bytes.data() + current_offset);
@@ -419,26 +412,25 @@ namespace monad::vm::compiler::basic_blocks
             info.dynamic_gas);
     }
 
-    template <Traits traits>
-    int64_t block_base_gas(Block const &block)
+    inline int64_t block_base_gas(Block const &block)
     {
         int64_t base_gas = 0;
         for (auto const &instr : block.instrs) {
             base_gas += instr.static_gas_cost();
         }
         auto const term_gas =
-            basic_blocks::terminator_static_gas<traits>(block.terminator);
+            basic_blocks::terminator_static_gas(block.terminator);
         // This is also correct for fall through and invalid instruction:
         return base_gas + term_gas;
     }
 
     template <Traits traits>
     BasicBlocksIR::BasicBlocksIR(
-        std::uint8_t const *bytes, interpreter::code_size_t byte_count,
+        uint8_t const *bytes, interpreter::code_size_t byte_count,
         ChainMarker<traits>)
         : codesize(byte_count)
     {
-        using monad::vm::Cases;
+        using monad::Cases;
 
         enum class St
         {
@@ -450,7 +442,7 @@ namespace monad::vm::compiler::basic_blocks
 
         add_block(0);
 
-        auto current_offset = std::uint32_t{0};
+        auto current_offset = uint32_t{0};
         auto first = true;
 
         while (current_offset < *byte_count) {
@@ -470,11 +462,11 @@ namespace monad::vm::compiler::basic_blocks
                 }
             }
             else {
-                MONAD_VM_ASSERT(st == St::INSIDE_BLOCK);
+                MONAD_ASSERT(st == St::INSIDE_BLOCK);
 
                 auto handle_terminator = [&](Terminator t) {
                     using enum Terminator;
-                    MONAD_VM_ASSERT(t != FallThrough);
+                    MONAD_ASSERT(t != FallThrough);
 
                     if (t == JumpI) {
                         add_fallthrough_terminator(JumpI);

@@ -247,7 +247,7 @@ ReservedExecEvent<T> ExecutionEventRecorder::reserve_block_event(
     uint8_t *payload_buf;
     monad_event_descriptor *const event = monad_event_recorder_reserve(
         &exec_recorder_, payload_size, &seqno, &payload_buf);
-    MONAD_DEBUG_ASSERT(event != nullptr);
+    MONAD_ASSERT(event != nullptr);
     if constexpr (sizeof...(trailing_bufs) > 0) {
         // Copy the variable-length trailing buffers; GCC issues a false
         // positive warning about this memcpy that must be disabled
@@ -306,7 +306,7 @@ void ExecutionEventRecorder::commit(ReservedExecEvent<T> const &exec_event)
 }
 
 inline void ExecutionEventRecorder::record_block_marker_event(
-    monad_exec_event_type event_type)
+    monad_exec_event_type const event_type)
 {
     uint64_t seqno;
     uint8_t *payload_buf;
@@ -320,7 +320,7 @@ inline void ExecutionEventRecorder::record_block_marker_event(
 }
 
 inline void ExecutionEventRecorder::record_txn_marker_event(
-    monad_exec_event_type event_type, uint32_t txn_num)
+    monad_exec_event_type const event_type, uint32_t const txn_num)
 {
     uint64_t seqno;
     uint8_t *payload_buf;
@@ -346,15 +346,15 @@ extern std::unique_ptr<ExecutionEventRecorder> g_exec_event_recorder;
  * Helper free functions for execution event recording
  */
 
-inline void record_block_marker_event(monad_exec_event_type event_type)
+inline void record_block_marker_event(monad_exec_event_type const event_type)
 {
     if (auto *const e = g_exec_event_recorder.get()) {
         e->record_block_marker_event(event_type);
     }
 }
 
-inline void
-record_txn_marker_event(monad_exec_event_type event_type, uint32_t txn_num)
+inline void record_txn_marker_event(
+    monad_exec_event_type const event_type, uint32_t const txn_num)
 {
     if (auto *const e = g_exec_event_recorder.get()) {
         e->record_txn_marker_event(event_type, txn_num);

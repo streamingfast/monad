@@ -13,21 +13,58 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/core/address.hpp>
+#include <category/core/assert.h>
 #include <category/core/byte_string.hpp>
+#include <category/core/bytes.hpp>
 #include <category/core/fiber/priority_pool.hpp>
+#include <category/core/int.hpp>
+#include <category/core/keccak.hpp>
 #include <category/core/monad_exception.hpp>
+#include <category/core/result.hpp>
+#include <category/core/runtime/uint256.hpp>
 #include <category/execution/ethereum/block_hash_buffer.hpp>
+#include <category/execution/ethereum/chain/chain.hpp>
 #include <category/execution/ethereum/chain/ethereum_mainnet.hpp>
+#include <category/execution/ethereum/core/account.hpp>
 #include <category/execution/ethereum/core/rlp/block_rlp.hpp>
+#include <category/execution/ethereum/db/trie_db.hpp>
+#include <category/execution/ethereum/db/util.hpp>
 #include <category/execution/ethereum/execute_block.hpp>
+#include <category/execution/ethereum/metrics/block_metrics.hpp>
 #include <category/execution/ethereum/state2/block_state.hpp>
+#include <category/execution/ethereum/state2/state_deltas.hpp>
+#include <category/execution/ethereum/trace/call_frame.hpp>
+#include <category/execution/ethereum/trace/call_tracer.hpp>
 #include <category/execution/ethereum/trace/rlp/call_frame_rlp.hpp>
+#include <category/execution/ethereum/trace/state_tracer.hpp>
 #include <category/execution/monad/chain/monad_chain.hpp>
 #include <category/execution/monad/chain/monad_mainnet.hpp>
+#include <category/mpt/nibbles_view.hpp>
+#include <category/mpt/node.hpp>
 #include <category/mpt/traverse_util.hpp>
+#include <category/mpt/util.hpp>
+#include <category/vm/code.hpp>
+#include <category/vm/evm/monad/revision.h>
+#include <category/vm/vm.hpp>
 #include <monad/test/traits_test.hpp>
 
+#include <evmc/evmc.h>
+#include <evmc/evmc.hpp>
+
 #include <test_resource_data.h>
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <iterator>
+#include <limits>
+#include <memory>
+#include <numeric>
+#include <optional>
+#include <utility>
+#include <variant>
+#include <vector>
 
 using namespace monad;
 using namespace monad::test;
@@ -48,12 +85,28 @@ namespace
     auto const REFUND_TEST_CODE_HASH = to_bytes(keccak256(REFUND_TEST_CODE));
     auto const REFUND_TEST_ICODE = vm::make_shared_intercode(REFUND_TEST_CODE);
 
+    // EIP-7002/7251 system contract stub (just the STOP opcode).
+    // Deployed at the two predeploy addresses so that execute_block's
+    // process_requests path works for Prague+ traits.
+    auto const SYSTEM_STUB_CODE = 0x00_bytes;
+    auto const SYSTEM_STUB_CODE_HASH = to_bytes(keccak256(SYSTEM_STUB_CODE));
+    auto const SYSTEM_STUB_ICODE = vm::make_shared_intercode(SYSTEM_STUB_CODE);
+
+    constexpr auto WITHDRAWAL_REQUEST_ADDRESS =
+        0x00000961ef480eb55e80d19ad83579a64c007002_address;
+    constexpr auto CONSOLIDATION_REQUEST_ADDRESS =
+        0x0000bbddc7ce488642fb579f8b00f3a590007251_address;
+
+    // sha256("") - requests_hash when all system call outputs are empty.
+    constexpr auto EMPTY_REQUESTS_HASH =
+        0xe3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855_bytes32;
+
     ///////////////////////////////////////////
     // DB Getters
     ///////////////////////////////////////////
     std::vector<CallFrame> read_call_frame(
-        mpt::Node::SharedPtr root, mpt::Db &db, uint64_t const block_number,
-        uint64_t const txn_idx)
+        mpt::Node::SharedPtr const root, mpt::Db &db,
+        uint64_t const block_number, uint64_t const txn_idx)
     {
         using namespace mpt;
 
@@ -108,8 +161,6 @@ namespace
 // within the 250'000'000 gas limit in all revisions
 TYPED_TEST(TraitsTest, call_frames_stress_test)
 {
-    using intx::operator""_u256;
-    using intx::operator""_u128;
     using monad::literals::operator""_bytes;
 
     static constexpr auto from{
@@ -119,21 +170,19 @@ TYPED_TEST(TraitsTest, call_frames_stress_test)
     static constexpr auto ca{
         0xaaaf5374fce5edbc8e2a8697c15331677e6ebf0b_address};
 
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     db_t tdb{db};
 
     vm::VM vm;
 
     commit_sequential(
         tdb,
-        StateDeltas{
-            {from,
+        sd({{from,
              StateDelta{
                  .account =
                      {std::nullopt,
                       Account{
-                          .balance = 0xffffffffffffffffffffffffffffffff_u128,
+                          .balance = 0xffffffffffffffffffffffffffffffff_u256,
                           .code_hash = NULL_HASH,
                           .nonce = 0x0}}}},
             {to,
@@ -147,15 +196,37 @@ TYPED_TEST(TraitsTest, call_frames_stress_test)
              StateDelta{
                  .account =
                      {std::nullopt,
-                      Account{.balance = 0x1b58, .code_hash = NULL_HASH}}}}},
-        Code{{STRESS_TEST_CODE_HASH, STRESS_TEST_ICODE}},
+                      Account{.balance = 0x1b58, .code_hash = NULL_HASH}}}},
+            {WITHDRAWAL_REQUEST_ADDRESS,
+             StateDelta{
+                 .account =
+                     {std::nullopt,
+                      Account{
+                          .balance = 0, .code_hash = SYSTEM_STUB_CODE_HASH}}}},
+            {CONSOLIDATION_REQUEST_ADDRESS,
+             StateDelta{
+                 .account =
+                     {std::nullopt,
+                      Account{
+                          .balance = 0,
+                          .code_hash = SYSTEM_STUB_CODE_HASH}}}}}),
+        Code{
+            {STRESS_TEST_CODE_HASH, STRESS_TEST_ICODE},
+            {SYSTEM_STUB_CODE_HASH, SYSTEM_STUB_ICODE}},
         BlockHeader{.number = 0});
 
-    byte_string const block_rlp =
+    byte_string block_rlp =
         0xf90283f90219a0d2472bbb9c83b0e7615b791409c2efaccd5cb7d923741bbc44783bf0d063f5b6a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d4934794b94f5374fce5edbc8e2a8697c15331677e6ebf0ba0644bb1009c2332d1532062fe9c28cae87169ccaab2624aa0cfb4f0a0e59ac3aaa0cc2a2a77bb0d7a07b12d7e1d13b9f5dfff4f4bc53052b126e318f8b27b7ab8f9a027408083641cf20cfde86cd87cd57bf10c741d7553352ca96118e31ab8ceb9ceb901000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000080018433428f00840ee6b2808203e800a000000000000000000000000000000000000000000000000000000000000200008800000000000000000aa056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421f863f861800a840ee6b28094bbbf5374fce5edbc8e2a8697c15331677e6ebf0b0a801ba0462186579a4be0ad8a63224059a11693b4c0684b9939f6c2394d1fbe045275f2a059d73f99e037295a5f8c0e656acdb5c8b9acd28ec73c320c277df61f2e2d54f9c0c0_bytes;
     byte_string_view block_rlp_view{block_rlp};
-    auto const block = rlp::decode_block(block_rlp_view);
+    auto block = rlp::decode_block(block_rlp_view);
+    block.value().header.number =
+        constants::EARLIEST_SUPPORTED_ETH_BLOCK_NUMBER;
+    block_rlp = rlp::encode_block(block.value());
     ASSERT_TRUE(!block.has_error());
+
+    if constexpr (TestFixture::Trait::eip_7002_active()) {
+        block.value().header.requests_hash = EMPTY_REQUESTS_HASH;
+    }
 
     BlockHashBufferFinalized block_hash_buffer;
     block_hash_buffer.set(
@@ -238,15 +309,17 @@ TYPED_TEST(TraitsTest, call_frames_stress_test)
     auto const &transactions = block.value().transactions;
     BlockHeader const header{.number = 1};
     bytes32_t const block_id{header.number};
-    bs.commit(
+    auto [state, code, _] = std::move(bs).release();
+    commit_simple(
+        tdb,
+        std::move(state),
+        code,
         block_id,
         header,
         receipts.value(),
         call_frames,
         senders,
-        transactions,
-        {},
-        {});
+        transactions);
     tdb.finalize(1, block_id);
     tdb.set_block_and_prefix(1);
 
@@ -259,7 +332,6 @@ TYPED_TEST(TraitsTest, call_frames_stress_test)
 // This test is based on the test `TraitsTest.call_frames_stress_test`
 TYPED_TEST(TraitsTest, assertion_exception)
 {
-    using intx::operator""_u256;
     using monad::literals::operator""_bytes;
 
     static constexpr auto from{
@@ -267,16 +339,14 @@ TYPED_TEST(TraitsTest, assertion_exception)
     static constexpr auto to{
         0xbbbf5374fce5edbc8e2a8697c15331677e6ebf0b_address};
 
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     db_t tdb{db};
 
     vm::VM vm;
 
     commit_sequential(
         tdb,
-        StateDeltas{
-            {from,
+        sd({{from,
              StateDelta{
                  .account =
                      {std::nullopt,
@@ -290,15 +360,37 @@ TYPED_TEST(TraitsTest, assertion_exception)
                      {std::nullopt,
                       Account{
                           .balance = std::numeric_limits<uint256_t>::max(),
-                          .code_hash = STRESS_TEST_CODE_HASH}}}}},
-        Code{{STRESS_TEST_CODE_HASH, STRESS_TEST_ICODE}},
+                          .code_hash = STRESS_TEST_CODE_HASH}}}},
+            {WITHDRAWAL_REQUEST_ADDRESS,
+             StateDelta{
+                 .account =
+                     {std::nullopt,
+                      Account{
+                          .balance = 0, .code_hash = SYSTEM_STUB_CODE_HASH}}}},
+            {CONSOLIDATION_REQUEST_ADDRESS,
+             StateDelta{
+                 .account =
+                     {std::nullopt,
+                      Account{
+                          .balance = 0,
+                          .code_hash = SYSTEM_STUB_CODE_HASH}}}}}),
+        Code{
+            {STRESS_TEST_CODE_HASH, STRESS_TEST_ICODE},
+            {SYSTEM_STUB_CODE_HASH, SYSTEM_STUB_ICODE}},
         BlockHeader{.number = 0});
 
-    byte_string const block_rlp =
+    byte_string block_rlp =
         0xf90283f90219a0d2472bbb9c83b0e7615b791409c2efaccd5cb7d923741bbc44783bf0d063f5b6a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d4934794b94f5374fce5edbc8e2a8697c15331677e6ebf0ba0644bb1009c2332d1532062fe9c28cae87169ccaab2624aa0cfb4f0a0e59ac3aaa0cc2a2a77bb0d7a07b12d7e1d13b9f5dfff4f4bc53052b126e318f8b27b7ab8f9a027408083641cf20cfde86cd87cd57bf10c741d7553352ca96118e31ab8ceb9ceb901000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000080018433428f00840ee6b2808203e800a000000000000000000000000000000000000000000000000000000000000200008800000000000000000aa056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421f863f861800a840ee6b28094bbbf5374fce5edbc8e2a8697c15331677e6ebf0b0a801ba0462186579a4be0ad8a63224059a11693b4c0684b9939f6c2394d1fbe045275f2a059d73f99e037295a5f8c0e656acdb5c8b9acd28ec73c320c277df61f2e2d54f9c0c0_bytes;
     byte_string_view block_rlp_view{block_rlp};
     auto block = rlp::decode_block(block_rlp_view);
+    block.value().header.number =
+        constants::EARLIEST_SUPPORTED_ETH_BLOCK_NUMBER;
+    block_rlp = rlp::encode_block(block.value());
     ASSERT_TRUE(!block.has_error());
+
+    if constexpr (TestFixture::Trait::eip_7002_active()) {
+        block.value().header.requests_hash = EMPTY_REQUESTS_HASH;
+    }
 
     BlockHashBufferFinalized block_hash_buffer;
     block_hash_buffer.set(
@@ -378,7 +470,6 @@ TYPED_TEST(TraitsTest, assertion_exception)
 // https://github.com/ethereum/tests/blob/v10.0/BlockchainTests/GeneralStateTests/stRefundTest/refund50_1.json
 TYPED_TEST(TraitsTest, call_frames_refund)
 {
-    using intx::operator""_u256;
     using monad::literals::operator""_bytes;
 
     static constexpr auto from{
@@ -388,16 +479,14 @@ TYPED_TEST(TraitsTest, call_frames_refund)
     static constexpr auto ca{
         0x095e7baea6a6c7c4c2dfeb977efac326af552d87_address};
 
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     db_t tdb{db};
 
     vm::VM vm;
 
     commit_sequential(
         tdb,
-        StateDeltas{
-            {from,
+        sd({{from,
              StateDelta{
                  .account =
                      {std::nullopt,
@@ -425,16 +514,37 @@ TYPED_TEST(TraitsTest, call_frames_refund)
                       {bytes32_t{0x02}, {bytes32_t{}, bytes32_t{0x01}}},
                       {bytes32_t{0x03}, {bytes32_t{}, bytes32_t{0x01}}},
                       {bytes32_t{0x04}, {bytes32_t{}, bytes32_t{0x01}}},
-                      {bytes32_t{0x05}, {bytes32_t{}, bytes32_t{0x01}}}}}}},
-        Code{{REFUND_TEST_CODE_HASH, REFUND_TEST_ICODE}},
+                      {bytes32_t{0x05}, {bytes32_t{}, bytes32_t{0x01}}}}}},
+            {WITHDRAWAL_REQUEST_ADDRESS,
+             StateDelta{
+                 .account =
+                     {std::nullopt,
+                      Account{
+                          .balance = 0, .code_hash = SYSTEM_STUB_CODE_HASH}}}},
+            {CONSOLIDATION_REQUEST_ADDRESS,
+             StateDelta{
+                 .account =
+                     {std::nullopt,
+                      Account{
+                          .balance = 0,
+                          .code_hash = SYSTEM_STUB_CODE_HASH}}}}}),
+        Code{
+            {REFUND_TEST_CODE_HASH, REFUND_TEST_ICODE},
+            {SYSTEM_STUB_CODE_HASH, SYSTEM_STUB_ICODE}},
         BlockHeader{.number = 0});
 
-    byte_string const block_rlp =
+    byte_string block_rlp =
         0xf9025ff901f7a01e736f5755fc7023588f262b496b6cbc18aa9062d9c7a21b1c709f55ad66aad3a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347942adc25665018aa1fe0e6bc666dac8fc2697ff9baa096841c0823ec823fdb0b0b8ea019c8dd6691b9f335e0433d8cfe59146e8b884ca0f0f9b1e10ec75d9799e3a49da5baeeab089b431b0073fb05fa90035e830728b8a06c8ab36ec0629c97734e8ac823cdd8397de67efb76c7beb983be73dcd3c78141b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008302000001830f42408259e78203e800a00000000000000000000000000000000000000000000000000000000000000000880000000000000000f862f860800a830186a094095e7baea6a6c7c4c2dfeb977efac326af552d8780801ba0eac92a424c1599d71b1c116ad53800caa599233ea91907e639b7cb98fa0da3bba06be40f001771af85bfba5e6c4d579e038e6465af3f55e71b9490ab48fcfa5b1ec0_bytes;
     byte_string_view block_rlp_view{block_rlp};
     auto block = rlp::decode_block(block_rlp_view);
+    block.value().header.number =
+        constants::EARLIEST_SUPPORTED_ETH_BLOCK_NUMBER;
+    block_rlp = rlp::encode_block(block.value());
     ASSERT_TRUE(!block.has_error());
-    EXPECT_EQ(block.value().header.number, 1);
+
+    if constexpr (TestFixture::Trait::eip_7002_active()) {
+        block.value().header.requests_hash = EMPTY_REQUESTS_HASH;
+    }
 
     BlockHashBufferFinalized block_hash_buffer;
     block_hash_buffer.set(
@@ -517,15 +627,17 @@ TYPED_TEST(TraitsTest, call_frames_refund)
     auto const &transactions = block.value().transactions;
     BlockHeader const header = block.value().header;
     bytes32_t const block_id{header.number};
-    bs.commit(
+    auto [state, code, _] = std::move(bs).release();
+    commit_simple(
+        tdb,
+        std::move(state),
+        code,
         block_id,
         header,
         receipts.value(),
         call_frames,
         senders,
-        transactions,
-        {},
-        std::nullopt);
+        transactions);
     tdb.finalize(1, block_id);
     tdb.set_block_and_prefix(1);
 

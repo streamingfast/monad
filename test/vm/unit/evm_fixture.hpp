@@ -15,6 +15,7 @@
 
 #pragma once
 
+#include <category/core/address.hpp>
 #include <category/vm/evm/switch_traits.hpp>
 #include <category/vm/runtime/allocator.hpp>
 #include <category/vm/runtime/types.hpp>
@@ -103,7 +104,7 @@ namespace monad::vm::compiler::test
 
             host_.accounts[msg_.sender].balance =
                 std::numeric_limits<uint256_t>::max()
-                    .template store_be<evmc::bytes32>();
+                    .template store_be<bytes32_t>();
 
             msg_.gas = gas_limit;
             msg_.input_data = calldata.data();
@@ -142,7 +143,7 @@ namespace monad::vm::compiler::test
                         rt_ctx, icode);
             }
             else {
-                MONAD_VM_ASSERT(impl == Evmone);
+                MONAD_ASSERT(impl == Evmone);
                 evmc::VM const evmone_vm{evmc_create_evmone()};
 
                 result_ = evmc::Result{::evmone::baseline::execute(
@@ -234,8 +235,8 @@ namespace monad::vm::compiler::test
                 expected.output_data));
 
             ASSERT_EQ(
-                evmc::address(actual.create_address),
-                evmc::address(expected.create_address));
+                Address(actual.create_address),
+                Address(expected.create_address));
         }
 
         void execute_and_compare(

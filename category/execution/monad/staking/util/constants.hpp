@@ -15,7 +15,7 @@
 
 #pragma once
 
-#include <category/execution/ethereum/core/address.hpp>
+#include <category/core/address.hpp>
 #include <category/execution/ethereum/core/contract/big_endian.hpp>
 #include <category/execution/ethereum/core/contract/storage_variable.hpp>
 #include <category/execution/monad/staking/config.hpp>
@@ -27,11 +27,9 @@
 #include <optional>
 #include <span>
 
-#include <intx/intx.hpp>
-
 MONAD_STAKING_NAMESPACE_BEGIN
 
-using namespace intx::literals;
+using namespace monad::literals;
 
 // staking contract address
 inline constexpr Address STAKING_CA{0x1000};

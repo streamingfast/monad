@@ -13,22 +13,21 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/core/assert.h>
+#include <category/core/likely.h>
+#include <category/core/log.hpp>
 #include <category/vm/compiler/ir/basic_blocks.hpp>
 #include <category/vm/compiler/ir/instruction.hpp>
 #include <category/vm/compiler/ir/x86.hpp>
 #include <category/vm/compiler/ir/x86/emitter.hpp>
 #include <category/vm/compiler/ir/x86/types.hpp>
 #include <category/vm/compiler/types.hpp>
-#include <category/vm/core/assert.h>
 #include <category/vm/evm/explicit_traits.hpp>
 #include <category/vm/evm/traits.hpp>
 #include <category/vm/interpreter/intercode.hpp>
-#include <category/vm/runtime/bin.hpp>
 #include <category/vm/runtime/types.hpp>
 
 #include <asmjit/core/jitruntime.h>
-
-#include <quill/Quill.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -47,7 +46,8 @@ namespace
 
     template <Traits traits>
     void emit_instr(
-        Emitter &emit, Instruction const &instr, int64_t remaining_base_gas)
+        Emitter &emit, Instruction const &instr,
+        int64_t const remaining_base_gas)
     {
         static constexpr auto memory_version =
             traits::mip_3_active() ? runtime::Memory::Version::MIP3
@@ -280,7 +280,7 @@ namespace
                 emit.log4<traits>(remaining_base_gas);
                 break;
             default:
-                MONAD_VM_ASSERT(false);
+                MONAD_ABORT();
             }
             break;
         case Create:
@@ -306,10 +306,10 @@ namespace
 
     [[gnu::always_inline]]
     inline void require_code_size_in_bound(
-        Emitter &emit, native_code_size_t max_native_size)
+        Emitter &emit, native_code_size_t const max_native_size)
     {
         size_t const size_estimate = emit.estimate_size();
-        if (MONAD_VM_UNLIKELY(size_estimate > *max_native_size)) {
+        if (MONAD_UNLIKELY(size_estimate > *max_native_size)) {
             throw Nativecode::SizeEstimateOutOfBounds{size_estimate};
         }
     }
@@ -329,13 +329,12 @@ namespace
 
     template <Traits traits>
     void emit_instrs(
-        Emitter &emit, Block const &block, int64_t instr_gas,
-        native_code_size_t max_native_size, CompilerConfig const &config)
+        Emitter &emit, Block const &block, int64_t const instr_gas,
+        native_code_size_t const max_native_size, CompilerConfig const &config)
     {
         int64_t remaining_base_gas = instr_gas;
         for (auto const &instr : block.instrs) {
-            MONAD_VM_DEBUG_ASSERT(
-                remaining_base_gas >= instr.static_gas_cost());
+            MONAD_DEBUG_ASSERT(remaining_base_gas >= instr.static_gas_cost());
             remaining_base_gas -= instr.static_gas_cost();
             emit_instr<traits>(emit, instr, remaining_base_gas);
             require_code_size_in_bound(emit, max_native_size);
@@ -356,7 +355,7 @@ namespace
             emit.fallthrough();
             break;
         case JumpI:
-            MONAD_VM_DEBUG_ASSERT(block.fallthrough_dest != INVALID_BLOCK_ID);
+            MONAD_DEBUG_ASSERT(block.fallthrough_dest != INVALID_BLOCK_ID);
             emit.jumpi(ir.blocks()[block.fallthrough_dest]);
             break;
         case Jump:
@@ -382,7 +381,7 @@ namespace
 
     void emit_gas_decrement(
         Emitter &emit, BasicBlocksIR const &ir, Block const &block,
-        int64_t block_base_gas)
+        int64_t const block_base_gas)
     {
         if (ir.jump_dests().contains(block.offset)) {
             emit.gas_decrement_unbounded_work(block_base_gas + 1);
@@ -394,8 +393,8 @@ namespace
 
     template <Traits traits>
     std::shared_ptr<Nativecode> compile_contract(
-        asmjit::JitRuntime &rt, std::uint8_t const *contract_code,
-        code_size_t contract_code_size, CompilerConfig const &config)
+        asmjit::JitRuntime &rt, uint8_t const *contract_code,
+        code_size_t const contract_code_size, CompilerConfig const &config)
     {
         auto const ir =
             basic_blocks::make_ir<traits>(contract_code, contract_code_size);
@@ -407,8 +406,8 @@ namespace monad::vm::compiler::native
 {
     template <Traits traits>
     std::shared_ptr<Nativecode> compile(
-        asmjit::JitRuntime &rt, std::uint8_t const *contract_code,
-        code_size_t contract_code_size, CompilerConfig const &config)
+        asmjit::JitRuntime &rt, uint8_t const *contract_code,
+        code_size_t const contract_code_size, CompilerConfig const &config)
     {
         try {
             return ::compile_contract<traits>(
@@ -444,7 +443,7 @@ namespace monad::vm::compiler::native
         for (Block const &block : ir.blocks()) {
             bool const can_enter_block = emit.begin_new_block(block);
             if (can_enter_block) {
-                int64_t const base_gas = block_base_gas<traits>(block);
+                int64_t const base_gas = block_base_gas(block);
                 emit_gas_decrement(emit, ir, block, base_gas);
                 emit_instrs<traits>(
                     emit, block, base_gas, max_native_size, config);
@@ -454,7 +453,7 @@ namespace monad::vm::compiler::native
         }
         size_t const size_estimate = emit.estimate_size();
         auto entry = emit.finish_contract(rt);
-        MONAD_VM_DEBUG_ASSERT(size_estimate <= *max_native_size);
+        MONAD_DEBUG_ASSERT(size_estimate <= *max_native_size);
         return std::make_shared<Nativecode>(
             rt,
             traits::id(),

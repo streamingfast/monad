@@ -19,6 +19,7 @@
 #include <category/core/assert.h>
 #include <category/core/byte_string.hpp>
 #include <category/core/hex.hpp>
+#include <category/core/runtime/unaligned.hpp>
 #include <category/mpt/config.hpp>
 #include <category/mpt/nibbles_view.hpp>
 
@@ -45,7 +46,11 @@ using MONAD_ASYNC_NAMESPACE::round_up_align;
 static constexpr uint8_t INVALID_BRANCH = 255;
 static constexpr uint8_t INVALID_PATH_INDEX = 255;
 static constexpr uint64_t INVALID_BLOCK_NUM = uint64_t(-1);
-static constexpr uint64_t MIN_HISTORY_LENGTH = 257;
+// Floor for disk-pressure history shrinking. Execution requires 256 history
+// blocks for the block hash buffer, so this must exceed 256 by enough margin
+// that a node rewound to the last finalized block on restart still has
+// sufficient history and can avoid a full statesync.
+static constexpr uint64_t MIN_HISTORY_LENGTH = 300;
 
 static byte_string const empty_trie_hash = [] {
     using namespace ::monad::literals;
@@ -75,8 +80,9 @@ struct virtual_chunk_offset_t
     }
 
     constexpr virtual_chunk_offset_t(
-        uint32_t count_, file_offset_t offset_, file_offset_t is_fast_list_,
-        file_offset_t spare_ = MAX_SPARE)
+        uint32_t const count_, file_offset_t const offset_,
+        file_offset_t const is_fast_list_,
+        file_offset_t const spare_ = MAX_SPARE)
         : offset(offset_ & MAX_OFFSET)
         , count(count_ & MAX_COUNT)
         , spare{spare_ & MAX_SPARE}
@@ -134,7 +140,7 @@ static_assert(INVALID_VIRTUAL_OFFSET.in_fast_list());
 
 struct virtual_chunk_offset_t_hasher
 {
-    constexpr size_t operator()(virtual_chunk_offset_t v) const noexcept
+    constexpr size_t operator()(virtual_chunk_offset_t const v) const noexcept
     {
         return fnv1a_hash<file_offset_t>()(v.hasher_raw());
     }
@@ -167,7 +173,7 @@ public:
     }
 
     constexpr compact_virtual_chunk_offset_t(
-        prevent_public_construction_tag, uint32_t v)
+        prevent_public_construction_tag, uint32_t const v)
         : v_{v}
     {
     }
@@ -177,10 +183,10 @@ public:
         virtual_chunk_offset_t const offset)
         : v_{static_cast<uint32_t>(offset.raw() >> bits_to_truncate)}
     {
-        MONAD_DEBUG_ASSERT(offset != INVALID_VIRTUAL_OFFSET);
+        MONAD_ASSERT(offset != INVALID_VIRTUAL_OFFSET);
     }
 
-    void set_value(uint32_t v) noexcept
+    void set_value(uint32_t const v) noexcept
     {
         v_ = v;
     }
@@ -241,18 +247,21 @@ struct compact_offset_pair
     compact_virtual_chunk_offset_t slow{INVALID_COMPACT_VIRTUAL_OFFSET};
 
     // Returns true if either component is below the corresponding threshold
-    constexpr bool any_below(compact_offset_pair threshold) const noexcept
+    constexpr bool any_below(compact_offset_pair const threshold) const noexcept
     {
         return fast < threshold.fast || slow < threshold.slow;
     }
 
     // Returns true if the fast component is below the threshold
-    constexpr bool fast_below(compact_offset_pair threshold) const noexcept
+    constexpr bool
+    fast_below(compact_offset_pair const threshold) const noexcept
     {
         return fast < threshold.fast;
     }
 
     byte_string serialize() const;
+
+    static compact_offset_pair deserialize(byte_string_view bytes);
 
     constexpr bool
     operator==(compact_offset_pair const &) const noexcept = default;
@@ -264,7 +273,8 @@ static_assert(alignof(compact_offset_pair) == 4);
 inline constexpr unsigned
 bitmask_index(uint16_t const mask, unsigned const i) noexcept
 {
-    MONAD_DEBUG_ASSERT(i < 16);
+    MONAD_ASSERT(i < 16);
+    MONAD_ASSERT(mask & (1u << i));
     uint16_t const filter = UINT16_MAX >> (16 - i);
     return static_cast<unsigned>(
         std::popcount(static_cast<uint16_t>(mask & filter)));
@@ -305,8 +315,8 @@ inline UnsignedInteger deserialize_from_big_endian(NibblesView const in)
             "equal to sizeof output type\n");
     }
     UnsignedInteger out = 0;
-    UnsignedInteger bit =
-        static_cast<UnsignedInteger>(1UL << ((in.nibble_size() - 1) * 4));
+    UnsignedInteger bit = static_cast<UnsignedInteger>(
+        1UL << (std::max((in.nibble_size() - 1), 0) * 4));
     for (auto i = 0; i < in.nibble_size(); ++i, bit >>= 4) {
         out += static_cast<UnsignedInteger>(
             in.get(static_cast<unsigned char>(i)) * bit);
@@ -327,6 +337,19 @@ inline byte_string compact_offset_pair::serialize() const
 {
     return ::monad::mpt::serialize((uint32_t)fast) +
            ::monad::mpt::serialize((uint32_t)slow);
+}
+
+inline compact_offset_pair
+compact_offset_pair::deserialize(byte_string_view const bytes)
+{
+    MONAD_ASSERT(bytes.size() == 2 * sizeof(uint32_t));
+    compact_offset_pair offsets;
+    // copy size is implicitly part of the `unaligned_load` call
+    // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
+    offsets.fast.set_value(unaligned_load<uint32_t>(bytes.data()));
+    offsets.slow.set_value(
+        unaligned_load<uint32_t>(bytes.data() + sizeof(uint32_t)));
+    return offsets;
 }
 
 MONAD_MPT_NAMESPACE_END

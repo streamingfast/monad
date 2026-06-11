@@ -15,19 +15,29 @@
 
 #include "test_fixtures_gtest.hpp"
 
+#include <category/async/config.hpp>
 #include <category/async/io.hpp>
+#include <category/core/assert.h>
 #include <category/core/io/buffers.hpp>
 #include <category/core/io/ring.hpp>
+#include <category/core/keccak.h>
+#include <category/core/test_util/gtest_signal_stacktrace_printer.hpp> // NOLINT
+#include <category/mpt/config.hpp>
+#include <category/mpt/nibbles_view.hpp>
 #include <category/mpt/node.hpp>
+#include <category/mpt/test/test_fixtures_base.hpp>
 #include <category/mpt/traverse.hpp>
 #include <category/mpt/trie.hpp>
-
-#include <category/core/test_util/gtest_signal_stacktrace_printer.hpp> // NOLINT
+#include <category/mpt/util.hpp>
 
 #include <chrono>
 #include <condition_variable>
 #include <future>
+#include <iostream>
+#include <memory>
+#include <mutex>
 #include <ostream>
+#include <stop_token>
 #include <thread>
 
 using namespace MONAD_ASYNC_NAMESPACE;
@@ -39,7 +49,7 @@ namespace
     {
         Nibbles path{};
 
-        virtual bool down(unsigned char branch, Node const &node) override
+        virtual bool down(unsigned char const branch, Node const &node) override
         {
             if (branch == INVALID_BRANCH) {
                 return true;
@@ -52,7 +62,7 @@ namespace
             return true;
         }
 
-        virtual void up(unsigned char branch, Node const &node) override
+        virtual void up(unsigned char const branch, Node const &node) override
         {
             auto const path_view = NibblesView{path};
             auto const rem_size = [&] {
@@ -87,10 +97,11 @@ struct DbConcurrencyTest1
 TEST_F(DbConcurrencyTest1, version_outdated_during_blocking_find)
 {
     // Load root of most recent version
-    auto const latest_version = state()->aux.db_history_max_version();
+    auto const latest_version =
+        state()->aux.metadata_ctx().db_history_max_version();
     Node::SharedPtr root = read_node_blocking(
         state()->aux,
-        state()->aux.get_root_offset_at_version(latest_version),
+        state()->aux.metadata_ctx().get_root_offset_at_version(latest_version),
         latest_version);
     ASSERT_TRUE(root);
     auto const &key = state()->keys.front().first;
@@ -109,7 +120,7 @@ TEST_F(DbConcurrencyTest1, version_outdated_during_blocking_find)
         monad::io::Buffers rwbuf{monad::io::make_buffers_for_read_only(
             ring, 2, AsyncIO::MONAD_IO_BUFFERS_READ_SIZE)};
         AsyncIO io{pool, rwbuf};
-        monad::test::UpdateAux ro_aux{io};
+        monad::test::UpdateAux const ro_aux{io};
 
         int count = 0;
         while (!stop_token.stop_requested()) {
@@ -128,13 +139,13 @@ TEST_F(DbConcurrencyTest1, version_outdated_during_blocking_find)
             EXPECT_EQ(node_cursor.node->value(), value);
             ++count;
             if (count == 1) {
-                std::unique_lock g(lock);
+                std::unique_lock const g(lock);
                 cond.notify_one();
             }
         }
     };
 
-    std::jthread reader{find_loop};
+    std::jthread const reader{find_loop};
 
     // Erase the version when the first read finishes
     {
@@ -143,8 +154,10 @@ TEST_F(DbConcurrencyTest1, version_outdated_during_blocking_find)
     }
     // Erase the version being read should trigger a find failure and ends the
     // reader thread
-    state()->aux.update_root_offset(latest_version, INVALID_OFFSET);
-    EXPECT_FALSE(state()->aux.version_is_valid_ondisk(latest_version));
+    state()->aux.metadata_ctx().update_root_offset(
+        latest_version, INVALID_OFFSET);
+    EXPECT_FALSE(
+        state()->aux.metadata_ctx().version_is_valid_ondisk(latest_version));
 
     // Wait for completion with timeout
     auto const status = completion_future.wait_for(std::chrono::seconds(5));
@@ -167,10 +180,11 @@ struct DbConcurrencyTest2
 TEST_F(DbConcurrencyTest2, version_outdated_during_blocking_traverse)
 {
     // Load root of most recent version
-    auto const latest_version = state()->aux.db_history_max_version();
+    auto const latest_version =
+        state()->aux.metadata_ctx().db_history_max_version();
     Node::SharedPtr root = read_node_blocking(
         state()->aux,
-        state()->aux.get_root_offset_at_version(latest_version),
+        state()->aux.metadata_ctx().get_root_offset_at_version(latest_version),
         latest_version);
     ASSERT_TRUE(root);
 
@@ -202,21 +216,23 @@ TEST_F(DbConcurrencyTest2, version_outdated_during_blocking_traverse)
             }
             ++count;
             if (count == 1) {
-                std::unique_lock g(lock);
+                std::unique_lock const g(lock);
                 cond.notify_one();
             }
         }
     };
 
-    std::jthread reader{traverse_loop};
+    std::jthread const reader{traverse_loop};
     // Erase the version when the first traverse finishes
     {
         std::unique_lock g(lock);
         cond.wait(g);
     }
     // Erase the version being read should stop traverse in the reader thread
-    state()->aux.update_root_offset(latest_version, INVALID_OFFSET);
-    EXPECT_FALSE(state()->aux.version_is_valid_ondisk(latest_version));
+    state()->aux.metadata_ctx().update_root_offset(
+        latest_version, INVALID_OFFSET);
+    EXPECT_FALSE(
+        state()->aux.metadata_ctx().version_is_valid_ondisk(latest_version));
 
     // Wait for completion with timeout
     auto const status = completion_future.wait_for(std::chrono::seconds(5));

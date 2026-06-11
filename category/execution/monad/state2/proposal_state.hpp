@@ -15,13 +15,15 @@
 
 #pragma once
 
+#include <category/core/address.hpp>
 #include <category/core/config.hpp>
+#include <category/core/log.hpp>
+#include <category/execution/ethereum/core/fmt/bytes_fmt.hpp>
+#include <category/execution/ethereum/core/fmt/int_fmt.hpp>
 #include <category/execution/ethereum/state2/state_deltas.hpp>
 #include <category/vm/vm.hpp>
 
 #include <category/core/hex.hpp>
-
-#include <quill/Quill.h>
 
 #include <map>
 #include <memory>
@@ -115,25 +117,31 @@ class Proposals
     bytes32_t finalized_block_id_{};
 
 public:
-    bool try_read_account(
-        Address const &address, std::optional<Account> &result,
-        bool &truncated) const
+    struct TryReadResult
+    {
+        bool found;
+        bool truncated; // Whether the read result may be incomplete due to
+                        // proposal map truncation
+    };
+
+    TryReadResult try_read_account(
+        Address const &address, std::optional<Account> &result) const
     {
         auto const fn = [&address, &result](ProposalState const &ps) {
             return ps.try_read_account(address, result);
         };
-        return try_read(fn, truncated);
+        return try_read(fn);
     }
 
-    bool try_read_storage(
-        Address const &address, Incarnation incarnation, bytes32_t const &key,
-        bytes32_t &result, bool &truncated) const
+    TryReadResult try_read_storage(
+        Address const &address, Incarnation const incarnation,
+        bytes32_t const &key, bytes32_t &result) const
     {
         auto const fn =
             [&address, incarnation, &key, &result](ProposalState const &ps) {
                 return ps.try_read_storage(address, incarnation, key, result);
             };
-        return try_read(fn, truncated);
+        return try_read(fn);
     }
 
     void
@@ -187,46 +195,44 @@ public:
 
 private:
     template <class Func>
-    bool try_read(Func const try_read_fn, bool &truncated) const
+    TryReadResult try_read(Func const try_read_fn) const
     {
+        bool truncated = false;
         constexpr int DEPTH_LIMIT = 5;
         int depth = 1;
         bytes32_t block_id = block_id_;
         uint64_t block_number = block_;
+        if (block_id == finalized_block_id_ ||
+            (block_number == finalized_block_ && block_id == bytes32_t{})) {
+            return {false, truncated};
+        }
+        else if (block_number <= finalized_block_) {
+            truncated = true;
+            return {false, truncated};
+        }
         while (true) {
             if (block_id == finalized_block_id_) {
-                break;
+                // stop if reached last finalized without match in proposal map
+                return {false, truncated};
             }
-            MONAD_ASSERT_PRINTF(
-                block_number > finalized_block_,
-                "block_number %lu is not greater than last finalized block "
-                "%lu. block_id = %s, block_ %lu, block_id_ %s, "
-                "finalized_block_id_ = %s, depth = %d",
-                block_number,
-                finalized_block_,
-                to_hex(to_byte_string_view(block_id.bytes)).c_str(),
-                block_,
-                to_hex(to_byte_string_view(block_id_.bytes)).c_str(),
-                to_hex(to_byte_string_view(finalized_block_id_.bytes)).c_str(),
-                depth);
             auto const it =
                 proposal_map_.find(std::make_pair(block_number, block_id));
             if (it == proposal_map_.end()) {
                 truncated = true;
-                break;
+                return {false, truncated};
             }
             ProposalState const *ps = it->second.get();
             MONAD_ASSERT(ps);
             if (try_read_fn(*ps)) {
-                return true;
+                return {true, truncated};
             }
             if (++depth > DEPTH_LIMIT) {
                 truncated = true;
-                break;
+                return {false, truncated};
             }
             std::tie(block_number, block_id) = ps->parent_info();
         }
-        return false;
+        MONAD_ABORT("unreachable, all loop iterations return explicitly.");
     }
 
     void truncate_proposal_map()

@@ -44,9 +44,6 @@ target_sources(monad-vm-interpreter PRIVATE
 
 monad_compile_options(monad-vm-interpreter)
 
-# Use -Og for debug build to reduce stack usage.
-target_compile_options(monad-vm-interpreter PRIVATE $<$<CONFIG:Debug>:-Og>)
-
 # This is a workaround for a change made to LLVM between versions 18 and 19:
 # https://github.com/llvm/llvm-project/pull/78582
 #
@@ -76,12 +73,10 @@ target_include_directories(monad-vm-interpreter
 )
 
 target_link_libraries(monad-vm-interpreter
-    PUBLIC intx::intx
     PUBLIC evmc::evmc
     PUBLIC monad-vm::monad-vm-evm
     PUBLIC monad-vm::monad-vm-runtime
     PUBLIC monad-vm::monad-vm-utils
-    PRIVATE monad-vm::monad-vm-core
 )
 
 add_library(monad-vm::monad-vm-interpreter ALIAS monad-vm-interpreter)

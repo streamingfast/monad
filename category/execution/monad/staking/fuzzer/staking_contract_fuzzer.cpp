@@ -27,7 +27,7 @@ using namespace monad;
 using namespace monad::staking;
 using namespace monad::staking::test;
 using namespace monad::staking::test::fuzzing;
-using namespace evmc::literals;
+using namespace monad::literals;
 
 template <Traits traits>
 using Transition = StakingContractMachine<traits>::Transition;
@@ -131,7 +131,7 @@ namespace
     }
 }
 
-int main(int argc, char **argv)
+int main(int const argc, char **const argv)
 {
     auto const args = parse_args(argc, argv);
 

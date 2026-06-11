@@ -13,50 +13,60 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/core/address.hpp>
+#include <category/core/assert.h>
+#include <category/core/byte_string.hpp>
+#include <category/core/bytes.hpp>
 #include <category/core/hex.hpp>
 #include <category/core/int.hpp>
+#include <category/core/keccak.hpp>
 #include <category/execution/ethereum/block_hash_buffer.hpp>
-#include <category/execution/ethereum/core/address.hpp>
-#include <category/execution/ethereum/core/contract/abi_encode.hpp>
+#include <category/execution/ethereum/chain/chain.hpp>
 #include <category/execution/ethereum/core/contract/abi_signatures.hpp>
+#include <category/execution/ethereum/core/contract/big_endian.hpp>
+#include <category/execution/ethereum/core/transaction.hpp>
 #include <category/execution/ethereum/db/trie_db.hpp>
 #include <category/execution/ethereum/db/util.hpp>
 #include <category/execution/ethereum/evmc_host.hpp>
 #include <category/execution/ethereum/execute_transaction.hpp>
-#include <category/execution/ethereum/metrics/block_metrics.hpp>
+#include <category/execution/ethereum/reserve_balance.hpp>
 #include <category/execution/ethereum/state2/block_state.hpp>
 #include <category/execution/ethereum/state3/state.hpp>
 #include <category/execution/ethereum/trace/call_tracer.hpp>
 #include <category/execution/ethereum/trace/state_tracer.hpp>
 #include <category/execution/ethereum/tx_context.hpp>
 #include <category/execution/monad/chain/monad_chain.hpp>
-#include <category/execution/monad/chain/monad_devnet.hpp>
-#include <category/execution/monad/chain/monad_mainnet.hpp>
 #include <category/execution/monad/monad_precompiles.hpp>
 #include <category/execution/monad/reserve_balance.h>
 #include <category/execution/monad/reserve_balance.hpp>
 #include <category/execution/monad/reserve_balance/reserve_balance_contract.hpp>
 #include <category/vm/code.hpp>
-#include <category/vm/compiler.hpp>
-#include <category/vm/compiler/types.hpp>
 #include <category/vm/evm/explicit_traits.hpp>
+#include <category/vm/evm/monad/revision.h>
 #include <category/vm/evm/opcodes.hpp>
 #include <category/vm/evm/traits.hpp>
-#include <category/vm/runtime/bin.hpp>
-#include <category/vm/utils/evm-as.hpp>
 #include <category/vm/vm.hpp>
 
 #include <monad/test/traits_test.hpp>
 #include <test/vm/utils/test_message.hpp>
 
 #include <ankerl/unordered_dense.h>
+#include <evmc/bytes.hpp>
+#include <evmc/evmc.h>
 #include <evmc/evmc.hpp>
-#include <intx/intx.hpp>
 
 #include <gtest/gtest.h>
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
-#include <limits>
+#include <format>
+#include <initializer_list>
+#include <memory>
+#include <optional>
+#include <span>
+#include <utility>
+#include <vector>
 
 using namespace monad;
 using namespace monad::vm;
@@ -75,9 +85,8 @@ struct ReserveBalanceTest : public ::testing::Test
     static constexpr auto account_b = Address{0xcafebabe};
     static constexpr auto account_c = Address{0xabbaabba};
 
-    OnDiskMachine machine;
     vm::VM vm;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<OnDiskMachine>()};
     TrieDb tdb{db};
     BlockState bs{tdb, vm};
     State state{bs, Incarnation{0, 0}};
@@ -107,8 +116,10 @@ struct ReserveBalanceEvm : public ReserveBalanceTest
         senders,
         authorities};
 
+    trace::StateTracer noop_state_tracer = std::monostate{};
     EvmcHost<MonadTraits<MONAD_NEXT>> h{
         call_tracer,
+        noop_state_tracer,
         EMPTY_TX_CONTEXT,
         block_hash_buffer,
         state,
@@ -163,7 +174,7 @@ void add_revert_check(std::vector<uint8_t> &code)
 {
     u32_be selector = abi_encode_selector("dippedIntoReserve()");
     auto const *s = selector.bytes;
-    auto const *a = intx::as_bytes(RESERVE_BALANCE_CA);
+    auto const *a = as_bytes(RESERVE_BALANCE_CA);
     code.append_range(std::initializer_list<uint8_t>{
         PUSH32, s[0],  s[1],  s[2],  s[3],  0,     0,     0,     0,
         0,      0,     0,     0,     0,     0,     0,     0,     0,
@@ -203,7 +214,7 @@ void add_revert_check(std::vector<uint8_t> &code)
 void add_spend_code(uint64_t const value_mon, std::vector<uint8_t> &code)
 {
     uint256_t const value = uint256_t{value_mon} * 1000000000000000000ULL;
-    auto const *v = intx::as_bytes(value);
+    auto const *v = as_bytes(value);
     code.append_range(std::initializer_list<uint8_t>{
         PUSH0, PUSH0, PUSH0, PUSH0, PUSH32, v[31], v[30], v[29], v[28], v[27],
         v[26], v[25], v[24], v[23], v[22],  v[21], v[20], v[19], v[18], v[17],
@@ -213,10 +224,10 @@ void add_spend_code(uint64_t const value_mon, std::vector<uint8_t> &code)
 }
 
 void add_call_code(
-    uint256_t const &gas_fee, Address target, std::vector<uint8_t> &code)
+    uint256_t const &gas_fee, Address const target, std::vector<uint8_t> &code)
 {
-    auto const *v = intx::as_bytes(target);
-    auto const *g = intx::as_bytes(gas_fee);
+    auto const *v = as_bytes(target);
+    auto const *g = as_bytes(gas_fee);
     code.append_range(std::initializer_list<uint8_t>{
         PUSH0, PUSH0, PUSH0, PUSH0, PUSH0, PUSH20, v[0],   v[1],  v[2],  v[3],
         v[4],  v[5],  v[6],  v[7],  v[8],  v[9],   v[10],  v[11], v[12], v[13],
@@ -241,8 +252,7 @@ void run_dipped_into_reserve_test(
     static constexpr Address EOA{0xaaaaaaaa};
     static constexpr Address SCW{0xcccccccc};
 
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
     BlockState bs{tdb, vm};
@@ -315,9 +325,11 @@ void run_dipped_into_reserve_test(
 
     {
         State state{bs, Incarnation{1, 1}};
+        trace::StateTracer noop_state_tracer = std::monostate{};
 
         EvmcHost<traits> host{
             call_tracer,
+            noop_state_tracer,
             tx_context,
             block_hash_buffer,
             state,
@@ -574,9 +586,8 @@ struct MonadPrecompileTest : public ::MonadTraitsTest<MonadRevisionT>
 {
     static constexpr auto account_a = Address{0xdeadbeef};
 
-    OnDiskMachine machine;
     vm::VM vm;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<OnDiskMachine>()};
     TrieDb tdb{db};
     BlockState bs{tdb, vm};
     State state{bs, Incarnation{0, 0}};
@@ -602,8 +613,10 @@ struct MonadPrecompileTest : public ::MonadTraitsTest<MonadRevisionT>
         senders,
         authorities};
 
+    trace::StateTracer noop_state_tracer = std::monostate{};
     EvmcHost<MonadTraits<MONAD_NEXT>> h{
         call_tracer,
+        noop_state_tracer,
         EMPTY_TX_CONTEXT,
         block_hash_buffer,
         state,
@@ -692,8 +705,8 @@ TYPED_TEST(
                     }
                     msg.flags = flags;
 
-                    for (evmc_uint256be const value :
-                         std::initializer_list<evmc_uint256be>{
+                    for (uint256_be_t const value :
+                         std::initializer_list<uint256_be_t>{
                              0x00_bytes32, 0x01_bytes32}) {
                         msg.value = value;
 
@@ -716,8 +729,8 @@ TYPED_TEST(
         evmc_message msg = make_msg();
         msg.gas = 99;
 
-        for (evmc_uint256be const value : std::initializer_list<evmc_uint256be>{
-                 0x00_bytes32, 0x01_bytes32}) {
+        for (uint256_be_t const value :
+             std::initializer_list<uint256_be_t>{0x00_bytes32, 0x01_bytes32}) {
             msg.value = value;
 
             for (auto const &calldata_variant : calldata_variants) {
@@ -749,8 +762,7 @@ TYPED_TEST(
             msg.input_data = data;
             msg.input_size = size;
 
-            for (evmc_uint256be const value :
-                 std::initializer_list<evmc_uint256be>{
+            for (uint256_be_t const value : std::initializer_list<uint256_be_t>{
                      0x00_bytes32, 0x01_bytes32}) {
                 msg.value = value;
 
@@ -772,8 +784,8 @@ TYPED_TEST(
             {wrong_too_long.data(), wrong_too_long.size()},
         };
 
-        for (evmc_uint256be const value : std::initializer_list<evmc_uint256be>{
-                 0x00_bytes32, 0x01_bytes32}) {
+        for (uint256_be_t const value :
+             std::initializer_list<uint256_be_t>{0x00_bytes32, 0x01_bytes32}) {
             msg.value = value;
 
             for (auto const &[data, size] : wrong_calldata) {

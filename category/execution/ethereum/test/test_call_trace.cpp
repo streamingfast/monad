@@ -13,37 +13,49 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/core/address.hpp>
 #include <category/core/byte_string.hpp>
+#include <category/core/bytes.hpp>
 #include <category/core/hex.hpp>
 #include <category/core/int.hpp>
+#include <category/core/keccak.hpp>
 #include <category/execution/ethereum/block_hash_buffer.hpp>
+#include <category/execution/ethereum/chain/chain.hpp>
 #include <category/execution/ethereum/chain/ethereum_mainnet.hpp>
 #include <category/execution/ethereum/core/account.hpp>
-#include <category/execution/ethereum/core/address.hpp>
 #include <category/execution/ethereum/core/contract/abi_encode.hpp>
 #include <category/execution/ethereum/core/contract/abi_signatures.hpp>
 #include <category/execution/ethereum/db/trie_db.hpp>
+#include <category/execution/ethereum/db/util.hpp>
 #include <category/execution/ethereum/evmc_host.hpp>
 #include <category/execution/ethereum/execute_transaction.hpp>
 #include <category/execution/ethereum/state2/block_state.hpp>
+#include <category/execution/ethereum/state2/state_deltas.hpp>
 #include <category/execution/ethereum/state3/state.hpp>
+#include <category/execution/ethereum/trace/call_frame.hpp>
 #include <category/execution/ethereum/trace/call_tracer.hpp>
+#include <category/execution/ethereum/types/incarnation.hpp>
 #include <category/execution/monad/chain/monad_chain.hpp>
+#include <category/vm/code.hpp>
 #include <category/vm/utils/evm-as.hpp>
+#include <category/vm/vm.hpp>
 #include <monad/test/traits_test.hpp>
 
 #include <evmc/evmc.h>
 #include <evmc/evmc.hpp>
 
-#include <gtest/gtest.h>
-
-#include <intx/intx.hpp>
-
 #include <nlohmann/json.hpp>
+
+#include <gtest/gtest.h>
 
 #include <test_resource_data.h>
 
+#include <cstdint>
+#include <limits>
 #include <optional>
+#include <span>
+#include <utility>
+#include <vector>
 
 using namespace monad;
 using namespace monad::literals;
@@ -115,15 +127,13 @@ TEST(CallTrace, enter_and_exit)
 
 TYPED_TEST(TraitsTest, execute_success)
 {
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ADDR_A,
+        sd({{ADDR_A,
              StateDelta{
                  .account =
                      {std::nullopt,
@@ -135,7 +145,7 @@ TYPED_TEST(TraitsTest, execute_success)
              StateDelta{
                  .account =
                      {std::nullopt,
-                      Account{.balance = 0, .code_hash = NULL_HASH}}}}},
+                      Account{.balance = 0, .code_hash = NULL_HASH}}}}}),
         Code{},
         BlockHeader{});
 
@@ -161,8 +171,17 @@ TYPED_TEST(TraitsTest, execute_success)
         ChainContext<typename TestFixture::Trait>::debug_empty();
     constexpr std::span<std::optional<Address> const> authorities_empty{};
     uint256_t base_fee{0};
+    trace::StateTracer noop_state_tracer = std::monostate{};
     EvmcHost<typename TestFixture::Trait> host{
-        call_tracer, tx_context, buffer, s, tx, base_fee, 0, chain_ctx};
+        call_tracer,
+        noop_state_tracer,
+        tx_context,
+        buffer,
+        s,
+        tx,
+        base_fee,
+        0,
+        chain_ctx};
 
     auto const result =
         ExecuteTransactionNoValidation<typename TestFixture::Trait>(
@@ -192,15 +211,13 @@ TYPED_TEST(TraitsTest, execute_success)
 
 TYPED_TEST(TraitsTest, execute_reverted_insufficient_balance)
 {
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ADDR_A,
+        sd({{ADDR_A,
              StateDelta{
                  .account =
                      {std::nullopt,
@@ -212,7 +229,7 @@ TYPED_TEST(TraitsTest, execute_reverted_insufficient_balance)
              StateDelta{
                  .account =
                      {std::nullopt,
-                      Account{.balance = 0, .code_hash = NULL_HASH}}}}},
+                      Account{.balance = 0, .code_hash = NULL_HASH}}}}}),
         Code{},
         BlockHeader{});
 
@@ -238,8 +255,17 @@ TYPED_TEST(TraitsTest, execute_reverted_insufficient_balance)
         ChainContext<typename TestFixture::Trait>::debug_empty();
     constexpr std::span<std::optional<Address> const> authorities_empty{};
     uint256_t base_fee{0};
+    trace::StateTracer noop_state_tracer = std::monostate{};
     EvmcHost<typename TestFixture::Trait> host{
-        call_tracer, tx_context, buffer, s, tx, base_fee, 0, chain_ctx};
+        call_tracer,
+        noop_state_tracer,
+        tx_context,
+        buffer,
+        s,
+        tx,
+        base_fee,
+        0,
+        chain_ctx};
 
     auto const result =
         ExecuteTransactionNoValidation<typename TestFixture::Trait>(
@@ -269,8 +295,7 @@ TYPED_TEST(TraitsTest, execute_reverted_insufficient_balance)
 
 TYPED_TEST(TraitsTest, create_call_trace)
 {
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
@@ -281,8 +306,7 @@ TYPED_TEST(TraitsTest, create_call_trace)
 
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ADDR_A,
+        sd({{ADDR_A,
              StateDelta{
                  .account =
                      {std::nullopt,
@@ -292,7 +316,7 @@ TYPED_TEST(TraitsTest, create_call_trace)
              StateDelta{
                  .account =
                      {std::nullopt,
-                      Account{.balance = 0, .code_hash = code_hash}}}}},
+                      Account{.balance = 0, .code_hash = code_hash}}}}}),
         Code{
             {code_hash, icode},
         },
@@ -320,8 +344,17 @@ TYPED_TEST(TraitsTest, create_call_trace)
         ChainContext<typename TestFixture::Trait>::debug_empty();
     constexpr std::span<std::optional<Address> const> authorities_empty{};
     uint256_t base_fee{0};
+    trace::StateTracer noop_state_tracer = std::monostate{};
     EvmcHost<typename TestFixture::Trait> host{
-        call_tracer, tx_context, buffer, s, tx, base_fee, 0, chain_ctx};
+        call_tracer,
+        noop_state_tracer,
+        tx_context,
+        buffer,
+        s,
+        tx,
+        base_fee,
+        0,
+        chain_ctx};
 
     auto const result =
         ExecuteTransactionNoValidation<typename TestFixture::Trait>(
@@ -362,8 +395,7 @@ TYPED_TEST(TraitsTest, create_call_trace)
 
 TYPED_TEST(TraitsTest, selfdestruct_logs)
 {
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
@@ -396,8 +428,7 @@ TYPED_TEST(TraitsTest, selfdestruct_logs)
 
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ADDR_A,
+        sd({{ADDR_A,
              StateDelta{
                  .account =
                      {std::nullopt,
@@ -407,7 +438,7 @@ TYPED_TEST(TraitsTest, selfdestruct_logs)
              StateDelta{
                  .account =
                      {std::nullopt,
-                      Account{.balance = 1000u, .code_hash = code_hash}}}}},
+                      Account{.balance = 1000u, .code_hash = code_hash}}}}}),
         Code{
             {code_hash, icode},
         },
@@ -436,8 +467,17 @@ TYPED_TEST(TraitsTest, selfdestruct_logs)
         ChainContext<typename TestFixture::Trait>::debug_empty();
     constexpr std::span<std::optional<Address> const> authorities_empty{};
     uint256_t base_fee{0};
+    trace::StateTracer noop_state_tracer = std::monostate{};
     EvmcHost<typename TestFixture::Trait> host{
-        call_tracer, tx_context, buffer, s, tx, base_fee, 0, chain_ctx};
+        call_tracer,
+        noop_state_tracer,
+        tx_context,
+        buffer,
+        s,
+        tx,
+        base_fee,
+        0,
+        chain_ctx};
 
     auto const result =
         ExecuteTransactionNoValidation<typename TestFixture::Trait>(
@@ -464,8 +504,7 @@ TYPED_TEST(TraitsTest, selfdestruct_logs)
 
 TYPED_TEST(TraitsTest, selfdestruct_logs_value)
 {
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
@@ -477,8 +516,7 @@ TYPED_TEST(TraitsTest, selfdestruct_logs_value)
 
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ADDR_C,
+        sd({{ADDR_C,
              StateDelta{
                  .account =
                      {std::nullopt,
@@ -488,7 +526,7 @@ TYPED_TEST(TraitsTest, selfdestruct_logs_value)
              StateDelta{
                  .account =
                      {std::nullopt,
-                      Account{.balance = 1000u, .code_hash = code_hash}}}}},
+                      Account{.balance = 1000u, .code_hash = code_hash}}}}}),
         Code{
             {code_hash, icode},
         },
@@ -516,8 +554,17 @@ TYPED_TEST(TraitsTest, selfdestruct_logs_value)
         ChainContext<typename TestFixture::Trait>::debug_empty();
     constexpr std::span<std::optional<Address> const> authorities_empty{};
     uint256_t base_fee{0};
+    trace::StateTracer noop_state_tracer = std::monostate{};
     EvmcHost<typename TestFixture::Trait> host{
-        call_tracer, tx_context, buffer, s, tx, base_fee, 0, chain_ctx};
+        call_tracer,
+        noop_state_tracer,
+        tx_context,
+        buffer,
+        s,
+        tx,
+        base_fee,
+        0,
+        chain_ctx};
 
     auto const result =
         ExecuteTransactionNoValidation<typename TestFixture::Trait>(
@@ -556,8 +603,7 @@ TYPED_TEST(TraitsTest, selfdestruct_logs_value)
 //
 TYPED_TEST(TraitsTest, selfdestruct_depth)
 {
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
@@ -572,13 +618,14 @@ TYPED_TEST(TraitsTest, selfdestruct_depth)
 
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ADDR_A,
-             StateDelta{
-                 .account =
-                     {std::nullopt,
-                      Account{
-                          .balance = std::numeric_limits<uint256_t>::max()}}}}},
+        sd(
+            {{ADDR_A,
+              StateDelta{
+                  .account =
+                      {std::nullopt,
+                       Account{
+                           .balance =
+                               std::numeric_limits<uint256_t>::max()}}}}}),
         Code{},
         BlockHeader{});
 
@@ -605,8 +652,17 @@ TYPED_TEST(TraitsTest, selfdestruct_depth)
         ChainContext<typename TestFixture::Trait>::debug_empty();
     constexpr std::span<std::optional<Address> const> authorities_empty{};
     uint256_t base_fee{0};
+    trace::StateTracer noop_state_tracer = std::monostate{};
     EvmcHost<typename TestFixture::Trait> host{
-        call_tracer, tx_context, buffer, s, tx, base_fee, 0, chain_ctx};
+        call_tracer,
+        noop_state_tracer,
+        tx_context,
+        buffer,
+        s,
+        tx,
+        base_fee,
+        0,
+        chain_ctx};
 
     auto const result =
         ExecuteTransactionNoValidation<typename TestFixture::Trait>(
@@ -636,22 +692,20 @@ TYPED_TEST(TraitsTest, selfdestruct_depth)
 
 TYPED_TEST(TraitsTest, simulate_v1_trace)
 {
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ADDR_A,
+        sd({{ADDR_A,
              StateDelta{
                  .account =
                      {std::nullopt,
                       Account{
                           .balance = std::numeric_limits<uint256_t>::max()}}}},
             {ADDR_B,
-             StateDelta{.account = {std::nullopt, Account{.balance = 0}}}}},
+             StateDelta{.account = {std::nullopt, Account{.balance = 0}}}}}),
         Code{},
         BlockHeader{});
 
@@ -675,12 +729,15 @@ TYPED_TEST(TraitsTest, simulate_v1_trace)
     CallTracer call_tracer{tx, call_frames};
 
     uint256_t base_fee{0};
+
+    trace::StateTracer noop_state_tracer = std::monostate{};
     auto const chain_ctx =
         ChainContext<typename TestFixture::Trait>::debug_empty();
     constexpr std::span<std::optional<Address> const> authorities_empty{};
 
     EvmcHost<typename TestFixture::Trait> host{
         call_tracer,
+        noop_state_tracer,
         tx_context,
         buffer,
         s,
@@ -714,8 +771,8 @@ TYPED_TEST(TraitsTest, simulate_v1_trace)
         .depth = 0,
         .logs = std::vector<CallFrame::Log>{{
             {
-                .data = byte_string{intx::be::store<bytes32_t, uint256_t>(
-                    1'000'000)},
+                .data =
+                    byte_string{store_be_as<bytes32_t, uint256_t>(1'000'000)},
                 .topics =
                     std::vector{
                         0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef_bytes32,
@@ -733,8 +790,7 @@ TYPED_TEST(TraitsTest, simulate_v1_trace)
 
 TYPED_TEST(TraitsTest, simulate_v1_trace_selfdestruct)
 {
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
@@ -746,8 +802,7 @@ TYPED_TEST(TraitsTest, simulate_v1_trace_selfdestruct)
 
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ADDR_C,
+        sd({{ADDR_C,
              StateDelta{
                  .account =
                      {std::nullopt,
@@ -757,7 +812,7 @@ TYPED_TEST(TraitsTest, simulate_v1_trace_selfdestruct)
              StateDelta{
                  .account =
                      {std::nullopt,
-                      Account{.balance = 1000u, .code_hash = code_hash}}}}},
+                      Account{.balance = 1000u, .code_hash = code_hash}}}}}),
         Code{
             {code_hash, icode},
         },
@@ -783,12 +838,15 @@ TYPED_TEST(TraitsTest, simulate_v1_trace_selfdestruct)
     CallTracer call_tracer{tx, call_frames};
 
     uint256_t base_fee{0};
+
+    trace::StateTracer noop_state_tracer = std::monostate{};
     auto const chain_ctx =
         ChainContext<typename TestFixture::Trait>::debug_empty();
     constexpr std::span<std::optional<Address> const> authorities_empty{};
 
     EvmcHost<typename TestFixture::Trait> host{
         call_tracer,
+        noop_state_tracer,
         tx_context,
         buffer,
         s,
@@ -819,7 +877,7 @@ TYPED_TEST(TraitsTest, simulate_v1_trace_selfdestruct)
 
     CallFrame::Log const expected_log{
         {
-            .data = byte_string{intx::be::store<bytes32_t, uint256_t>(1000)},
+            .data = byte_string{store_be_as<bytes32_t, uint256_t>(1000)},
             .topics =
                 std::vector{
                     0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef_bytes32,
@@ -836,8 +894,7 @@ TYPED_TEST(TraitsTest, simulate_v1_trace_selfdestruct)
 
 TYPED_TEST(TraitsTest, simulate_v1_trace_selfdestruct_zero_balance)
 {
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
@@ -849,8 +906,7 @@ TYPED_TEST(TraitsTest, simulate_v1_trace_selfdestruct_zero_balance)
 
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ADDR_C,
+        sd({{ADDR_C,
              StateDelta{
                  .account =
                      {std::nullopt,
@@ -860,7 +916,7 @@ TYPED_TEST(TraitsTest, simulate_v1_trace_selfdestruct_zero_balance)
              StateDelta{
                  .account =
                      {std::nullopt,
-                      Account{.balance = 0u, .code_hash = code_hash}}}}},
+                      Account{.balance = 0u, .code_hash = code_hash}}}}}),
         Code{
             {code_hash, icode},
         },
@@ -886,12 +942,15 @@ TYPED_TEST(TraitsTest, simulate_v1_trace_selfdestruct_zero_balance)
     CallTracer call_tracer{tx, call_frames};
 
     uint256_t base_fee{0};
+
+    trace::StateTracer noop_state_tracer = std::monostate{};
     auto const chain_ctx =
         ChainContext<typename TestFixture::Trait>::debug_empty();
     constexpr std::span<std::optional<Address> const> authorities_empty{};
 
     EvmcHost<typename TestFixture::Trait> host{
         call_tracer,
+        noop_state_tracer,
         tx_context,
         buffer,
         s,
@@ -923,8 +982,7 @@ TYPED_TEST(TraitsTest, simulate_v1_trace_selfdestruct_zero_balance)
 
 TYPED_TEST(TraitsTest, simulate_v1_trace_multiple_selfdestructs)
 {
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
@@ -984,8 +1042,7 @@ TYPED_TEST(TraitsTest, simulate_v1_trace_multiple_selfdestructs)
 
     commit_sequential(
         tdb,
-        StateDeltas{
-            {TX_SENDER_ADDR,
+        sd({{TX_SENDER_ADDR,
              StateDelta{
                  .account =
                      {std::nullopt, Account{.balance = 1'000'000'000'000u}}}},
@@ -1002,9 +1059,9 @@ TYPED_TEST(TraitsTest, simulate_v1_trace_multiple_selfdestructs)
                      {std::nullopt,
                       Account{
                           .balance = 1'000'000,
-                          .code_hash = selfdestruct_code_hash}}}}}
+                          .code_hash = selfdestruct_code_hash}}}}})
 
-        ,
+            ,
         Code{
             {intermediary_code_hash, intermediary_contract},
             {selfdestruct_code_hash, selfdestruct_contract},
@@ -1028,12 +1085,15 @@ TYPED_TEST(TraitsTest, simulate_v1_trace_multiple_selfdestructs)
     CallTracer call_tracer{tx, call_frames};
 
     uint256_t base_fee{0};
+
+    trace::StateTracer noop_state_tracer = std::monostate{};
     auto const chain_ctx =
         ChainContext<typename TestFixture::Trait>::debug_empty();
     constexpr std::span<std::optional<Address> const> authorities_empty{};
 
     EvmcHost<typename TestFixture::Trait> host{
         call_tracer,
+        noop_state_tracer,
         tx_context,
         buffer,
         s,
@@ -1140,8 +1200,7 @@ TYPED_TEST(TraitsTest, simulate_v1_trace_multiple_selfdestructs)
 // contract.
 TYPED_TEST(TraitsTest, simulate_v1_trace_multiple_selfdestructs_recursive)
 {
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
@@ -1179,7 +1238,7 @@ TYPED_TEST(TraitsTest, simulate_v1_trace_multiple_selfdestructs_recursive)
                   0,
                   // non-zero value such that subsequent calls
                   // go-to the selfdestruct branch
-                  std::numeric_limits<monad::vm::runtime::uint256_t>::max())
+                  std::numeric_limits<uint256_t>::max())
                 .push(0)
                 .calldataload()
                 .iszero()
@@ -1190,12 +1249,12 @@ TYPED_TEST(TraitsTest, simulate_v1_trace_multiple_selfdestructs_recursive)
                 .call(
                     {.gas = 1'000'000,
                      .address = SELFDESTRUCT_CONTRACT_ADDR,
-                     .args_size = sizeof(monad::vm::runtime::uint256_t)})
+                     .args_size = sizeof(uint256_t)})
                 .pop()
                 .call(
                     {.gas = 1'000'000,
                      .address = SELFDESTRUCT_CONTRACT_ADDR,
-                     .args_size = sizeof(monad::vm::runtime::uint256_t)})
+                     .args_size = sizeof(uint256_t)})
                 .pop()
                 .stop(),
             bytecode);
@@ -1207,8 +1266,7 @@ TYPED_TEST(TraitsTest, simulate_v1_trace_multiple_selfdestructs_recursive)
 
     commit_sequential(
         tdb,
-        StateDeltas{
-            {TX_SENDER_ADDR,
+        sd({{TX_SENDER_ADDR,
              StateDelta{
                  .account =
                      {std::nullopt, Account{.balance = 1'000'000'000'000UL}}}},
@@ -1218,9 +1276,9 @@ TYPED_TEST(TraitsTest, simulate_v1_trace_multiple_selfdestructs_recursive)
                      {std::nullopt,
                       Account{
                           .balance = 1'000'000UL,
-                          .code_hash = selfdestruct_code_hash}}}}}
+                          .code_hash = selfdestruct_code_hash}}}}})
 
-        ,
+            ,
         Code{
             {selfdestruct_code_hash, selfdestruct_contract},
         },
@@ -1242,12 +1300,15 @@ TYPED_TEST(TraitsTest, simulate_v1_trace_multiple_selfdestructs_recursive)
     CallTracer call_tracer{tx, call_frames};
 
     uint256_t base_fee{0};
+
+    trace::StateTracer noop_state_tracer = std::monostate{};
     auto const chain_ctx =
         ChainContext<typename TestFixture::Trait>::debug_empty();
     constexpr std::span<std::optional<Address> const> authorities_empty{};
 
     EvmcHost<typename TestFixture::Trait> host{
         call_tracer,
+        noop_state_tracer,
         tx_context,
         buffer,
         s,
@@ -1295,6 +1356,8 @@ TYPED_TEST(TraitsTest, simulate_v1_trace_multiple_selfdestructs_recursive)
 
 TYPED_TEST(TraitsTest, simulate_v1_trace_transfers)
 {
+    static_assert(TestFixture::Trait::evm_rev() > EVMC_SPURIOUS_DRAGON);
+
     // This test checks that no events are emitted for self-transfers.
     // Furthermore, it checks that:
     // * CALL: emits an event with value to non-self
@@ -1302,8 +1365,7 @@ TYPED_TEST(TraitsTest, simulate_v1_trace_transfers)
     // be a self-transfer)
     // * DELEGATECALL: no event emission
     // * STATICCALL: no event emission
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
@@ -1363,8 +1425,7 @@ TYPED_TEST(TraitsTest, simulate_v1_trace_transfers)
 
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ADDR_A,
+        sd({{ADDR_A,
              StateDelta{
                  .account =
                      {std::nullopt,
@@ -1372,18 +1433,13 @@ TYPED_TEST(TraitsTest, simulate_v1_trace_transfers)
                           .balance = 1'000'000'000'000UL,
                           .code_hash = a_code_hash}}}},
             {ADDR_B,
-             StateDelta{.account = {std::nullopt, Account{.balance = 1UL}}}}}
+             StateDelta{.account = {std::nullopt, Account{.balance = 1UL}}}}})
 
-        ,
+            ,
         Code{{a_code_hash, a_contract}},
         BlockHeader{});
 
     for (uint8_t i = 0; i <= 3; i++) {
-        if (i > 1 && traits::evm_rev() < EVMC_BYZANTIUM) {
-            // DELEGATECALL and STATICCALL are not supported before Byzantium,
-            // so skip.
-            continue;
-        }
         BlockState bs{tdb, vm};
         Incarnation const incarnation{0, 0};
         State s{bs, incarnation};
@@ -1405,12 +1461,15 @@ TYPED_TEST(TraitsTest, simulate_v1_trace_transfers)
         CallTracer call_tracer{tx, call_frames};
 
         uint256_t base_fee{0};
+
+        trace::StateTracer noop_state_tracer = std::monostate{};
         auto const chain_ctx =
             ChainContext<typename TestFixture::Trait>::debug_empty();
         constexpr std::span<std::optional<Address> const> authorities_empty{};
 
         EvmcHost<typename TestFixture::Trait> host{
             call_tracer,
+            noop_state_tracer,
             tx_context,
             buffer,
             s,

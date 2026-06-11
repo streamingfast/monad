@@ -15,6 +15,7 @@
 
 #pragma once
 
+#include <category/core/address.hpp>
 #include <category/core/byte_string.hpp>
 #include <category/core/config.hpp>
 #include <category/core/int.hpp>
@@ -44,6 +45,7 @@ class State;
 MONAD_NAMESPACE_END
 
 MONAD_STAKING_NAMESPACE_BEGIN
+using namespace monad::literals;
 
 class StakingContract
 {
@@ -373,7 +375,7 @@ public:
     // `PAGINATED_RESULTS_SIZE` in a single call. The return types in this call
     // are defined by these pagination limits.
     std::tuple<bool, u32_be, std::vector<u64_be>> get_valset(
-        StorageArray<u64_be> const &valset, uint32_t const start_index,
+        StorageArray<u64_be> const &valset, uint32_t start_index,
         uint32_t limit);
 
     // The two lists are of Type LinkedList[T] where T = Address | u64_be.  The
@@ -492,20 +494,20 @@ private:
     // Sets an existence bit in state that `val_id` is present in the set.
     // Returns `true` if the validator is already in the set. Called in
     // delegate.
-    bool add_to_valset(u64_be const val_id);
+    bool add_to_valset(u64_be val_id);
 
     // Removes the existence bit. Called in the snapshot syscall.
-    void remove_from_valset(u64_be const val_id);
+    void remove_from_valset(u64_be val_id);
 
     Result<void> reward_invariant(ValExecution &, uint256_t const &);
 
     // increments a future accumulator value for a validator.  this value is
     // overriden on epoch change when the accumulator for that epoch is
     // complete. Used by delegate and undelegate.
-    void increment_accumulator_refcount(u64_be const val_id);
+    void increment_accumulator_refcount(u64_be val_id);
 
     // reads an future accumulator from state and decrements the refcount.
-    u256_be decrement_accumulator_refcount(u64_be epoch, u64_be const val_id);
+    u256_be decrement_accumulator_refcount(u64_be epoch, u64_be val_id);
 
     // Returns the epoch when the delegation or undelegation will activate.
     uint64_t get_activation_epoch() const noexcept;
@@ -553,7 +555,7 @@ private:
 
 public:
     using PrecompileFunc = Result<byte_string> (StakingContract::*)(
-        byte_string_view, evmc_address const &, evmc_bytes32 const &);
+        byte_string_view, Address const &, uint256_be_t const &);
 
     /////////////////
     // Precompiles //
@@ -564,50 +566,50 @@ public:
     precompile_dispatch(byte_string_view &);
 
     Result<byte_string> precompile_get_validator(
-        byte_string_view, evmc_address const &, evmc_uint256be const &);
+        byte_string_view, Address const &, uint256_be_t const &);
     Result<byte_string> precompile_get_delegator(
-        byte_string_view, evmc_address const &, evmc_uint256be const &);
+        byte_string_view, Address const &, uint256_be_t const &);
     Result<byte_string> precompile_get_withdrawal_request(
-        byte_string_view, evmc_address const &, evmc_uint256be const &);
+        byte_string_view, Address const &, uint256_be_t const &);
     Result<byte_string> precompile_get_consensus_valset(
-        byte_string_view, evmc_address const &, evmc_uint256be const &);
+        byte_string_view, Address const &, uint256_be_t const &);
     Result<byte_string> precompile_get_snapshot_valset(
-        byte_string_view, evmc_address const &, evmc_uint256be const &);
+        byte_string_view, Address const &, uint256_be_t const &);
     Result<byte_string> precompile_get_execution_valset(
-        byte_string_view, evmc_address const &, evmc_uint256be const &);
+        byte_string_view, Address const &, uint256_be_t const &);
     template <Traits traits>
     Result<byte_string> precompile_get_delegations(
-        byte_string_view, evmc_address const &, evmc_uint256be const &);
+        byte_string_view, Address const &, uint256_be_t const &);
     template <Traits traits>
     Result<byte_string> precompile_get_delegators(
-        byte_string_view, evmc_address const &, evmc_uint256be const &);
+        byte_string_view, Address const &, uint256_be_t const &);
     Result<byte_string> precompile_get_epoch(
-        byte_string_view, evmc_address const &, evmc_uint256be const &);
+        byte_string_view, Address const &, uint256_be_t const &);
     Result<byte_string> precompile_get_proposer_val_id(
-        byte_string_view, evmc_address const &, evmc_uint256be const &);
+        byte_string_view, Address const &, uint256_be_t const &);
 
     Result<byte_string> precompile_fallback(
-        byte_string_view, evmc_address const &, evmc_uint256be const &);
+        byte_string_view, Address const &, uint256_be_t const &);
     template <Traits traits>
     Result<byte_string> precompile_add_validator(
-        byte_string_view, evmc_address const &, evmc_uint256be const &);
+        byte_string_view, Address const &, uint256_be_t const &);
     template <Traits traits>
     Result<byte_string> precompile_delegate(
-        byte_string_view, evmc_address const &, evmc_uint256be const &);
+        byte_string_view, Address const &, uint256_be_t const &);
     template <Traits traits>
     Result<byte_string> precompile_undelegate(
-        byte_string_view, evmc_address const &, evmc_uint256be const &);
+        byte_string_view, Address const &, uint256_be_t const &);
     template <Traits traits>
     Result<byte_string> precompile_compound(
-        byte_string_view, evmc_address const &, evmc_uint256be const &);
+        byte_string_view, Address const &, uint256_be_t const &);
     Result<byte_string> precompile_withdraw(
-        byte_string_view, evmc_address const &, evmc_uint256be const &);
+        byte_string_view, Address const &, uint256_be_t const &);
     Result<byte_string> precompile_claim_rewards(
-        byte_string_view, evmc_address const &, evmc_uint256be const &);
+        byte_string_view, Address const &, uint256_be_t const &);
     Result<byte_string> precompile_change_commission(
-        byte_string_view, evmc_address const &, evmc_uint256be const &);
+        byte_string_view, Address const &, uint256_be_t const &);
     Result<byte_string> precompile_external_reward(
-        byte_string_view, evmc_address const &, evmc_uint256be const &);
+        byte_string_view, Address const &, uint256_be_t const &);
 
     ////////////////////
     //  System Calls  //

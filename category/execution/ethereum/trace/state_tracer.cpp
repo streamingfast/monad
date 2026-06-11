@@ -13,26 +13,38 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/core/assert.h>
 #include <category/core/byte_string.hpp>
 #include <category/core/bytes.hpp>
+#include <category/core/cases.hpp>
 #include <category/core/config.hpp>
 #include <category/core/hex.hpp>
+#include <category/core/int.hpp>
 #include <category/core/keccak.hpp>
 #include <category/core/likely.h>
 #include <category/execution/ethereum/core/rlp/transaction_rlp.hpp>
 #include <category/execution/ethereum/core/transaction.hpp>
-#include <category/execution/ethereum/core/variant.hpp>
 #include <category/execution/ethereum/precompiles.hpp>
+#include <category/execution/ethereum/state2/state_deltas.hpp>
 #include <category/execution/ethereum/state3/account_state.hpp>
 #include <category/execution/ethereum/state3/state.hpp>
 #include <category/execution/ethereum/trace/state_tracer.hpp>
 #include <category/vm/evm/explicit_traits.hpp>
+#include <category/vm/evm/traits.hpp>
 
 #include <ankerl/unordered_dense.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <format>
 #include <optional>
+#include <span>
+#include <string>
+#include <utility>
+#include <variant>
+#include <vector>
 
 MONAD_NAMESPACE_BEGIN
 
@@ -40,7 +52,7 @@ namespace trace
 {
     using json = nlohmann::json;
 
-    template <std::size_t N>
+    template <size_t N>
     std::string bytes_to_hex(uint8_t const (&input)[N])
     {
         return std::format("0x{}", to_hex(to_byte_string_view(input)));
@@ -200,30 +212,82 @@ namespace trace
         }
     }
 
+    void AccessListTracer::capture_accesses(
+        Address const &address, AccountState const &account_state)
+    {
+        auto &storage_keys = accesses_[address];
+        for (auto const &key : account_state.get_accessed_storage()) {
+            storage_keys.insert(key);
+        }
+    }
+
+    void AccessListTracer::capture_accesses(State const &state)
+    {
+        for (auto const &[address, current_stack] : state.current()) {
+            capture_accesses(address, current_stack.recent());
+        }
+    }
+
+    void AccessListTracer::capture_rejected_frame_accesses(State const &state)
+    {
+        auto const &current = state.current();
+        for (auto const &address : state.current_frame_dirty_accounts()) {
+            auto const it = current.find(address);
+            MONAD_ASSERT(it != current.end());
+            capture_accesses(address, it->second.recent());
+        }
+    }
+
+    void AccessListTracer::reset()
+    {
+        accesses_.clear();
+    }
+
     template <Traits traits>
     void AccessListTracer::encode(State &state)
     {
-        auto access_list = json::array();
-        for (auto const &[address, current_stack] : state.current()) {
-            auto keys = json::array();
-            auto const &current_account_state = current_stack.recent();
-            for (auto const &key :
-                 current_account_state.get_accessed_storage()) {
-                keys.push_back(bytes_to_hex(key.bytes));
-            }
+        // Merge accepted-frame accesses still visible in State with any
+        // failed-frame accesses captured before rollback.
+        capture_accesses(state);
 
+        struct AccessListEntry
+        {
+            Address address;
+            std::vector<bytes32_t> storage_keys;
+        };
+
+        std::vector<AccessListEntry> entries;
+        entries.reserve(accesses_.size());
+        for (auto const &[address, storage_keys] : accesses_) {
+            auto &entry = entries.emplace_back();
+            entry.address = address;
+            entry.storage_keys.assign(storage_keys.begin(), storage_keys.end());
+            // Match go-ethereum's access-list tracer output order: storage
+            // keys are sorted within each address, then entries are sorted by
+            // address below.
+            std::ranges::sort(entry.storage_keys);
+        }
+        std::ranges::sort(entries, {}, &AccessListEntry::address);
+
+        auto access_list = json::array();
+        for (auto const &[address, storage_keys] : entries) {
             // If an address is excluded because it's always considered warm, we
             // still want to include it in the access list if it's had storage
             // keys set by this transaction.
-            auto const exclude =
-                keys.empty() && should_exclude_address<traits>(address);
-
-            if (!exclude) {
-                access_list.push_back(json::object({
-                    {"address", bytes_to_hex(address.bytes)},
-                    {"storageKeys", std::move(keys)},
-                }));
+            if (storage_keys.empty() &&
+                should_exclude_address<traits>(address)) {
+                continue;
             }
+
+            auto keys = json::array();
+            for (auto const &key : storage_keys) {
+                keys.push_back(bytes_to_hex(key.bytes));
+            }
+
+            access_list.push_back(json::object({
+                {"address", bytes_to_hex(address.bytes)},
+                {"storageKeys", std::move(keys)},
+            }));
         }
 
         storage_ = std::move(access_list);
@@ -240,11 +304,25 @@ namespace trace
 
     EXPLICIT_TRAITS_MEMBER(AccessListTracer::should_exclude_address);
 
+    void on_frame_reject(StateTracer &tracer, State &state)
+    {
+        if (auto *access_list = std::get_if<AccessListTracer>(&tracer)) {
+            access_list->capture_rejected_frame_accesses(state);
+        }
+    }
+
+    void reset(StateTracer &tracer)
+    {
+        if (auto *access_list = std::get_if<AccessListTracer>(&tracer)) {
+            access_list->reset();
+        }
+    }
+
     template <Traits traits>
     void run_tracer(StateTracer &tracer, State &state)
     {
         return std::visit(
-            overloaded{
+            Cases{
                 [](std::monostate) {},
                 [&state](PrestateTracer &prestate) {
                     prestate.encode(state.original(), state);
@@ -285,7 +363,7 @@ namespace trace
         }
         else {
             res["balance"] =
-                std::format("0x{}", intx::to_string(account->balance, 16));
+                std::format("0x{}", to_string(account->balance, 16));
             if (account->code_hash != NULL_HASH) {
                 auto const icode =
                     state.read_code(account->code_hash)->intercode();
@@ -421,8 +499,7 @@ namespace trace
 
                     if (original_account->balance != current_account->balance) {
                         post[address_key]["balance"] = std::format(
-                            "0x{}",
-                            intx::to_string(current_account->balance, 16));
+                            "0x{}", to_string(current_account->balance, 16));
                     }
                     if (original_account->code_hash !=
                         current_account->code_hash) {

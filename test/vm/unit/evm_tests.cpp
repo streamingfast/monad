@@ -147,7 +147,7 @@ TYPED_TEST(VMTraitsTest, ResultDataAtBound)
         case runtime::Memory::Version::MIP3:
             return uint256_t{8 * 1024 * 1024}.to_be();
         }
-        MONAD_VM_ASSERT(false);
+        MONAD_ABORT();
     }();
 
     auto const impls = {
@@ -188,7 +188,7 @@ TYPED_TEST(VMTraitsTest, ResultDataOutOfBound)
         case runtime::Memory::Version::MIP3:
             return uint256_t{8 * 1024 * 1024 + 1}.to_be();
         }
-        MONAD_VM_ASSERT(false);
+        MONAD_ABORT();
     }();
 
     auto const impls = {
@@ -260,7 +260,7 @@ TYPED_TEST(VMTraitsTest, MStore8OutOfBoundMIP3)
 // https://github.com/category-labs/monad-compiler/issues/138
 TYPED_TEST(VMTraitsTest, BeaconRootRegression_138)
 {
-    using namespace evmc::literals;
+    using namespace monad::literals;
 
     this->msg_.sender = 0xbe862ad9abfe6f22bcb087716c7d89a26051f74c_address;
 
@@ -645,7 +645,7 @@ TYPED_TEST(VMTraitsTest, ShrCeilOffByOneRegression)
     auto const icode = make_shared_intercode(code);
     auto const ncode =
         vm.compiler().template compile<typename TestFixture::Trait>(icode);
-    MONAD_VM_ASSERT(ncode->entrypoint() != nullptr);
+    MONAD_ASSERT(ncode->entrypoint() != nullptr);
 
     auto rt_ctx = runtime::Context::from(
         &this->host_.get_interface(),

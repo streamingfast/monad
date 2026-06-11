@@ -14,11 +14,24 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include <category/core/assert.h>
+#include <category/core/byte_string.hpp>
 #include <category/core/config.hpp>
+#include <category/core/likely.h>
+#include <category/execution/ethereum/precompiles.hpp>
 #include <category/execution/ethereum/precompiles_bls12.hpp>
 
+#include <blst.h>
+
+#include <evmc/evmc.h>
+
+#include <algorithm>
 #include <array>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <memory>
+#include <optional>
+#include <vector>
 
 MONAD_NAMESPACE_BEGIN
 
@@ -74,11 +87,15 @@ namespace bls12
     std::optional<blst_fp> read_fp(uint8_t const *const in)
     {
         static_assert(sizeof(blst_fp) == 48);
-        static constexpr std::size_t fp_encoded_offset = 16;
+        static constexpr size_t fp_encoded_offset = 16;
 
-        auto const integer_value = intx::be::unsafe::load<intx::uint512>(in);
-
-        if (MONAD_UNLIKELY(integer_value >= BASE_FIELD_MODULUS)) {
+        // The field prime p is 384 bits, encoded in a 64-byte buffer with 16
+        // bytes of leading zero padding (fp_encoded_offset). memcmp over all
+        // 64 bytes performs a big-endian >= comparison: the padding zeros in
+        // both the input and BASE_FIELD_MODULUS_BYTES ensure the upper 16
+        // bytes never cause a false positive, so this rejects any input >= p.
+        if (MONAD_UNLIKELY(
+                std::memcmp(in, BASE_FIELD_MODULUS_BYTES.data(), 64) >= 0)) {
             return std::nullopt;
         }
 
@@ -150,7 +167,7 @@ namespace bls12
     void write_fp(blst_fp const &point, uint8_t *const buf)
     {
         static_assert(sizeof(blst_fp) == 48);
-        static constexpr std::size_t fp_encoded_offset = 16;
+        static constexpr size_t fp_encoded_offset = 16;
 
         std::memset(buf, 0, fp_encoded_offset);
         blst_bendian_from_fp(buf + fp_encoded_offset, &point);

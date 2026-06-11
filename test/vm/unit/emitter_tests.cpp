@@ -13,6 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/core/address.hpp>
 #include <category/core/runtime/uint256.hpp>
 #include <category/vm/compiler/ir/basic_blocks.hpp>
 #include <category/vm/compiler/ir/x86/emitter.hpp>
@@ -72,7 +73,8 @@ namespace
 
         std::string log_path_storage_;
 
-        CompilerConfig add_asm_log_path(CompilerConfig c, std::string log_path)
+        CompilerConfig
+        add_asm_log_path(CompilerConfig c, std::string const log_path)
         {
             if (!c.asm_log_path &&
                 monad::vm::compiler::test::params.dump_asm_on_failure) {
@@ -85,7 +87,7 @@ namespace
         // to have this constructor is so that the lifetime of the
         // new_emitter_asm_log_path extends to after the Emitter constructor.
         TestEmitter(
-            asmjit::JitRuntime const &rt, code_size_t bytecode_size,
+            asmjit::JitRuntime const &rt, code_size_t const bytecode_size,
             CompilerConfig const &c = {},
             std::string const &log_path = new_emitter_asm_log_path())
             : Emitter(rt, bytecode_size, add_asm_log_path(c, log_path))
@@ -110,16 +112,16 @@ namespace
         }
     };
 
-    evmc::address max_address()
+    Address max_address()
     {
-        evmc::address ret;
+        Address ret;
         std::memset(ret.bytes, -1, sizeof(ret.bytes) / sizeof(*ret.bytes));
         return ret;
     }
 
-    evmc::bytes32 max_bytes32()
+    bytes32_t max_bytes32()
     {
-        evmc::bytes32 ret;
+        bytes32_t ret;
         std::memset(ret.bytes, -1, sizeof(ret.bytes) / sizeof(*ret.bytes));
         return ret;
     }
@@ -135,8 +137,8 @@ namespace
     }
 
     monad::vm::test::TestContext test_context(
-        evmc_tx_context const *tx_context,
-        int64_t gas_remaining = (uint64_t{1} << 63) - 1)
+        evmc_tx_context const *const tx_context,
+        int64_t const gas_remaining = (uint64_t{1} << 63) - 1)
     {
         return monad::vm::test::TestContext{[&](auto &x) {
             x.gas_remaining = gas_remaining;
@@ -151,7 +153,7 @@ namespace
 
     struct TestStackMemoryDeleter
     {
-        void operator()(uint8_t *p) const
+        void operator()(uint8_t *const p) const
         {
             std::free(p);
         }
@@ -171,7 +173,8 @@ namespace
         Emitter::LocationType::StackOffset};
 
     void mov_literal_to_location_type(
-        Emitter &emit, int32_t stack_index, Emitter::LocationType loc)
+        Emitter &emit, int32_t const stack_index,
+        Emitter::LocationType const loc)
     {
         StackElem *spill;
         Stack &stack = emit.get_stack();
@@ -210,7 +213,8 @@ namespace
     }
 
     void copy_stack_offset_to_location_type(
-        Emitter &emit, int32_t stack_index, Emitter::LocationType loc)
+        Emitter &emit, int32_t const stack_index,
+        Emitter::LocationType const loc)
     {
         Stack &stack = emit.get_stack();
         auto elem = stack.get(stack_index);
@@ -242,10 +246,11 @@ namespace
     using PureEmitterInstrPtr = void (Emitter::*)();
 
     void pure_bin_instr_test_instance(
-        asmjit::JitRuntime &rt, PureEmitterInstr instr, uint256_t const &left,
-        Emitter::LocationType left_loc, uint256_t const &right,
-        Emitter::LocationType right_loc, uint256_t const &result,
-        basic_blocks::BasicBlocksIR const &ir, bool dup)
+        asmjit::JitRuntime &rt, PureEmitterInstr const instr,
+        uint256_t const &left, Emitter::LocationType const left_loc,
+        uint256_t const &right, Emitter::LocationType const right_loc,
+        uint256_t const &result, basic_blocks::BasicBlocksIR const &ir,
+        bool const dup)
     {
 #if 0
         if (left_loc != Emitter::LocationType::Literal || right_loc != Emitter::LocationType::AvxReg || dup) {
@@ -386,8 +391,9 @@ namespace
     }
 
     void pure_bin_instr_test(
-        asmjit::JitRuntime &rt, EvmOpCode opcode, PureEmitterInstr instr,
-        uint256_t const &left, uint256_t const &right, uint256_t const &result)
+        asmjit::JitRuntime &rt, EvmOpCode const opcode,
+        PureEmitterInstr const instr, uint256_t const &left,
+        uint256_t const &right, uint256_t const &result)
     {
         std::vector<uint8_t> bytecode1{PUSH0, PUSH0, opcode, PUSH0, RETURN};
         auto ir1 =
@@ -438,10 +444,10 @@ namespace
     }
 
     void dynamic_gas_bin_instr_test_instance(
-        asmjit::JitRuntime &rt, PureEmitterInstr instr, uint256_t const &left,
-        Emitter::LocationType left_loc, uint256_t const &right,
-        Emitter::LocationType right_loc, uint256_t const &expected_gas,
-        basic_blocks::BasicBlocksIR const &ir)
+        asmjit::JitRuntime &rt, PureEmitterInstr const instr,
+        uint256_t const &left, Emitter::LocationType const left_loc,
+        uint256_t const &right, Emitter::LocationType const right_loc,
+        uint256_t const &expected_gas, basic_blocks::BasicBlocksIR const &ir)
     {
         TestEmitter emit{rt, ir.codesize};
         emit.checked_debug_comment("Block prologue:");
@@ -487,9 +493,9 @@ namespace
     }
 
     void dynamic_gas_test(
-        asmjit::JitRuntime &rt, EvmOpCode opcode, PureEmitterInstr instr,
-        uint256_t const &left, uint256_t const &right,
-        uint256_t const &expected_gas)
+        asmjit::JitRuntime &rt, EvmOpCode const opcode,
+        PureEmitterInstr const instr, uint256_t const &left,
+        uint256_t const &right, uint256_t const &expected_gas)
     {
         std::vector<uint8_t> bytecode1{
             GAS, PUSH0, PUSH0, opcode, SWAP1, GAS, SUB, RETURN};
@@ -511,8 +517,9 @@ namespace
     }
 
     void pure_bin_instr_test(
-        asmjit::JitRuntime &rt, EvmOpCode opcode, PureEmitterInstrPtr instr,
-        uint256_t const &left, uint256_t const &right, uint256_t const &result)
+        asmjit::JitRuntime &rt, EvmOpCode const opcode,
+        PureEmitterInstrPtr instr, uint256_t const &left,
+        uint256_t const &right, uint256_t const &result)
     {
         pure_bin_instr_test(
             rt, opcode, [&](Emitter &e) { (e.*instr)(); }, left, right, result);
@@ -542,16 +549,17 @@ namespace
     }
 
     void pure_una_instr_test(
-        asmjit::JitRuntime &rt, EvmOpCode opcode, PureEmitterInstrPtr instr,
-        uint256_t const &input, uint256_t const &result)
+        asmjit::JitRuntime &rt, EvmOpCode const opcode,
+        PureEmitterInstrPtr instr, uint256_t const &input,
+        uint256_t const &result)
     {
         pure_una_instr_test(
             rt, opcode, [&](Emitter &e) { (e.*instr)(); }, input, result);
     }
 
     void jump_test(
-        Emitter::LocationType loc1, Emitter::LocationType loc2,
-        Emitter::LocationType loc_dest, bool swap)
+        Emitter::LocationType const loc1, Emitter::LocationType const loc2,
+        Emitter::LocationType const loc_dest, bool const swap)
     {
 #if 0
         if (swap || loc1 != Emitter::LocationType::Literal || loc2 != Emitter::LocationType::AvxReg || loc_dest != Emitter::LocationType::Literal) {
@@ -612,8 +620,8 @@ namespace
     }
 
     basic_blocks::BasicBlocksIR get_jumpi_ir(
-        bool deferred_comparison, bool swap, bool dup,
-        bool jumpdest_fallthrough)
+        bool const deferred_comparison, bool const swap, bool const dup,
+        bool const jumpdest_fallthrough)
     {
         std::vector<uint8_t> bytecode;
         if (deferred_comparison && swap) {
@@ -659,11 +667,11 @@ namespace
     }
 
     void jumpi_test(
-        asmjit::JitRuntime &rt, Emitter::LocationType loc1,
-        Emitter::LocationType loc2, Emitter::LocationType loc_cond,
-        Emitter::LocationType loc_dest, bool take_jump,
-        bool deferred_comparison, bool swap, bool dup,
-        bool jumpdest_fallthrough)
+        asmjit::JitRuntime &rt, Emitter::LocationType const loc1,
+        Emitter::LocationType const loc2, Emitter::LocationType const loc_cond,
+        Emitter::LocationType const loc_dest, bool const take_jump,
+        bool const deferred_comparison, bool const swap, bool const dup,
+        bool const jumpdest_fallthrough)
     {
 #if 0
         if (!take_jump || deferred_comparison || swap || dup || !jumpdest_fallthrough || loc1 != Emitter::LocationType::GeneralReg || loc2 != Emitter::LocationType::GeneralReg || loc_cond != Emitter::LocationType::GeneralReg || loc_dest != Emitter::LocationType::StackOffset) {
@@ -762,9 +770,9 @@ namespace
     }
 
     void block_epilogue_test(
-        Emitter::LocationType loc1, Emitter::LocationType loc2,
-        Emitter::LocationType loc3, Emitter::LocationType loc4,
-        Emitter::LocationType loc5)
+        Emitter::LocationType const loc1, Emitter::LocationType const loc2,
+        Emitter::LocationType const loc3, Emitter::LocationType const loc4,
+        Emitter::LocationType const loc5)
     {
 #if 0
         if (loc1 != Emitter::LocationType::StackOffset || loc2 != Emitter::LocationType::StackOffset || loc3 != Emitter::LocationType::StackOffset || loc4 != Emitter::LocationType::StackOffset || loc5 != Emitter::LocationType::StackOffset) {
@@ -848,10 +856,12 @@ namespace
     }
 
     void runtime_test_12_arg_fun(
-        runtime::Context *ctx, uint256_t *result, uint256_t const *a,
-        uint256_t const *b, uint256_t const *c, uint256_t const *d,
-        uint256_t const *e, uint256_t const *f, uint256_t const *g,
-        uint256_t const *h, uint256_t const *i, int64_t remaining_base_gas)
+        runtime::Context *const ctx, uint256_t *const result,
+        uint256_t const *const a, uint256_t const *const b,
+        uint256_t const *const c, uint256_t const *const d,
+        uint256_t const *const e, uint256_t const *const f,
+        uint256_t const *const g, uint256_t const *const h,
+        uint256_t const *const i, int64_t const remaining_base_gas)
     {
         *result = uint256_t{ctx->gas_remaining} -
                   (uint256_t{remaining_base_gas} -
@@ -859,10 +869,12 @@ namespace
     }
 
     void runtime_test_11_arg_fun(
-        runtime::Context *ctx, uint256_t *result, uint256_t const *a,
-        uint256_t const *b, uint256_t const *c, uint256_t const *d,
-        uint256_t const *e, uint256_t const *f, uint256_t const *g,
-        uint256_t const *h, int64_t remaining_base_gas)
+        runtime::Context *const ctx, uint256_t *const result,
+        uint256_t const *const a, uint256_t const *const b,
+        uint256_t const *const c, uint256_t const *const d,
+        uint256_t const *const e, uint256_t const *const f,
+        uint256_t const *const g, uint256_t const *const h,
+        int64_t const remaining_base_gas)
     {
         *result = uint256_t{ctx->gas_remaining} -
                   (uint256_t{remaining_base_gas} -
@@ -2120,41 +2132,25 @@ TEST(Emitter, addmod_opt)
             {1, 1, 0},
             {2, 4, 1},
             {2, 3, 4},
-            {1, 1, monad::vm::runtime::pow2(8)},
-            {std::numeric_limits<uint8_t>::max(),
-             1,
-             monad::vm::runtime::pow2(8)},
-            {std::numeric_limits<uint16_t>::max(),
-             1,
-             monad::vm::runtime::pow2(16)},
-            {std::numeric_limits<uint32_t>::max(),
-             1,
-             monad::vm::runtime::pow2(32)},
+            {1, 1, pow2(8)},
+            {std::numeric_limits<uint8_t>::max(), 1, pow2(8)},
+            {std::numeric_limits<uint16_t>::max(), 1, pow2(16)},
+            {std::numeric_limits<uint32_t>::max(), 1, pow2(32)},
             {std::numeric_limits<uint32_t>::max(),
              std::numeric_limits<uint32_t>::max(),
-             monad::vm::runtime::pow2(32)},
-            {std::numeric_limits<uint64_t>::max(),
-             3,
-             monad::vm::runtime::pow2(63)},
-            {std::numeric_limits<uint64_t>::max(),
-             1,
-             monad::vm::runtime::pow2(64)},
+             pow2(32)},
+            {std::numeric_limits<uint64_t>::max(), 3, pow2(63)},
+            {std::numeric_limits<uint64_t>::max(), 1, pow2(64)},
             {std::numeric_limits<uint32_t>::max(),
              std::numeric_limits<uint8_t>::max(),
-             monad::vm::runtime::pow2(62)},
+             pow2(62)},
             {std::numeric_limits<uint64_t>::max(), 1, 16},
-            {std::numeric_limits<uint64_t>::max(),
-             1,
-             monad::vm::runtime::pow2(8)},
+            {std::numeric_limits<uint64_t>::max(), 1, pow2(8)},
             {std::numeric_limits<uint64_t>::max(),
              std::numeric_limits<uint32_t>::max(),
-             monad::vm::runtime::pow2(72)},
-            {std::numeric_limits<uint8_t>::max(),
-             1,
-             monad::vm::runtime::pow2(128)},
-            {std::numeric_limits<uint8_t>::max(),
-             1,
-             monad::vm::runtime::pow2(192)},
+             pow2(72)},
+            {std::numeric_limits<uint8_t>::max(), 1, pow2(128)},
+            {std::numeric_limits<uint8_t>::max(), 1, pow2(192)},
             {{0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF}, 1, 2},
             {43194, 13481, 1024},
             {0xFFFFFFFFF, 0x1, 512},
@@ -2162,7 +2158,7 @@ TEST(Emitter, addmod_opt)
             {std::numeric_limits<uint256_t>::max() -
                  (std::numeric_limits<uint256_t>::max() / 2),
              std::numeric_limits<uint64_t>::max(),
-             monad::vm::runtime::pow2(60)},
+             pow2(60)},
             {0, std::numeric_limits<uint256_t>::max(), 2},
             {std::numeric_limits<uint256_t>::max(), 0, 2}};
         for (auto &[a, b, m] : inputs) {
@@ -2763,7 +2759,7 @@ TEST(Emitter, byte)
             i | (uint256_t{1} << 255)};
         for (auto const &i : indices) {
             pure_bin_instr_test(
-                rt, BYTE, &Emitter::byte, i, value, runtime::byte(i, value));
+                rt, BYTE, &Emitter::byte, i, value, byte(i, value));
         }
     }
 }
@@ -3129,7 +3125,9 @@ TEST(Emitter, call_runtime_impl)
     pure_bin_instr_test(
         rt,
         EXP,
-        [](Emitter &emit) { emit.exp<EvmTraits<EVMC_FRONTIER>>(0); },
+        [](Emitter &emit) {
+            emit.exp<EvmTraits<constants::EARLIEST_SUPPORTED_EVM_FORK>>(0);
+        },
         10,
         20,
         100000000000000000000_u256);

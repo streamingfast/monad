@@ -22,7 +22,7 @@
 #include <category/mpt/util.hpp>
 
 #include <category/async/config.hpp>
-#include <category/async/detail/start_lifetime_as_polyfill.hpp>
+#include <category/core/detail/start_lifetime_as_polyfill.hpp>
 
 #include "unsigned_20.hpp"
 
@@ -30,7 +30,8 @@
 #include <type_traits>
 
 MONAD_MPT_NAMESPACE_BEGIN
-class UpdateAuxImpl;
+class DbMetadataContext;
+class UpdateAux;
 
 namespace detail
 {
@@ -65,7 +66,8 @@ namespace detail
         static constexpr char const *MAGIC = "MONAD007";
         static constexpr unsigned MAGIC_STRING_LEN = 8;
 
-        friend class MONAD_MPT_NAMESPACE::UpdateAuxImpl;
+        friend class MONAD_MPT_NAMESPACE::DbMetadataContext;
+        friend class MONAD_MPT_NAMESPACE::UpdateAux;
         friend inline void
         db_copy(db_metadata *dest, db_metadata const *src, size_t bytes);
 
@@ -126,8 +128,8 @@ namespace detail
             ~db_offsets_info_t() = default;
 
             constexpr db_offsets_info_t(
-                chunk_offset_t start_of_wip_offset_fast_,
-                chunk_offset_t start_of_wip_offset_slow_)
+                chunk_offset_t const start_of_wip_offset_fast_,
+                chunk_offset_t const start_of_wip_offset_slow_)
                 : start_of_wip_offset_fast(start_of_wip_offset_fast_)
                 , start_of_wip_offset_slow(start_of_wip_offset_slow_)
             {
@@ -186,10 +188,10 @@ namespace detail
             uint64_t unused0_ : 2;
             uint64_t insertion_count1_ : 10;
 
-            uint32_t index(db_metadata const *parent) const noexcept
+            uint32_t index(db_metadata const *const parent) const noexcept
             {
                 auto const ret = uint32_t(this - parent->chunk_info);
-                MONAD_DEBUG_ASSERT(ret < parent->chunk_info_count);
+                MONAD_ASSERT(ret < parent->chunk_info_count);
                 return ret;
             }
 
@@ -199,22 +201,22 @@ namespace detail
                        uint32_t(insertion_count0_);
             }
 
-            chunk_info_t const *prev(db_metadata const *parent) const noexcept
+            chunk_info_t const *
+            prev(db_metadata const *const parent) const noexcept
             {
                 if (prev_chunk_id == INVALID_CHUNK_ID) {
                     return nullptr;
                 }
-                MONAD_DEBUG_ASSERT(prev_chunk_id < parent->chunk_info_count);
-                return &parent->chunk_info[prev_chunk_id];
+                return parent->at(prev_chunk_id);
             }
 
-            chunk_info_t const *next(db_metadata const *parent) const noexcept
+            chunk_info_t const *
+            next(db_metadata const *const parent) const noexcept
             {
                 if (next_chunk_id == INVALID_CHUNK_ID) {
                     return nullptr;
                 }
-                MONAD_DEBUG_ASSERT(next_chunk_id < parent->chunk_info_count);
-                return &parent->chunk_info[next_chunk_id];
+                return parent->at(next_chunk_id);
             }
         };
 #ifdef __clang__
@@ -241,7 +243,7 @@ namespace detail
             {
                 db_metadata *parent;
 
-                explicit holder_t(db_metadata *p)
+                explicit holder_t(db_metadata *const p)
                     : parent(p)
                 {
                     parent->is_dirty().store(1, std::memory_order_release);
@@ -266,24 +268,18 @@ namespace detail
             return holder_t(this);
         }
 
-        chunk_info_t const *at(uint32_t idx) const noexcept
+        chunk_info_t const *at(uint32_t const idx) const noexcept
         {
-            MONAD_DEBUG_ASSERT(idx < chunk_info_count);
+            MONAD_ASSERT(idx < chunk_info_count);
             return &chunk_info[idx];
         }
 
         chunk_info_t atomic_load_chunk_info(
-            uint32_t const idx, std::memory_order load_ord =
+            uint32_t const idx, std::memory_order const load_ord =
                                     std::memory_order_seq_cst) const noexcept
         {
             return reinterpret_cast<std::atomic<chunk_info_t> const *>(at(idx))
                 ->load(load_ord);
-        }
-
-        chunk_info_t const &operator[](uint32_t idx) const noexcept
-        {
-            MONAD_DEBUG_ASSERT(idx < chunk_info_count);
-            return chunk_info[idx];
         }
 
         chunk_info_t const *free_list_begin() const noexcept
@@ -291,8 +287,7 @@ namespace detail
             if (free_list.begin == UINT32_MAX) {
                 return nullptr;
             }
-            MONAD_DEBUG_ASSERT(free_list.begin < chunk_info_count);
-            return &chunk_info[free_list.begin];
+            return at(free_list.begin);
         }
 
         chunk_info_t const *free_list_end() const noexcept
@@ -300,8 +295,7 @@ namespace detail
             if (free_list.end == UINT32_MAX) {
                 return nullptr;
             }
-            MONAD_DEBUG_ASSERT(free_list.end < chunk_info_count);
-            return &chunk_info[free_list.end];
+            return at(free_list.end);
         }
 
         chunk_info_t const *fast_list_begin() const noexcept
@@ -309,8 +303,7 @@ namespace detail
             if (fast_list.begin == UINT32_MAX) {
                 return nullptr;
             }
-            MONAD_DEBUG_ASSERT(fast_list.begin < chunk_info_count);
-            return &chunk_info[fast_list.begin];
+            return at(fast_list.begin);
         }
 
         chunk_info_t const *fast_list_end() const noexcept
@@ -318,8 +311,7 @@ namespace detail
             if (fast_list.end == UINT32_MAX) {
                 return nullptr;
             }
-            MONAD_DEBUG_ASSERT(fast_list.end < chunk_info_count);
-            return &chunk_info[fast_list.end];
+            return at(fast_list.end);
         }
 
         chunk_info_t const *slow_list_begin() const noexcept
@@ -327,8 +319,7 @@ namespace detail
             if (slow_list.begin == UINT32_MAX) {
                 return nullptr;
             }
-            MONAD_DEBUG_ASSERT(slow_list.begin < chunk_info_count);
-            return &chunk_info[slow_list.begin];
+            return at(slow_list.begin);
         }
 
         chunk_info_t const *slow_list_end() const noexcept
@@ -336,18 +327,17 @@ namespace detail
             if (slow_list.end == UINT32_MAX) {
                 return nullptr;
             }
-            MONAD_DEBUG_ASSERT(slow_list.end < chunk_info_count);
-            return &chunk_info[slow_list.end];
+            return at(slow_list.end);
         }
 
     private:
-        chunk_info_t *at_(uint32_t idx) noexcept
+        chunk_info_t *at_(uint32_t const idx) noexcept
         {
-            MONAD_DEBUG_ASSERT(idx < chunk_info_count);
+            MONAD_ASSERT(idx < chunk_info_count);
             return &chunk_info[idx];
         }
 
-        void append_(id_pair &list, chunk_info_t *i) noexcept
+        void append_(id_pair &list, chunk_info_t *const i) noexcept
         {
             // Insertion count is assigned to chunk_info_t *i atomically
             auto const g = hold_dirty();
@@ -357,12 +347,12 @@ namespace detail
             info.insertion_count0_ = info.insertion_count1_ = 0;
             info.next_chunk_id = chunk_info_t::INVALID_CHUNK_ID;
             if (list.end == UINT32_MAX) {
-                MONAD_DEBUG_ASSERT(list.begin == UINT32_MAX);
+                MONAD_ASSERT(list.begin == UINT32_MAX);
                 info.prev_chunk_id = chunk_info_t::INVALID_CHUNK_ID;
                 list.begin = list.end = i->index(this);
             }
             else {
-                MONAD_DEBUG_ASSERT((list.end & ~0xfffffU) == 0);
+                MONAD_ASSERT((list.end & ~0xfffffU) == 0);
                 info.prev_chunk_id = list.end & 0xfffffU;
                 auto *tail = at_(list.end);
                 uint32_t const insertion_count =
@@ -386,7 +376,7 @@ namespace detail
                 info, std::memory_order_release);
         }
 
-        void remove_(chunk_info_t *i) noexcept
+        void remove_(chunk_info_t *const i) noexcept
         {
             auto get_list = [&]() -> id_pair & {
                 if (i->in_fast_list) {
@@ -401,8 +391,8 @@ namespace detail
             if (i->prev_chunk_id == chunk_info_t::INVALID_CHUNK_ID &&
                 i->next_chunk_id == chunk_info_t::INVALID_CHUNK_ID) {
                 id_pair &list = get_list();
-                MONAD_DEBUG_ASSERT(list.begin == i->index(this));
-                MONAD_DEBUG_ASSERT(list.end == i->index(this));
+                MONAD_ASSERT(list.begin == i->index(this));
+                MONAD_ASSERT(list.end == i->index(this));
                 list.begin = list.end = UINT32_MAX;
 #ifndef NDEBUG
                 i->in_fast_list = i->in_slow_list = false;
@@ -411,7 +401,7 @@ namespace detail
             }
             if (i->prev_chunk_id == chunk_info_t::INVALID_CHUNK_ID) {
                 id_pair &list = get_list();
-                MONAD_DEBUG_ASSERT(list.begin == i->index(this));
+                MONAD_ASSERT(list.begin == i->index(this));
                 auto *next = at_(i->next_chunk_id);
                 next->prev_chunk_id = chunk_info_t::INVALID_CHUNK_ID;
                 list.begin = next->index(this);
@@ -423,7 +413,7 @@ namespace detail
             }
             if (i->next_chunk_id == chunk_info_t::INVALID_CHUNK_ID) {
                 id_pair &list = get_list();
-                MONAD_DEBUG_ASSERT(list.end == i->index(this));
+                MONAD_ASSERT(list.end == i->index(this));
                 auto *prev = at_(i->prev_chunk_id);
                 prev->next_chunk_id = chunk_info_t::INVALID_CHUNK_ID;
                 list.end = prev->index(this);
@@ -447,13 +437,13 @@ namespace detail
 #endif
         }
 
-        void free_capacity_add_(uint64_t bytes) noexcept
+        void free_capacity_add_(uint64_t const bytes) noexcept
         {
             auto const g = hold_dirty();
             capacity_in_free_list += bytes;
         }
 
-        void free_capacity_sub_(uint64_t bytes) noexcept
+        void free_capacity_sub_(uint64_t const bytes) noexcept
         {
             auto const g = hold_dirty();
             capacity_in_free_list -= bytes;
@@ -473,9 +463,10 @@ namespace detail
     static_assert(alignof(db_metadata) == 8);
 
     inline void atomic_memcpy(
-        void *__restrict__ dest_, void const *__restrict__ src_, size_t bytes,
-        std::memory_order load_ord = std::memory_order_acquire,
-        std::memory_order store_ord = std::memory_order_release)
+        void *__restrict__ const dest_, void const *__restrict__ const src_,
+        size_t bytes,
+        std::memory_order const load_ord = std::memory_order_acquire,
+        std::memory_order const store_ord = std::memory_order_release)
     {
         MONAD_ASSERT((((uintptr_t)dest_) & 7) == 0);
         MONAD_ASSERT((((uintptr_t)src_) & 7) == 0);
@@ -509,7 +500,9 @@ namespace detail
     /* A dirty bit setting memcpy implementation, so the dirty bit gets held
     high during the memory copy.
     */
-    inline void db_copy(db_metadata *dest, db_metadata const *src, size_t bytes)
+    inline void db_copy(
+        db_metadata *const dest, db_metadata const *const src,
+        size_t const bytes)
     {
         alignas(db_metadata) std::byte buffer[sizeof(db_metadata)];
         memcpy(buffer, src, sizeof(db_metadata));

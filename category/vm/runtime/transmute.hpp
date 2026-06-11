@@ -15,8 +15,10 @@
 
 #pragma once
 
+#include <category/core/address.hpp>
+#include <category/core/assert.h>
+#include <category/core/bytes.hpp>
 #include <category/core/runtime/uint256.hpp>
-#include <category/vm/core/assert.h>
 
 #include <evmc/evmc.h>
 #include <evmc/evmc.hpp>
@@ -38,14 +40,14 @@ extern "C" __m256i monad_vm_runtime_load_bounded_le_raw();
 namespace monad::vm::runtime
 {
     static_assert(sizeof(evmc_address) == 20);
-    static_assert(sizeof(evmc_bytes32) == 32);
+    static_assert(sizeof(bytes32_t) == 32);
     static_assert(sizeof(uint256_t) == 32);
 
     [[gnu::always_inline]]
     inline uint256_t
-    uint256_load_bounded_le(std::uint8_t const *bytes, std::int64_t max_len)
+    uint256_load_bounded_le(uint8_t const *const bytes, int64_t const max_len)
     {
-        if (MONAD_VM_LIKELY(max_len >= 32)) {
+        if (MONAD_LIKELY(max_len >= 32)) {
             return uint256_t::load_le_unsafe(bytes);
         }
         return uint256_t{monad_vm_runtime_load_bounded_le(bytes, max_len)};
@@ -53,37 +55,37 @@ namespace monad::vm::runtime
 
     [[gnu::always_inline]]
     inline uint256_t
-    uint256_load_bounded_be(std::uint8_t const *bytes, std::int64_t max_len)
+    uint256_load_bounded_be(uint8_t const *const bytes, int64_t const max_len)
     {
         return uint256_load_bounded_le(bytes, max_len).to_be();
     }
 
     [[gnu::always_inline]]
-    inline evmc::bytes32 bytes32_from_uint256(uint256_t const &x)
+    inline bytes32_t bytes32_from_uint256(uint256_t const &x)
     {
-        evmc_bytes32 ret;
+        bytes32_t ret;
         x.store_be(ret.bytes);
         return ret;
     }
 
     [[gnu::always_inline]]
-    inline evmc::address address_from_uint256(uint256_t const &x)
+    inline Address address_from_uint256(uint256_t const &x)
     {
         auto const *bytes = x.as_bytes();
 
-        std::uint64_t t2;
+        uint64_t t2;
         std::memcpy(&t2, bytes, 8);
         t2 = std::byteswap(t2);
 
-        std::uint64_t t1;
+        uint64_t t1;
         std::memcpy(&t1, bytes + 8, 8);
         t1 = std::byteswap(t1);
 
-        std::uint32_t t0;
+        uint32_t t0;
         std::memcpy(&t0, bytes + 16, 4);
         t0 = std::byteswap(t0);
 
-        evmc_address ret;
+        Address ret;
         std::memcpy(ret.bytes, &t0, 4);
         std::memcpy(ret.bytes + 4, &t1, 8);
         std::memcpy(ret.bytes + 12, &t2, 8);
@@ -91,23 +93,23 @@ namespace monad::vm::runtime
     }
 
     [[gnu::always_inline]]
-    inline uint256_t uint256_from_bytes32(evmc::bytes32 const &x)
+    inline uint256_t uint256_from_bytes32(bytes32_t const &x)
     {
         return uint256_t::load_be(x.bytes);
     }
 
     [[gnu::always_inline]]
-    inline uint256_t uint256_from_address(evmc::address const &addr)
+    inline uint256_t uint256_from_address(Address const &addr)
     {
-        std::uint32_t t2;
+        uint32_t t2;
         std::memcpy(&t2, addr.bytes, 4);
         t2 = std::byteswap(t2);
 
-        std::uint64_t t1;
+        uint64_t t1;
         std::memcpy(&t1, addr.bytes + 4, 8);
         t1 = std::byteswap(t1);
 
-        std::uint64_t t0;
+        uint64_t t0;
         std::memcpy(&t0, addr.bytes + 12, 8);
         t0 = std::byteswap(t0);
 
@@ -119,12 +121,12 @@ namespace monad::vm::runtime
         return std::bit_cast<uint256_t>(ret);
     }
 
-    template <std::uint64_t N>
+    template <uint64_t N>
         requires(N < 64)
     [[gnu::always_inline]]
     constexpr bool is_bounded_by_bits(uint256_t const &x)
     {
-        static constexpr std::uint64_t mask = ~((std::uint64_t{1} << N) - 1);
+        static constexpr uint64_t mask = ~((uint64_t{1} << N) - 1);
         return ((x[0] & mask) | x[1] | x[2] | x[3]) == 0;
     }
 

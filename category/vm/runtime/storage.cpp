@@ -13,8 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/core/bytes.hpp>
+#include <category/core/likely.h>
 #include <category/core/runtime/uint256.hpp>
-#include <category/vm/core/assert.h>
 #include <category/vm/evm/explicit_traits.hpp>
 #include <category/vm/evm/traits.hpp>
 #include <category/vm/runtime/storage.hpp>
@@ -55,9 +56,9 @@ namespace monad::vm::runtime
     template <Traits traits>
     void sstore(
         Context *ctx, uint256_t const *key_ptr, uint256_t const *value_ptr,
-        std::int64_t remaining_block_base_gas)
+        int64_t const remaining_block_base_gas)
     {
-        if (MONAD_VM_UNLIKELY(ctx->env.evmc_flags & evmc_flags::EVMC_STATIC)) {
+        if (MONAD_UNLIKELY(ctx->env.evmc_flags & evmc_flags::EVMC_STATIC)) {
             ctx->exit(StatusCode::Error);
         }
 
@@ -102,8 +103,8 @@ namespace monad::vm::runtime
 
 #ifdef MONAD_COMPILER_TESTING
     bool debug_tstore_stack(
-        Context const *ctx, uint256_t const *stack, uint64_t stack_size,
-        uint64_t offset, uint64_t base_offset)
+        Context const *ctx, uint256_t const *stack, uint64_t const stack_size,
+        uint64_t const offset, uint64_t const base_offset)
     {
         auto const magic = uint256_t{0xdeb009};
         auto const base = (magic + base_offset) * 1024;
@@ -111,7 +112,7 @@ namespace monad::vm::runtime
             auto const base_key = bytes32_from_uint256(base);
             auto const base_value = ctx->host->get_transient_storage(
                 ctx->context, &ctx->env.recipient, &base_key);
-            if (base_value != evmc::bytes32{}) {
+            if (base_value != bytes32_t{}) {
                 // If this transient storage location has already been written,
                 // then we are likely in a loop. We return early in this case
                 // to avoid repeatedly saving stack to transient storage.
@@ -132,7 +133,8 @@ namespace monad::vm::runtime
     }
 #else
     bool debug_tstore_stack(
-        Context const *, uint256_t const *, uint64_t, uint64_t, uint64_t)
+        Context const *, uint256_t const *, uint64_t const, uint64_t const,
+        uint64_t const)
     {
         std::terminate();
     }

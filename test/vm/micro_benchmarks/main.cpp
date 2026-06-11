@@ -13,6 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include "test_state.hpp"
+
+#include <category/core/address.hpp>
 #include <category/vm/utils/evm-as/kernel-builder.hpp>
 
 #include <test/vm/utils/evm-as_utils.hpp>
@@ -316,10 +319,10 @@ print_results(std::vector<BenchmarkResult> const &results, OutputFormat format)
 }
 
 static double execute_iteration(
-    evmc::VM &vm, MemoryPool &memory_pool, evmc::address const &code_address,
+    evmc::VM &vm, MemoryPool &memory_pool, Address const &code_address,
     std::vector<uint8_t> const &bytecode, test::KernelCalldata const &calldata)
 {
-    evmc::address sender_address{200};
+    Address sender_address{200};
 
     evmone::test::TestState test_state{};
     test_state.apply(evmone::state::StateDiff{
@@ -383,18 +386,17 @@ static double execute_iteration(
 
     auto const stop = std::chrono::steady_clock::now();
 
-    MONAD_VM_ASSERT(result.status_code == EVMC_SUCCESS);
+    MONAD_ASSERT(result.status_code == EVMC_SUCCESS);
 
     return static_cast<double>((stop - start).count());
 }
 
 static std::pair<double, double> execute_against_base(
-    evmc::VM &vm, MemoryPool &memory_pool,
-    evmc::address const &base_code_address,
+    evmc::VM &vm, MemoryPool &memory_pool, Address const &base_code_address,
     std::vector<uint8_t> const &base_bytecode,
-    test::KernelCalldata const &base_calldata,
-    evmc::address const &code_address, std::vector<uint8_t> const &bytecode,
-    test::KernelCalldata const &calldata, size_t iteration_count)
+    test::KernelCalldata const &base_calldata, Address const &code_address,
+    std::vector<uint8_t> const &bytecode, test::KernelCalldata const &calldata,
+    size_t iteration_count)
 {
     for (uint32_t i = 0; i < (iteration_count >> 4) + 1; ++i) {
         // warmup
@@ -463,7 +465,7 @@ static std::optional<BenchmarkResult> run_implementation_benchmark(
         compile(bench.assemble(seq), bytecode);
         auto const calldata = [&] {
             if (auto const &ss = bench.effect_free_subject_seqs) {
-                MONAD_VM_ASSERT(ss->size() == bench.subject_seqs.size());
+                MONAD_ASSERT(ss->size() == bench.subject_seqs.size());
                 return bench.calldata_generate((*ss)[i]);
             }
             else {
@@ -501,9 +503,6 @@ static BlockchainTestVM::Implementation const all_impls[] = {
     Interpreter,
     BlockchainTestVM::Implementation::Compiler,
     Evmone,
-#ifdef MONAD_COMPILER_LLVM
-    LLVM,
-#endif
 };
 
 static void run_benchmark(
@@ -661,7 +660,7 @@ BenchmarkBuilder &BenchmarkBuilder::run_throughput_benchmark()
 {
     using KB = KernelBuilder<traits>;
 
-    MONAD_VM_ASSERT(calldata_.size());
+    MONAD_ASSERT(calldata_.size());
 
     KB base_builder;
     for (size_t i = 1; i < num_inputs_; ++i) {
@@ -703,9 +702,9 @@ BenchmarkBuilder &BenchmarkBuilder::run_latency_benchmark()
 {
     using KB = KernelBuilder<traits>;
 
-    MONAD_VM_ASSERT(calldata_.size());
-    MONAD_VM_ASSERT(has_output_);
-    MONAD_VM_ASSERT(num_inputs_ >= 1);
+    MONAD_ASSERT(calldata_.size());
+    MONAD_ASSERT(has_output_);
+    MONAD_ASSERT(num_inputs_ >= 1);
 
     KB base_builder;
     if (num_inputs_ == 1) {

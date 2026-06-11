@@ -307,15 +307,15 @@ namespace allocators
     struct variable_size_allocator
     {
         using value_type = T;
-        using size_type = std::size_t;
-        using difference_type = std::ptrdiff_t;
+        using size_type = size_t;
+        using difference_type = ptrdiff_t;
 
         //! \brief Construct allocator with total storage size
         //! \param storage_bytes Total bytes needed (sizeof(T) + trailing data)
         //!
         //! The extra_bytes_ member stores the additional bytes beyond sizeof(T)
         //! needed for trailing data (path, value, child data, etc.)
-        explicit variable_size_allocator(size_t storage_bytes) noexcept
+        explicit variable_size_allocator(size_t const storage_bytes) noexcept
             : extra_bytes_(storage_bytes - sizeof(T))
         {
             MONAD_ASSERT(storage_bytes >= sizeof(T));
@@ -339,7 +339,7 @@ namespace allocators
         //! extra_bytes
         //!   (control block already includes sizeof(object), so this gives
         //!   control block + object trailing data)
-        [[nodiscard]] T *allocate(size_type n)
+        [[nodiscard]] T *allocate(size_type const n)
         {
             MONAD_ASSERT(n == 1);
             size_t const bytes = sizeof(T) + extra_bytes_;
@@ -352,7 +352,7 @@ namespace allocators
         }
 
         //! \brief Deallocate memory
-        void deallocate(T *p, size_type) noexcept
+        void deallocate(T *const p, size_type) noexcept
         {
             if constexpr (alignof(T) > alignof(max_align_t)) {
                 ::operator delete(p, std::align_val_t{alignof(T)});

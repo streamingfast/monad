@@ -27,6 +27,7 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <span>
 #include <type_traits>
 
 MONAD_MPT_NAMESPACE_BEGIN
@@ -57,7 +58,7 @@ public:
         , begin_nibble_(false)
         , end_nibble_(static_cast<size_type>(end_nibble))
     {
-        MONAD_DEBUG_ASSERT(end_nibble <= std::numeric_limits<size_type>::max());
+        MONAD_ASSERT(end_nibble <= std::numeric_limits<size_type>::max());
 #ifdef __clang_analyzer__ // false positive
         memset(data_.get(), 0, (end_nibble + 1) / 2);
 #endif
@@ -118,8 +119,7 @@ public:
     // Returns a left-aligned Nibbles containing a subrange of nibbles starting
     // at `pos` and up to `count` nibbles (or to the end if count == npos).
     // The returned Nibbles is always left-aligned (begin_nibble_ == 0).
-    inline constexpr Nibbles
-    substr(unsigned const pos, unsigned const count = npos) const;
+    inline constexpr Nibbles substr(unsigned pos, unsigned count = npos) const;
 
     inline constexpr bool operator==(NibblesView const &other) const;
     inline constexpr auto operator<=>(NibblesView const &other) const;
@@ -127,13 +127,13 @@ public:
     [[nodiscard]] unsigned char get(unsigned const i) const
     {
         MONAD_ASSERT(i < nibble_size());
-        return get_nibble(data_.get(), begin_nibble_ + i);
+        return ::get_nibble(data_.get(), begin_nibble_ + i);
     }
 
     constexpr void set(unsigned const i, unsigned char const value)
     {
-        MONAD_DEBUG_ASSERT(value <= 0xF);
-        MONAD_DEBUG_ASSERT(
+        MONAD_ASSERT(value <= 0xF);
+        MONAD_ASSERT(
             i < static_cast<unsigned>(
                     end_nibble_ - static_cast<size_type>(begin_nibble_)));
         ::set_nibble(data_.get(), begin_nibble_ + i, value);
@@ -176,7 +176,7 @@ public:
                                : static_cast<size_type>(
                                      end_nibble - begin_nibble + begin_nibble_))
     {
-        MONAD_DEBUG_ASSERT(
+        MONAD_ASSERT(
             begin_nibble <= end_nibble &&
             end_nibble <= std::numeric_limits<size_type>::max());
     }
@@ -186,8 +186,7 @@ public:
     constexpr NibblesView(byte_string_view const &s) noexcept
         : NibblesView(false, static_cast<uint8_t>(2 * s.size()), s.data())
     {
-        MONAD_DEBUG_ASSERT(
-            (s.size() * 2) <= std::numeric_limits<size_type>::max());
+        MONAD_ASSERT((s.size() * 2) <= std::numeric_limits<size_type>::max());
     }
 
     // constructor from byte_string
@@ -228,6 +227,11 @@ public:
                    : ((end_nibble_ + 1) / 2);
     }
 
+    std::span<unsigned char const> data_span() const noexcept
+    {
+        return {data_, data_size()};
+    }
+
     constexpr size_type nibble_size() const
     {
         return end_nibble_ - static_cast<size_type>(begin_nibble_);
@@ -236,7 +240,7 @@ public:
     constexpr NibblesView
     substr(unsigned const pos, unsigned const count = npos) const
     {
-        MONAD_DEBUG_ASSERT(count == npos || count <= (nibble_size() - pos));
+        MONAD_ASSERT(count == npos || count <= (nibble_size() - pos));
         auto const begin_nibble = static_cast<unsigned>(begin_nibble_) + pos;
         return NibblesView{
             begin_nibble,
@@ -263,7 +267,6 @@ public:
         }
 
         if (nibble_size()) {
-            MONAD_DEBUG_ASSERT(data_ && other.data_);
             for (auto i = 0u; i < nibble_size(); ++i) {
                 if (get(i) != other.get(i)) {
                     return false;

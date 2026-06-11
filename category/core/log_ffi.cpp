@@ -13,6 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/core/log.hpp>
 #include <category/core/log_ffi.h>
 
 #include <cerrno>
@@ -25,10 +26,6 @@
 #include <memory>
 #include <span>
 #include <utility>
-
-#include <quill/LogLevel.h>
-#include <quill/Quill.h>
-#include <quill/handlers/Handler.h>
 
 static thread_local char error_buf[1024];
 
@@ -50,7 +47,7 @@ enum syslog_level : uint8_t
     Debug = 7,
 };
 
-constexpr uint8_t to_syslog_level(quill::LogLevel l)
+constexpr uint8_t to_syslog_level(quill::LogLevel const l)
 {
     using quill::LogLevel;
 
@@ -76,7 +73,7 @@ constexpr uint8_t to_syslog_level(quill::LogLevel l)
     }
 }
 
-constexpr quill::LogLevel to_quill_log_level(syslog_level l)
+constexpr quill::LogLevel to_quill_log_level(syslog_level const l)
 {
     using quill::LogLevel;
 
@@ -115,7 +112,7 @@ class LogCallbackHandler : public quill::Handler
 public:
     LogCallbackHandler(
         monad_log_write_callback *write_fn, monad_log_flush_callback *flush_fn,
-        uintptr_t user)
+        uintptr_t const user)
         : write_fn_{write_fn}
         , flush_fn_{flush_fn}
         , user_{user}
@@ -148,9 +145,9 @@ private:
 };
 
 int monad_log_handler_create(
-    struct monad_log_handler **handler_p, char const *name,
+    struct monad_log_handler **const handler_p, char const *const name,
     monad_log_write_callback *write_fn, monad_log_flush_callback *flush_fn,
-    uintptr_t user)
+    uintptr_t const user)
 {
     if (name == nullptr || std::strlen(name) == 0) {
         *std::format_to(error_buf, "invalid handler name") = '\0';
@@ -177,7 +174,7 @@ int monad_log_handler_create(
 }
 
 int monad_log_handler_create_stdout_handler(
-    struct monad_log_handler **handler_p)
+    struct monad_log_handler **const handler_p)
 {
     *handler_p = nullptr;
     try {
@@ -202,13 +199,14 @@ int monad_log_handler_create_stdout_handler(
     }
 }
 
-void monad_log_handler_destroy(struct monad_log_handler *handler)
+void monad_log_handler_destroy(struct monad_log_handler *const handler)
 {
     delete handler;
 }
 
 int monad_log_init(
-    struct monad_log_handler **handlers, size_t handler_count, uint8_t level)
+    struct monad_log_handler **const handlers, size_t const handler_count,
+    uint8_t const level)
 {
     using std::chrono::duration_cast, std::chrono::nanoseconds,
         std::chrono::microseconds;

@@ -15,6 +15,7 @@
 
 #pragma once
 
+#include <category/core/bytes.hpp>
 #include <category/vm/code.hpp>
 #include <category/vm/compiler.hpp>
 #include <category/vm/compiler/ir/x86.hpp>
@@ -24,6 +25,10 @@
 #include <category/vm/memory_pool.hpp>
 #include <category/vm/runtime/allocator.hpp>
 #include <category/vm/utils/debug.hpp>
+
+#include <array>
+#include <optional>
+#include <string>
 
 namespace monad::vm
 {
@@ -121,28 +126,37 @@ namespace monad::vm
 
     class VM
     {
+    public:
+        enum Mode
+        {
+            Dual,
+            CompilerOnly,
+            InterpreterOnly
+        };
+
+    private:
+        Mode mode_;
         Compiler compiler_;
         CompilerConfig compiler_config_;
         runtime::EvmStackAllocator stack_allocator_;
         MemoryPool memory_pool_;
 
     public:
-        explicit VM(bool enable_async = true);
+        explicit VM(Mode mode = Dual);
 
-        std::optional<SharedVarcode>
-        find_varcode(evmc::bytes32 const &code_hash)
+        std::optional<SharedVarcode> find_varcode(bytes32_t const &code_hash)
         {
             return compiler_.find_varcode(code_hash);
         }
 
         SharedVarcode try_insert_varcode(
-            evmc::bytes32 const &code_hash, SharedIntercode const &icode)
+            bytes32_t const &code_hash, SharedIntercode const &icode)
         {
             return compiler_.try_insert_varcode(code_hash, icode);
         }
 
         SharedVarcode try_insert_varcode_raw(
-            evmc::bytes32 const &code_hash, std::span<uint8_t const> code)
+            bytes32_t const &code_hash, std::span<uint8_t const> const code)
         {
             return compiler_.try_insert_varcode_raw(code_hash, code);
         }
@@ -172,7 +186,7 @@ namespace monad::vm
         /// interpreter and potentially start async compilation.
         template <Traits traits>
         evmc::Result execute(
-            Host &host, evmc_message const *msg, evmc::bytes32 const &code_hash,
+            Host &host, evmc_message const *msg, bytes32_t const &code_hash,
             SharedVarcode const &vcode);
 
         /// Execute the bytecode `code` with interpreter.
@@ -183,8 +197,17 @@ namespace monad::vm
         /// Like `execute`, but without stack unwind support.
         template <Traits traits>
         evmc::Result execute_raw(
-            runtime::Context &rt_ctx, evmc::bytes32 const &code_hash,
+            runtime::Context &rt_ctx, bytes32_t const &code_hash,
             SharedVarcode const &vcode);
+
+        /// Compile the intercode and execute. In `CompilerOnly` mode, the
+        /// function will wait for (cached) compilation to finish and execute
+        /// the native entrypoint. Otherwise start async compilation and
+        /// execute with interpreter.
+        template <Traits traits>
+        evmc::Result cached_compile_and_execute_raw(
+            runtime::Context &rt_ctx, bytes32_t const &code_hash,
+            SharedIntercode const &icode);
 
         /// Execute with interpreter, without stack unwind support.
         template <Traits traits>
@@ -216,6 +239,11 @@ namespace monad::vm
         {
             return compiler_.print_stats();
         }
+
+        static std::string mode_to_string(Mode);
+        static std::optional<Mode> mode_from_string(std::string);
+        static std::array<Mode, 3> const all_modes;
+        static std::array<std::string, 3> const all_mode_names;
 
     private:
         VmStats stats_;

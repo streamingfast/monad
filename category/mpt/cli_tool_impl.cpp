@@ -13,30 +13,28 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-#include <CLI/CLI.hpp>
-
-#include "cli_tool_impl.hpp"
+#include <category/mpt/cli_tool_impl.hpp>
 
 #include <category/async/config.hpp>
 #include <category/async/detail/scope_polyfill.hpp>
-#include <category/async/detail/start_lifetime_as_polyfill.hpp>
 #include <category/async/io.hpp>
 #include <category/async/storage_pool.hpp>
 #include <category/async/util.hpp>
 #include <category/core/assert.h>
+#include <category/core/detail/start_lifetime_as_polyfill.hpp>
+#include <category/core/hex.hpp>
 #include <category/core/io/buffers.hpp>
 #include <category/core/io/ring.hpp>
+#include <category/core/log.hpp>
 #include <category/mpt/config.hpp>
 #include <category/mpt/detail/db_metadata.hpp>
 #include <category/mpt/detail/kbhit.hpp>
+#include <category/mpt/detail/unsigned_20.hpp>
 #include <category/mpt/trie.hpp>
 
-#include <quill/Quill.h>
-
-#include <category/core/hex.hpp>
+#include <CLI/CLI.hpp>
 
 #include <algorithm>
-#include <atomic>
 #include <bit>
 #include <cctype>
 #include <cerrno>
@@ -52,6 +50,7 @@
 #include <iomanip>
 #include <iostream>
 #include <iterator>
+#include <memory>
 #include <optional>
 #include <span>
 #include <sstream>
@@ -76,7 +75,7 @@
 #include <unistd.h>
 #include <zstd.h>
 
-std::string print_bytes(MONAD_ASYNC_NAMESPACE::file_offset_t bytes_)
+std::string print_bytes(MONAD_ASYNC_NAMESPACE::file_offset_t const bytes_)
 {
     auto bytes = double(bytes_);
     std::stringstream s;
@@ -125,7 +124,7 @@ static size_t const true_hardware_concurrency = [] {
     return v;
 }();
 static size_t const total_physical_memory_bytes = [] {
-    auto v = sysconf(_SC_PHYS_PAGES);
+    auto const v = sysconf(_SC_PHYS_PAGES);
     if (v == -1) {
         throw std::system_error(errno, std::system_category());
     }
@@ -147,9 +146,11 @@ struct chunk_info_restore_t
     bool done{false};
 
     chunk_info_restore_t(
-        monad::async::storage_pool::chunk_type type_, uint32_t chunk_id_,
-        monad::mpt::detail::db_metadata::chunk_info_t metadata_,
-        std::span<std::byte const> compressed_, bool is_uncompressed_)
+        monad::async::storage_pool::chunk_type const type_,
+        uint32_t const chunk_id_,
+        monad::mpt::detail::db_metadata::chunk_info_t const metadata_,
+        std::span<std::byte const> const compressed_,
+        bool const is_uncompressed_)
         : type(type_)
         , chunk_id(chunk_id_)
         , metadata(metadata_)
@@ -292,7 +293,8 @@ struct chunk_info_archive_t
     std::future<void> compression_thread;
 
     chunk_info_archive_t(
-        monad::async::storage_pool::chunk_t *chunk_ptr_, la_int64_t metadata_)
+        monad::async::storage_pool::chunk_t *chunk_ptr_,
+        la_int64_t const metadata_)
         : chunk_ptr(std::move(chunk_ptr_))
         , metadata(metadata_)
     {
@@ -420,10 +422,10 @@ public:
     {
     }
 
-    void cli_ask_question(char const *msg)
+    void cli_ask_question(char const *const msg)
     {
         if (!no_prompt) {
-            auto answer = tty_ask_question(msg);
+            auto const answer = tty_ask_question(msg);
             cout << std::endl;
             if (tolower(answer) != 'y') {
                 cout << "Aborting." << std::endl;
@@ -434,7 +436,7 @@ public:
 
     template <class T = void>
     MONAD_ASYNC_NAMESPACE::file_offset_t print_list_info(
-        MONAD_MPT_NAMESPACE::UpdateAuxImpl &aux,
+        MONAD_MPT_NAMESPACE::UpdateAux &aux,
         MONAD_MPT_NAMESPACE::detail::db_metadata::chunk_info_t const
             *const item_,
         char const *name, T *list = nullptr)
@@ -443,14 +445,15 @@ public:
             cout << "     " << name << ": 0 chunks" << std::endl;
             return 0;
         }
-        MONAD_ASYNC_NAMESPACE::file_offset_t total_capacity = 0, total_used = 0;
+        MONAD_ASYNC_NAMESPACE::file_offset_t total_capacity = 0;
+        MONAD_ASYNC_NAMESPACE::file_offset_t total_used = 0;
         uint32_t count = 0;
         auto const *item = item_;
         do {
-            auto chunkid = item->index(aux.db_metadata());
+            auto const chunkid = item->index(aux.metadata_ctx().main());
             count++;
             auto &chunk = pool->chunk(pool->seq, chunkid);
-            MONAD_DEBUG_ASSERT(chunk.zone_id().second == chunkid);
+            MONAD_ASSERT(chunk.zone_id().second == chunkid);
             if constexpr (!std::is_void_v<T>) {
                 if (list != nullptr) {
                     la_int64_t const metadata =
@@ -460,7 +463,7 @@ public:
             }
             total_capacity += chunk.capacity();
             total_used += chunk.size();
-            item = item->next(aux.db_metadata());
+            item = item->next(aux.metadata_ctx().main());
         }
         while (item != nullptr);
         cout << "     " << name << ": " << count << " chunks with capacity "
@@ -470,10 +473,10 @@ public:
             std::cerr << "        ";
             item = item_;
             do {
-                auto chunkid = item->index(aux.db_metadata());
+                auto const chunkid = item->index(aux.metadata_ctx().main());
                 std::cerr << " " << chunkid << " ("
                           << uint32_t(item->insertion_count()) << ")";
-                item = item->next(aux.db_metadata());
+                item = item->next(aux.metadata_ctx().main());
             }
             while (item != nullptr);
             std::cerr << std::endl;
@@ -481,28 +484,32 @@ public:
         return total_used;
     }
 
-    void print_db_history_summary(MONAD_MPT_NAMESPACE::UpdateAuxImpl &aux)
+    void print_db_history_summary(MONAD_MPT_NAMESPACE::UpdateAux &aux)
     {
         cout << "MPT database has "
-             << (1 + aux.db_history_max_version() -
-                 aux.db_history_min_valid_version())
-             << " history, earliest is " << aux.db_history_min_valid_version()
-             << " latest is " << aux.db_history_max_version()
+             << (1 + aux.metadata_ctx().db_history_max_version() -
+                 aux.metadata_ctx().db_history_min_valid_version())
+             << " history, earliest is "
+             << aux.metadata_ctx().db_history_min_valid_version()
+             << " latest is " << aux.metadata_ctx().db_history_max_version()
              << ".\n     It has been configured to retain no more than "
-             << aux.version_history_length() << ".\n     Latest proposed is ("
-             << aux.get_latest_proposed_version() << ", "
+             << aux.metadata_ctx().version_history_length()
+             << ".\n     Latest proposed is ("
+             << aux.metadata_ctx().get_latest_proposed_version() << ", "
              << monad::to_hex(monad::byte_string_view(
-                    aux.get_latest_proposed_block_id().bytes,
+                    aux.metadata_ctx().get_latest_proposed_block_id().bytes,
                     sizeof(monad::bytes32_t)))
-             << ").\n     Latest voted is (" << aux.get_latest_voted_version()
-             << ", "
+             << ").\n     Latest voted is ("
+             << aux.metadata_ctx().get_latest_voted_version() << ", "
              << monad::to_hex(monad::byte_string_view(
-                    aux.get_latest_voted_block_id().bytes,
+                    aux.metadata_ctx().get_latest_voted_block_id().bytes,
                     sizeof(monad::bytes32_t)))
              << ").\n     Latest finalized is "
-             << aux.get_latest_finalized_version() << ", latest verified is "
-             << aux.get_latest_verified_version() << ", auto expire version is "
-             << aux.get_auto_expire_version_metadata() << "\n";
+             << aux.metadata_ctx().get_latest_finalized_version()
+             << ", latest verified is "
+             << aux.metadata_ctx().get_latest_verified_version()
+             << ", auto expire version is "
+             << aux.metadata_ctx().get_auto_expire_version_metadata() << "\n";
     }
 
     void do_restore_database()
@@ -540,7 +547,7 @@ public:
         unfd.reset();
 
         auto *in = archive_read_new();
-        auto unin =
+        auto const unin =
             monad::make_scope_exit([&]() noexcept { archive_read_free(in); });
         if (ARCHIVE_OK != archive_read_support_format_tar(in)) {
             std::stringstream ss;
@@ -731,33 +738,33 @@ public:
             auto io = MONAD_ASYNC_NAMESPACE::AsyncIO{*pool, rwbuf};
             MONAD_MPT_NAMESPACE::UpdateAux aux(io);
             for (;;) {
-                auto const *item = aux.db_metadata()->fast_list_begin();
+                auto const *item = aux.metadata_ctx().main()->fast_list_begin();
                 if (item == nullptr) {
                     break;
                 }
-                auto chunkid = item->index(aux.db_metadata());
+                auto const chunkid = item->index(aux.metadata_ctx().main());
                 MONAD_ASSERT(chunkid != UINT32_MAX);
-                aux.remove(chunkid);
+                aux.metadata_ctx().remove(chunkid);
                 chunks.push_back(chunkid);
             }
             for (;;) {
-                auto const *item = aux.db_metadata()->slow_list_begin();
+                auto const *item = aux.metadata_ctx().main()->slow_list_begin();
                 if (item == nullptr) {
                     break;
                 }
-                auto chunkid = item->index(aux.db_metadata());
+                auto const chunkid = item->index(aux.metadata_ctx().main());
                 MONAD_ASSERT(chunkid != UINT32_MAX);
-                aux.remove(chunkid);
+                aux.metadata_ctx().remove(chunkid);
                 chunks.push_back(chunkid);
             }
             for (;;) {
-                auto const *item = aux.db_metadata()->free_list_begin();
+                auto const *item = aux.metadata_ctx().main()->free_list_begin();
                 if (item == nullptr) {
                     break;
                 }
-                auto chunkid = item->index(aux.db_metadata());
+                auto const chunkid = item->index(aux.metadata_ctx().main());
                 MONAD_ASSERT(chunkid != UINT32_MAX);
-                aux.remove(chunkid);
+                aux.metadata_ctx().remove(chunkid);
                 chunks.push_back(chunkid);
             }
         }
@@ -819,11 +826,11 @@ public:
                     auto const *old_metadata =
                         (monad::mpt::detail::db_metadata const *)
                             i.nonchunkstorage.data();
-                    if (memcmp(
-                            old_metadata->magic,
-                            monad::mpt::detail::db_metadata::MAGIC,
-                            monad::mpt::detail::db_metadata::
-                                MAGIC_STRING_LEN)) {
+                    if (0 != memcmp(
+                                 old_metadata->magic,
+                                 monad::mpt::detail::db_metadata::MAGIC,
+                                 monad::mpt::detail::db_metadata::
+                                     MAGIC_STRING_LEN)) {
                         std::stringstream ss;
                         ss << "DB archive was generated with version "
                            << old_metadata->magic
@@ -846,7 +853,7 @@ public:
                     if (new_metadata_map == MAP_FAILED) {
                         throw std::system_error(errno, std::system_category());
                     }
-                    auto un_new_metadata_map =
+                    auto const un_new_metadata_map =
                         monad::make_scope_exit([&]() noexcept {
                             ::munmap(new_metadata_map, cnv_chunk.capacity());
                         });
@@ -979,14 +986,13 @@ public:
         size_t fast_chunks_inserted = 0;
         auto override_insertion_count =
             [](monad::mpt::detail::db_metadata *db,
-               monad::mpt::UpdateAuxImpl::chunk_list type,
+               monad::mpt::UpdateAux::chunk_list type,
                monad::mpt::detail::unsigned_20 initial_insertion_count) {
-                MONAD_ASSERT(
-                    type != monad::mpt::UpdateAuxImpl::chunk_list::free);
-                auto g = db->hold_dirty();
+                MONAD_ASSERT(type != monad::mpt::UpdateAux::chunk_list::free);
+                auto const g = db->hold_dirty();
                 auto *i =
                     const_cast<monad::mpt::detail::db_metadata::chunk_info_t *>(
-                        type == monad::mpt::UpdateAuxImpl::chunk_list::fast
+                        type == monad::mpt::UpdateAux::chunk_list::fast
                             ? db->fast_list_begin()
                             : db->slow_list_begin());
                 i->insertion_count0_ =
@@ -994,32 +1000,30 @@ public:
                 i->insertion_count1_ =
                     uint32_t(initial_insertion_count >> 10) & 0x3ff;
             };
-        for (auto &i : todecompress) {
+        for (auto const &i : todecompress) {
             if (i.type == monad::async::storage_pool::seq) {
                 if (i.metadata.in_fast_list) {
-                    aux.append(
-                        monad::mpt::UpdateAuxImpl::chunk_list::fast,
-                        i.chunk_id);
+                    aux.metadata_ctx().append(
+                        monad::mpt::UpdateAux::chunk_list::fast, i.chunk_id);
                     if (0 == fast_chunks_inserted++) {
-                        aux.modify_metadata(
+                        aux.metadata_ctx().modify_metadata(
                             override_insertion_count,
-                            monad::mpt::UpdateAuxImpl::chunk_list::fast,
+                            monad::mpt::UpdateAux::chunk_list::fast,
                             fast_list_base_insertion_count);
                     }
                 }
                 else if (i.metadata.in_slow_list) {
-                    aux.append(
-                        monad::mpt::UpdateAuxImpl::chunk_list::slow,
-                        i.chunk_id);
+                    aux.metadata_ctx().append(
+                        monad::mpt::UpdateAux::chunk_list::slow, i.chunk_id);
                     if (0 == slow_chunks_inserted++) {
-                        aux.modify_metadata(
+                        aux.metadata_ctx().modify_metadata(
                             override_insertion_count,
-                            monad::mpt::UpdateAuxImpl::chunk_list::slow,
+                            monad::mpt::UpdateAux::chunk_list::slow,
                             slow_list_base_insertion_count);
                     }
                 }
                 if (i.metadata.in_fast_list || i.metadata.in_slow_list) {
-                    auto it =
+                    auto const it =
                         std::find(chunks.begin(), chunks.end(), i.chunk_id);
                     MONAD_ASSERT(it != chunks.end());
                     *it = UINT32_MAX;
@@ -1031,44 +1035,47 @@ public:
                 max_chunk_id[monad::async::storage_pool::cnv] ==
             todecompress.size() - 1);
         if (fast_chunks_inserted == 0) {
-            aux.append(
-                monad::mpt::UpdateAuxImpl::chunk_list::fast,
-                fast_list_begin_index);
-            auto it =
+            aux.metadata_ctx().append(
+                monad::mpt::UpdateAux::chunk_list::fast, fast_list_begin_index);
+            auto const it =
                 std::find(chunks.begin(), chunks.end(), fast_list_begin_index);
             MONAD_ASSERT(it != chunks.end());
             *it = UINT32_MAX;
             // override the first insertion count
-            aux.modify_metadata(
+            aux.metadata_ctx().modify_metadata(
                 override_insertion_count,
-                monad::mpt::UpdateAuxImpl::chunk_list::fast,
+                monad::mpt::UpdateAux::chunk_list::fast,
                 fast_list_base_insertion_count);
         }
         MONAD_ASSERT(
-            aux.db_metadata()->fast_list.begin == fast_list_begin_index);
-        MONAD_ASSERT(aux.db_metadata()->fast_list.end == fast_list_end_index);
+            aux.metadata_ctx().main()->fast_list.begin ==
+            fast_list_begin_index);
+        MONAD_ASSERT(
+            aux.metadata_ctx().main()->fast_list.end == fast_list_end_index);
 
         if (slow_chunks_inserted == 0) {
-            aux.append(
-                monad::mpt::UpdateAuxImpl::chunk_list::slow,
-                slow_list_begin_index);
-            auto it =
+            aux.metadata_ctx().append(
+                monad::mpt::UpdateAux::chunk_list::slow, slow_list_begin_index);
+            auto const it =
                 std::find(chunks.begin(), chunks.end(), slow_list_begin_index);
             MONAD_ASSERT(it != chunks.end());
             *it = UINT32_MAX;
             // override the first insertion count
-            aux.modify_metadata(
+            aux.metadata_ctx().modify_metadata(
                 override_insertion_count,
-                monad::mpt::UpdateAuxImpl::chunk_list::slow,
+                monad::mpt::UpdateAux::chunk_list::slow,
                 slow_list_base_insertion_count);
         }
         MONAD_ASSERT(
-            aux.db_metadata()->slow_list.begin == slow_list_begin_index);
-        MONAD_ASSERT(aux.db_metadata()->slow_list.end == slow_list_end_index);
+            aux.metadata_ctx().main()->slow_list.begin ==
+            slow_list_begin_index);
+        MONAD_ASSERT(
+            aux.metadata_ctx().main()->slow_list.end == slow_list_end_index);
 
-        for (unsigned int &chunk : chunks) {
+        for (unsigned int const &chunk : chunks) {
             if (chunk != UINT32_MAX) {
-                aux.append(monad::mpt::UpdateAuxImpl::chunk_list::free, chunk);
+                aux.metadata_ctx().append(
+                    monad::mpt::UpdateAux::chunk_list::free, chunk);
             }
         }
 
@@ -1095,9 +1102,10 @@ public:
         if (fd == -1) {
             throw std::system_error(errno, std::system_category());
         }
-        auto unfd1 = monad::make_scope_fail(
+        auto const unfd1 = monad::make_scope_fail(
             [&]() noexcept { ::unlink(archive_database.c_str()); });
-        auto unfd2 = monad::make_scope_exit([&]() noexcept { ::close(fd); });
+        auto const unfd2 =
+            monad::make_scope_exit([&]() noexcept { ::close(fd); });
 
         {
             struct statfs statfs;
@@ -1167,7 +1175,7 @@ public:
             if (out == nullptr) {
                 throw std::runtime_error("libarchive failed");
             }
-            auto unout = monad::make_scope_exit([&]() noexcept {
+            auto const unout = monad::make_scope_exit([&]() noexcept {
                 archive_write_close(out);
                 archive_write_free(out);
             });
@@ -1297,7 +1305,7 @@ public:
                         if (entry == nullptr) {
                             throw std::runtime_error("libarchive failed");
                         }
-                        auto unentry = monad::make_scope_exit(
+                        auto const unentry = monad::make_scope_exit(
                             [&]() noexcept { archive_entry_free(entry); });
                         std::string leafname;
                         auto const [chunktype, chunkid] =
@@ -1369,7 +1377,8 @@ public:
 };
 
 int main_impl(
-    std::ostream &cout, std::ostream &cerr, std::span<std::string_view> args)
+    std::ostream &cout, std::ostream &cerr,
+    std::span<std::string_view> const args)
 {
     CLI::App cli("Tool for managing MPT databases", "monad-mpt");
     cli.footer(R"(Suitable sources of block storage:
@@ -1486,7 +1495,7 @@ opened.
                 cli.parse(std::move(rargs));
             }
 
-            quill::start(true);
+            monad::start_logger_minimal();
 
             auto mode =
                 MONAD_ASYNC_NAMESPACE::storage_pool::mode::open_existing;
@@ -1499,7 +1508,7 @@ opened.
                 impl.allow_dirty || !impl.archive_database.empty();
             impl.flags.num_cnv_chunks =
                 impl.root_offsets_chunk_count +
-                monad::mpt::UpdateAuxImpl::cnv_chunks_for_db_metadata;
+                monad::mpt::UpdateAux::cnv_chunks_for_db_metadata;
             if (!impl.restore_database.empty()) {
                 if (!impl.archive_database.empty()) {
                     impl.cli_ask_question(
@@ -1515,7 +1524,7 @@ opened.
                 std::stringstream ss;
                 ss << "WARNING: --create-empty will destroy all "
                       "existing data on";
-                for (auto &i : impl.storage_paths) {
+                for (auto const &i : impl.storage_paths) {
                     ss << " " << i;
                 }
                 ss << ". Are you sure?\n";
@@ -1534,7 +1543,7 @@ opened.
                 std::stringstream ss;
                 ss << "WARNING: --truncate will destroy all "
                       "existing data on";
-                for (auto &i : impl.storage_paths) {
+                for (auto const &i : impl.storage_paths) {
                     ss << " " << i;
                 }
                 ss << ". Are you sure?\n";
@@ -1589,7 +1598,7 @@ opened.
             auto const default_prec = int(cout.precision());
             std::fixed(cout);
             for (auto const &device : impl.pool->devices()) {
-                auto cap = device.capacity();
+                auto const cap = device.capacity();
                 cout << "\n   " << std::setw(15) << print_bytes(cap.first)
                      << std::setw(15) << print_bytes(cap.second) << std::setw(6)
                      << std::setprecision(2)
@@ -1602,21 +1611,27 @@ opened.
 
             cout << "MPT database internal lists:\n";
             impl.total_used += impl.print_list_info(
-                aux, aux.db_metadata()->fast_list_begin(), "Fast", &impl.fast);
+                aux,
+                aux.metadata_ctx().main()->fast_list_begin(),
+                "Fast",
+                &impl.fast);
             impl.total_used += impl.print_list_info(
-                aux, aux.db_metadata()->slow_list_begin(), "Slow", &impl.slow);
+                aux,
+                aux.metadata_ctx().main()->slow_list_begin(),
+                "Slow",
+                &impl.slow);
             impl.print_list_info(
-                aux, aux.db_metadata()->free_list_begin(), "Free");
+                aux, aux.metadata_ctx().main()->free_list_begin(), "Free");
             impl.print_db_history_summary(aux);
 
             if (impl.reset_history_length) {
                 // set to fixed history length, database will prune any outdated
                 // versions outside of new history length window
                 cout << "\nResetting history length from "
-                     << aux.version_history_length() << " to "
+                     << aux.metadata_ctx().version_history_length() << " to "
                      << impl.reset_history_length.value() << "... \n";
                 if (impl.reset_history_length.value() <
-                    aux.version_history_length()) {
+                    aux.metadata_ctx().version_history_length()) {
                     std::stringstream ss;
                     ss << "WARNING: --reset-history-length can potentially "
                           "prune "
@@ -1625,8 +1640,7 @@ opened.
                        << " versions. Are you sure?\n";
                     impl.cli_ask_question(ss.str().c_str());
                 }
-                aux.unset_io();
-                aux.set_io(io, impl.reset_history_length);
+                aux.init(io, impl.reset_history_length);
                 cout << "Success! Done resetting history to "
                      << impl.reset_history_length.value() << ".\n";
                 impl.print_db_history_summary(aux);
@@ -1634,32 +1648,40 @@ opened.
             }
             if (impl.rewind_database_to) {
                 if (*impl.rewind_database_to <
-                    aux.db_history_min_valid_version()) {
+                    aux.metadata_ctx().db_history_min_valid_version()) {
                     cout << "\nWARNING: Cannot rewind database to before "
-                         << aux.db_history_min_valid_version()
+                         << aux.metadata_ctx().db_history_min_valid_version()
                          << ", ignoring request.\n";
                 }
                 else if (
-                    *impl.rewind_database_to >= aux.db_history_max_version()) {
+                    *impl.rewind_database_to >=
+                    aux.metadata_ctx().db_history_max_version()) {
                     cout << "\nWARNING: Cannot rewind database to after or "
                             "equal "
-                         << aux.db_history_max_version()
+                         << aux.metadata_ctx().db_history_max_version()
                          << ", ignoring request.\n";
                 }
                 else {
                     std::stringstream ss;
                     ss << "\nWARNING: --rewind-to will destroy history "
                        << (*impl.rewind_database_to + 1) << " - "
-                       << aux.db_history_max_version() << ". Are you sure?\n";
+                       << aux.metadata_ctx().db_history_max_version()
+                       << ". Are you sure?\n";
                     impl.cli_ask_question(ss.str().c_str());
                     aux.rewind_to_version(*impl.rewind_database_to);
                     cout << "\nSuccess! Now:\n";
                     impl.print_list_info(
-                        aux, aux.db_metadata()->fast_list_begin(), "Fast");
+                        aux,
+                        aux.metadata_ctx().main()->fast_list_begin(),
+                        "Fast");
                     impl.print_list_info(
-                        aux, aux.db_metadata()->slow_list_begin(), "Slow");
+                        aux,
+                        aux.metadata_ctx().main()->slow_list_begin(),
+                        "Slow");
                     impl.print_list_info(
-                        aux, aux.db_metadata()->free_list_begin(), "Free");
+                        aux,
+                        aux.metadata_ctx().main()->free_list_begin(),
+                        "Free");
                     return 0;
                 }
             }

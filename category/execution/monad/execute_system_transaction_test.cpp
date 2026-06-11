@@ -13,11 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/core/address.hpp>
 #include <category/core/byte_string.hpp>
 #include <category/core/bytes.hpp>
 #include <category/core/hex.hpp>
 #include <category/core/result.hpp>
-#include <category/execution/ethereum/core/address.hpp>
 #include <category/execution/ethereum/db/trie_db.hpp>
 #include <category/execution/ethereum/db/util.hpp>
 #include <category/execution/ethereum/metrics/block_metrics.hpp>
@@ -48,8 +48,7 @@ using namespace monad::test;
 
 TEST(SystemTransaction, prestate_trace_staking_epoch_change)
 {
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
@@ -162,8 +161,7 @@ TEST(SystemTransaction, prestate_trace_staking_epoch_change)
 
 TEST(SystemTransaction, statediff_trace_staking_epoch_change)
 {
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
@@ -288,8 +286,7 @@ TEST(SystemTransaction, statediff_trace_staking_epoch_change)
 
 TEST(SystemTransaction, static_validate_system_transaction_failure)
 {
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 
@@ -327,8 +324,7 @@ TEST(SystemTransaction, static_validate_system_transaction_failure)
 
 TEST(SystemTransaction, static_validate_transaction_failure)
 {
-    InMemoryMachine machine;
-    mpt::Db db{machine};
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
     TrieDb tdb{db};
     vm::VM vm;
 

@@ -13,10 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-#include <from_json.hpp>
+#include <category/core/log.hpp>
 #include <revision_map.hpp>
 #include <transaction_test.hpp>
 
+#include <category/core/address.hpp>
 #include <category/core/assert.h>
 #include <category/core/byte_string.hpp>
 #include <category/core/config.hpp>
@@ -35,12 +36,11 @@
 #include <nlohmann/json.hpp>
 #include <nlohmann/json_fwd.hpp>
 
-#include <quill/bundled/fmt/core.h>
-#include <quill/detail/LogMacros.h>
-
 #include <gtest/gtest.h>
 
 #include <test_resource_data.h>
+
+#include <test/utils/from_json.hpp>
 
 #include <algorithm>
 #include <cstdint>
@@ -68,8 +68,7 @@ void process_transaction(Transaction const &txn, nlohmann::json const &expected)
             EXPECT_FALSE(expected.contains("exception"));
 
             // check sender
-            EXPECT_EQ(
-                sender.value(), expected.at("sender").get<evmc::address>());
+            EXPECT_EQ(sender.value(), expected.at("sender").get<Address>());
 
             // check gas
             EXPECT_EQ(

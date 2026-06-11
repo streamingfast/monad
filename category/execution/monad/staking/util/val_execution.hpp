@@ -15,10 +15,10 @@
 
 #pragma once
 
+#include <category/core/address.hpp>
 #include <category/core/byte_string.hpp>
 #include <category/core/bytes.hpp>
 #include <category/core/int.hpp>
-#include <category/execution/ethereum/core/address.hpp>
 #include <category/execution/ethereum/core/contract/big_endian.hpp>
 #include <category/execution/ethereum/core/contract/storage_variable.hpp>
 #include <category/execution/monad/staking/config.hpp>
@@ -85,7 +85,7 @@ public:
             address_flags + StorageVariable<AddressFlags_t>::N;
     };
 
-    ValExecution(State &state, Address const &address, bytes32_t const key);
+    ValExecution(State &state, Address const &address, bytes32_t key);
 
     /////////////
     // Getters //

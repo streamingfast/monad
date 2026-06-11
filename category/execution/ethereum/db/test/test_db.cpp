@@ -13,6 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/core/address.hpp>
 #include <category/core/keccak.hpp>
 #include <category/execution/ethereum/core/account.hpp>
 #include <category/execution/ethereum/core/receipt.hpp>
@@ -32,7 +33,6 @@
 #include <category/mpt/traverse_util.hpp>
 
 #include <ethash/keccak.hpp>
-#include <intx/intx.hpp>
 #include <nlohmann/json_fwd.hpp>
 
 #include <gmock/gmock.h>
@@ -54,6 +54,7 @@
 
 using namespace monad;
 using namespace monad::test;
+using namespace monad::literals;
 
 namespace
 {
@@ -70,8 +71,7 @@ namespace
     {
         static constexpr bool on_disk = false;
 
-        InMemoryMachine machine;
-        mpt::Db db{machine};
+        mpt::Db db{std::make_unique<InMemoryMachine>()};
         vm::VM vm;
     };
 
@@ -79,8 +79,7 @@ namespace
     {
         static constexpr bool on_disk = true;
 
-        OnDiskMachine machine;
-        mpt::Db db{machine, mpt::OnDiskDbConfig{}};
+        mpt::Db db{std::make_unique<OnDiskMachine>(), mpt::OnDiskDbConfig{}};
         vm::VM vm;
     };
 
@@ -91,8 +90,8 @@ namespace
     // DB Getters
     ///////////////////////////////////////////
     std::vector<CallFrame> read_call_frame(
-        mpt::Node::SharedPtr root, mpt::Db &db, uint64_t const block_number,
-        uint64_t const txn_idx)
+        mpt::Node::SharedPtr const root, mpt::Db &db,
+        uint64_t const block_number, uint64_t const txn_idx)
     {
         using namespace mpt;
 
@@ -190,23 +189,26 @@ TEST(DBTest, read_only)
         (::testing::UnitTest::GetInstance()->current_test_info()->name() +
          std::to_string(rand()));
     {
-        OnDiskMachine machine;
-        mpt::Db db{machine, mpt::OnDiskDbConfig{.dbname_paths = {name}}};
+        mpt::Db db{
+            std::make_unique<OnDiskMachine>(),
+            mpt::OnDiskDbConfig{.dbname_paths = {name}}};
         TrieDb rw(db);
 
         Account const acct1{.nonce = 1};
         commit_sequential(
             rw,
-            StateDeltas{
-                {ADDR_A,
-                 StateDelta{.account = {std::nullopt, acct1}, .storage = {}}}},
+            sd(
+                {{ADDR_A,
+                  StateDelta{
+                      .account = {std::nullopt, acct1}, .storage = {}}}}),
             Code{},
             BlockHeader{.number = 0});
         Account const acct2{.nonce = 2};
         commit_sequential(
             rw,
-            StateDeltas{
-                {ADDR_A, StateDelta{.account = {acct1, acct2}, .storage = {}}}},
+            sd(
+                {{ADDR_A,
+                  StateDelta{.account = {acct1, acct2}, .storage = {}}}}),
             Code{},
             BlockHeader{.number = 1});
 
@@ -222,8 +224,9 @@ TEST(DBTest, read_only)
         Account const acct3{.nonce = 3};
         commit_sequential(
             rw,
-            StateDeltas{
-                {ADDR_A, StateDelta{.account = {acct2, acct3}, .storage = {}}}},
+            sd(
+                {{ADDR_A,
+                  StateDelta{.account = {acct2, acct3}, .storage = {}}}}),
             Code{},
             BlockHeader{.number = 2});
         // Read block 0
@@ -247,11 +250,11 @@ TYPED_TEST(DBTest, read_storage)
     TrieDb tdb{this->db};
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ADDR_A,
-             StateDelta{
-                 .account = {std::nullopt, acct},
-                 .storage = {{key1, {bytes32_t{}, value1}}}}}},
+        sd(
+            {{ADDR_A,
+              StateDelta{
+                  .account = {std::nullopt, acct},
+                  .storage = {{key1, {bytes32_t{}, value1}}}}}}),
         Code{},
         BlockHeader{});
 
@@ -287,7 +290,7 @@ TYPED_TEST(DBTest, read_code)
     TrieDb tdb{this->db};
     commit_sequential(
         tdb,
-        StateDeltas{{ADDR_A, StateDelta{.account = {std::nullopt, acct_a}}}},
+        sd({{ADDR_A, StateDelta{.account = {std::nullopt, acct_a}}}}),
         Code{{A_CODE_HASH, A_ICODE}},
         BlockHeader{.number = 0});
 
@@ -297,7 +300,7 @@ TYPED_TEST(DBTest, read_code)
     Account acct_b{.balance = 0, .code_hash = B_CODE_HASH, .nonce = 1};
     commit_sequential(
         tdb,
-        StateDeltas{{ADDR_B, StateDelta{.account = {std::nullopt, acct_b}}}},
+        sd({{ADDR_B, StateDelta{.account = {std::nullopt, acct_b}}}}),
         Code{{B_CODE_HASH, B_ICODE}},
         BlockHeader{.number = 1});
 
@@ -314,7 +317,7 @@ TEST_F(OnDiskTrieDbFixture, get_proposal_block_ids)
 
     tdb.set_block_and_prefix(8);
     auto const round9_block_id =
-        commit_sequential(tdb, StateDeltas{}, Code{}, BlockHeader{.number = 9});
+        commit_sequential(tdb, sd({}), Code{}, BlockHeader{.number = 9});
     EXPECT_EQ(db.get_latest_finalized_version(), 9);
     {
         auto const proposals = get_proposal_block_ids(db, 9);
@@ -327,7 +330,7 @@ TEST_F(OnDiskTrieDbFixture, get_proposal_block_ids)
     BlockHeader const header0{.number = 10};
     bytes32_t const block_id0{header0.number};
     block_ids.emplace(block_id0);
-    tdb.commit(StateDeltas{}, Code{}, block_id0, header0);
+    commit_simple(tdb, sd({}), Code{}, block_id0, header0);
     {
         auto const proposals = get_proposal_block_ids(db, 10);
         EXPECT_EQ(std::set(proposals.begin(), proposals.end()), block_ids);
@@ -336,7 +339,7 @@ TEST_F(OnDiskTrieDbFixture, get_proposal_block_ids)
     BlockHeader const header1{.number = 10};
     bytes32_t const block_id1{header1.number};
     block_ids.emplace(block_id1);
-    tdb.commit(StateDeltas{}, Code{}, block_id1, header1);
+    commit_simple(tdb, sd({}), Code{}, block_id1, header1);
     {
         auto const proposals = get_proposal_block_ids(db, 10);
         EXPECT_EQ(std::set(proposals.begin(), proposals.end()), block_ids);
@@ -346,7 +349,7 @@ TEST_F(OnDiskTrieDbFixture, get_proposal_block_ids)
     BlockHeader const header2{.number = 10};
     bytes32_t const block_id2{header2.number};
     block_ids.emplace(block_id2);
-    tdb.commit(StateDeltas{}, Code{}, block_id2, header2);
+    commit_simple(tdb, sd({}), Code{}, block_id2, header2);
 
     tdb.finalize(10, block_id0);
     EXPECT_EQ(db.get_latest_finalized_version(), 10);
@@ -362,24 +365,24 @@ TYPED_TEST(DBTest, ModifyStorageOfAccount)
     TrieDb tdb{this->db};
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ADDR_A,
-             StateDelta{
-                 .account = {std::nullopt, acct},
-                 .storage =
-                     {{key1, {bytes32_t{}, value1}},
-                      {key2, {bytes32_t{}, value2}}}}}},
+        sd(
+            {{ADDR_A,
+              StateDelta{
+                  .account = {std::nullopt, acct},
+                  .storage =
+                      {{key1, {bytes32_t{}, value1}},
+                       {key2, {bytes32_t{}, value2}}}}}}),
         Code{},
         BlockHeader{.number = 0});
 
     acct = tdb.read_account(ADDR_A).value();
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ADDR_A,
-             StateDelta{
-                 .account = {acct, acct},
-                 .storage = {{key2, {value2, value1}}}}}},
+        sd(
+            {{ADDR_A,
+              StateDelta{
+                  .account = {acct, acct},
+                  .storage = {{key2, {value2, value1}}}}}}),
         Code{},
         BlockHeader{.number = 1});
 
@@ -393,8 +396,7 @@ TYPED_TEST(DBTest, touch_without_modify_regression)
     TrieDb tdb{this->db};
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ADDR_A, StateDelta{.account = {std::nullopt, std::nullopt}}}},
+        sd({{ADDR_A, StateDelta{.account = {std::nullopt, std::nullopt}}}}),
         Code{},
         BlockHeader{});
 
@@ -408,24 +410,24 @@ TYPED_TEST(DBTest, delete_account_modify_storage_regression)
     TrieDb tdb{this->db};
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ADDR_A,
-             StateDelta{
-                 .account = {std::nullopt, acct},
-                 .storage =
-                     {{key1, {bytes32_t{}, value1}},
-                      {key2, {bytes32_t{}, value2}}}}}},
+        sd(
+            {{ADDR_A,
+              StateDelta{
+                  .account = {std::nullopt, acct},
+                  .storage =
+                      {{key1, {bytes32_t{}, value1}},
+                       {key2, {bytes32_t{}, value2}}}}}}),
         Code{},
         BlockHeader{.number = 0});
 
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ADDR_A,
-             StateDelta{
-                 .account = {acct, std::nullopt},
-                 .storage =
-                     {{key1, {value1, value2}}, {key2, {value2, value1}}}}}},
+        sd(
+            {{ADDR_A,
+              StateDelta{
+                  .account = {acct, std::nullopt},
+                  .storage =
+                      {{key1, {value1, value2}}, {key2, {value2, value1}}}}}}),
         Code{},
         BlockHeader{.number = 1});
 
@@ -441,24 +443,24 @@ TYPED_TEST(DBTest, storage_deletion)
     TrieDb tdb{this->db};
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ADDR_A,
-             StateDelta{
-                 .account = {std::nullopt, acct},
-                 .storage =
-                     {{key1, {bytes32_t{}, value1}},
-                      {key2, {bytes32_t{}, value2}}}}}},
+        sd(
+            {{ADDR_A,
+              StateDelta{
+                  .account = {std::nullopt, acct},
+                  .storage =
+                      {{key1, {bytes32_t{}, value1}},
+                       {key2, {bytes32_t{}, value2}}}}}}),
         Code{},
         BlockHeader{.number = 0});
 
     acct = tdb.read_account(ADDR_A).value();
     commit_sequential(
         tdb,
-        StateDeltas{
-            {ADDR_A,
-             StateDelta{
-                 .account = {acct, acct},
-                 .storage = {{key1, {value1, bytes32_t{}}}}}}},
+        sd(
+            {{ADDR_A,
+              StateDelta{
+                  .account = {acct, acct},
+                  .storage = {{key1, {value1, bytes32_t{}}}}}}}),
         Code{},
         BlockHeader{.number = 1});
 
@@ -469,12 +471,10 @@ TYPED_TEST(DBTest, storage_deletion)
 
 TYPED_TEST(DBTest, commit_receipts_transactions)
 {
-    using namespace intx;
-    using namespace evmc::literals;
 
     TrieDb tdb{this->db};
     // empty receipts
-    commit_sequential(tdb, StateDeltas{}, Code{}, BlockHeader{});
+    commit_sequential(tdb, sd({}), Code{}, BlockHeader{});
     EXPECT_EQ(tdb.receipts_root(), NULL_ROOT);
 
     std::vector<Receipt> receipts;
@@ -534,7 +534,7 @@ TYPED_TEST(DBTest, commit_receipts_transactions)
     std::vector<Address> senders = recover_senders(transactions);
     commit_sequential(
         tdb,
-        StateDeltas{},
+        sd({}),
         Code{},
         BlockHeader{.number = first_block},
         receipts,
@@ -625,7 +625,7 @@ TYPED_TEST(DBTest, commit_receipts_transactions)
     senders = recover_senders(transactions);
     commit_sequential(
         tdb,
-        StateDeltas{},
+        sd({}),
         Code{},
         BlockHeader{.number = second_block},
         receipts,
@@ -649,8 +649,6 @@ TYPED_TEST(DBTest, commit_receipts_transactions)
 
 TEST_F(OnDiskTrieDbWithFileFixture, get_transactions)
 {
-    using namespace intx;
-    using namespace evmc::literals;
 
     TrieDb tdb{this->db};
 
@@ -685,7 +683,7 @@ TEST_F(OnDiskTrieDbWithFileFixture, get_transactions)
     std::vector<Address> senders = recover_senders(transactions);
     commit_sequential(
         tdb,
-        StateDeltas{},
+        sd({}),
         Code{},
         BlockHeader{.number = block_number},
         receipts,
@@ -733,9 +731,10 @@ TYPED_TEST(DBTest, to_json)
     auto db = [&] {
         if (this->on_disk) {
             return mpt::Db{
-                this->machine, mpt::OnDiskDbConfig{.dbname_paths = {dbname}}};
+                std::make_unique<OnDiskMachine>(),
+                mpt::OnDiskDbConfig{.dbname_paths = {dbname}}};
         }
-        return mpt::Db{this->machine};
+        return mpt::Db{std::make_unique<InMemoryMachine>()};
     }();
     TrieDb tdb{db};
     load_db(tdb, 0);
@@ -909,7 +908,7 @@ TYPED_TEST(DBTest, commit_call_frames)
     std::vector<Address> const senders{call_frames.size()};
     commit_sequential(
         tdb,
-        StateDeltas{},
+        sd({}),
         Code{},
         BlockHeader{},
         receipts,

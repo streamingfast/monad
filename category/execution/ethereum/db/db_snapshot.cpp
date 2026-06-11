@@ -17,8 +17,9 @@
 #include <category/core/byte_string.hpp>
 #include <category/core/config.hpp>
 #include <category/core/endian.hpp> // little endian
+#include <category/core/log.hpp>
 #include <category/core/nibble.h>
-#include <category/core/unaligned.hpp>
+#include <category/core/runtime/unaligned.hpp>
 #include <category/execution/ethereum/core/rlp/block_rlp.hpp>
 #include <category/execution/ethereum/db/db_snapshot.h>
 #include <category/execution/ethereum/db/util.hpp>
@@ -26,7 +27,6 @@
 #include <category/mpt/ondisk_db_config.hpp>
 
 #include <ankerl/unordered_dense.h>
-#include <quill/Quill.h>
 
 #include <deque>
 #include <limits>
@@ -34,7 +34,6 @@
 struct monad_db_snapshot_loader
 {
     uint64_t block;
-    monad::OnDiskMachine machine;
     monad::mpt::Db db;
     monad::mpt::Node::SharedPtr root;
     std::array<monad::byte_string, 256> eth_headers;
@@ -52,7 +51,7 @@ struct monad_db_snapshot_loader
         uint64_t const block, char const *const *const dbname_paths,
         size_t const len, unsigned const sq_thread_cpu)
         : block{block}
-        , db{machine,
+        , db{std::make_unique<monad::OnDiskMachine>(),
              monad::mpt::OnDiskDbConfig{
                  .append = true,
                  .compaction = false,
@@ -167,7 +166,8 @@ private:
     uint8_t length_{0};
 
 public:
-    void append(unsigned char branch, monad::mpt::NibblesView node_path)
+    void
+    append(unsigned char const branch, monad::mpt::NibblesView const node_path)
     {
         using namespace monad::mpt;
         unsigned const src_nibbles = node_path.nibble_size();
@@ -187,7 +187,7 @@ public:
         length_ = static_cast<uint8_t>(length_ + src_nibbles);
     }
 
-    void pop(uint8_t nibble_count)
+    void pop(uint8_t const nibble_count)
     {
         MONAD_ASSERT(length_ >= nibble_count);
         length_ -= nibble_count;
@@ -222,7 +222,8 @@ struct MonadSnapshotTraverseMachine : public monad::mpt::TraverseMachine
         uint64_t (*write)(
             uint64_t shard, monad_snapshot_type, unsigned char const *bytes,
             size_t len, void *user),
-        void *user, uint64_t const total_shards, uint64_t const shard_number)
+        void *const user, uint64_t const total_shards,
+        uint64_t const shard_number)
         : nibble{monad::mpt::INVALID_BRANCH}
         , path{}
         , account_bytes_written{account_bytes_written}
@@ -536,7 +537,7 @@ void monad_db_snapshot_loader_load(
     monad_db_snapshot_loader_flush(loader);
 }
 
-void monad_db_snapshot_loader_destroy(monad_db_snapshot_loader *loader)
+void monad_db_snapshot_loader_destroy(monad_db_snapshot_loader *const loader)
 {
     using namespace monad;
     using namespace monad::mpt;

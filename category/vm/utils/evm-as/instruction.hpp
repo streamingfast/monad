@@ -15,9 +15,10 @@
 
 #pragma once
 
+#include <category/core/address.hpp>
+#include <category/core/assert.h>
+#include <category/core/cases.hpp>
 #include <category/core/runtime/uint256.hpp>
-#include <category/vm/core/assert.h>
-#include <category/vm/core/cases.hpp>
 #include <category/vm/evm/opcodes.hpp>
 
 #include <cstdint>
@@ -30,7 +31,7 @@ namespace monad::vm::utils::evm_as
 {
     struct PlainI
     {
-        constexpr explicit PlainI(compiler::EvmOpCode opcode)
+        constexpr explicit PlainI(compiler::EvmOpCode const opcode)
             : opcode(opcode)
         {
         }
@@ -42,7 +43,7 @@ namespace monad::vm::utils::evm_as
     {
 
         constexpr explicit PushI(
-            compiler::EvmOpCode opcode, runtime::uint256_t const &imm)
+            compiler::EvmOpCode const opcode, uint256_t const &imm)
             : opcode(opcode)
             , imm(imm)
         {
@@ -54,7 +55,7 @@ namespace monad::vm::utils::evm_as
         }
 
         compiler::EvmOpCode opcode;
-        runtime::uint256_t imm;
+        uint256_t imm;
     };
 
     // NOTE: Below PushLabelI, PushAddressI, JumpdestI, CommentI, InvalidI have
@@ -99,7 +100,7 @@ namespace monad::vm::utils::evm_as
 
     struct PushAddressI
     {
-        constexpr explicit PushAddressI(evmc::address const &address)
+        constexpr explicit PushAddressI(Address const &address)
             : address(address)
         {
         }
@@ -126,7 +127,7 @@ namespace monad::vm::utils::evm_as
             return *this;
         }
 
-        evmc::address address;
+        Address address;
     };
 
     struct JumpdestI
@@ -249,62 +250,62 @@ namespace monad::vm::utils::evm_as
             PlainI, PushI, JumpdestI, PushLabelI, PushAddressI, CommentI,
             InvalidI>;
 
-        static bool is_jumpdest(T ins)
+        static bool is_jumpdest(T const ins)
         {
             return std::holds_alternative<JumpdestI>(ins);
         }
 
-        static bool is_comment(T ins)
+        static bool is_comment(T const ins)
         {
             return std::holds_alternative<CommentI>(ins);
         }
 
-        static bool is_plain(T ins)
+        static bool is_plain(T const ins)
         {
             return std::holds_alternative<PlainI>(ins);
         }
 
-        static bool is_push(T ins)
+        static bool is_push(T const ins)
         {
             return std::holds_alternative<PushI>(ins);
         }
 
-        static bool is_push_label(T ins)
+        static bool is_push_label(T const ins)
         {
             return std::holds_alternative<PushLabelI>(ins);
         }
 
-        static bool is_push_address(T ins)
+        static bool is_push_address(T const ins)
         {
             return std::holds_alternative<PushAddressI>(ins);
         }
 
-        static bool is_invalid(T ins)
+        static bool is_invalid(T const ins)
         {
             return std::holds_alternative<InvalidI>(ins);
         }
 
-        static PushI as_push(T ins)
+        static PushI as_push(T const ins)
         {
             return std::get<PushI>(ins);
         }
 
-        static PlainI as_plain(T ins)
+        static PlainI as_plain(T const ins)
         {
             return std::get<PlainI>(ins);
         }
 
-        static PushLabelI as_push_label(T ins)
+        static PushLabelI as_push_label(T const ins)
         {
             return std::get<PushLabelI>(ins);
         }
 
-        static PushAddressI as_push_address(T ins)
+        static PushAddressI as_push_address(T const ins)
         {
             return std::get<PushAddressI>(ins);
         }
 
-        static InvalidI as_invalid(T ins)
+        static InvalidI as_invalid(T const ins)
         {
             return std::get<InvalidI>(ins);
         }

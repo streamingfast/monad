@@ -27,8 +27,8 @@ namespace monad::vm::runtime
 {
     struct StoreCost
     {
-        std::int64_t gas_cost;
-        std::int64_t gas_refund;
+        int64_t gas_cost;
+        int64_t gas_refund;
     };
 
     template <Traits traits>
@@ -38,7 +38,7 @@ namespace monad::vm::runtime
     };
 
     template <Traits traits>
-    static consteval std::int64_t minimum_store_gas()
+    static consteval int64_t minimum_store_gas()
     {
         constexpr auto costs = StorageCostTable<traits>::costs;
         constexpr auto min_gas =
@@ -52,74 +52,10 @@ namespace monad::vm::runtime
     }
 
     template <Traits traits>
-    constexpr StoreCost store_cost(evmc_storage_status status)
+    constexpr StoreCost store_cost(evmc_storage_status const status)
     {
         return StorageCostTable<traits>::costs[status];
     }
-
-    template <>
-    struct StorageCostTable<EvmTraits<EVMC_FRONTIER>>
-    {
-        static constexpr auto costs = std::array{
-            StoreCost{.gas_cost = 5000, .gas_refund = 0},
-            StoreCost{.gas_cost = 20000, .gas_refund = 0},
-            StoreCost{.gas_cost = 5000, .gas_refund = 15000},
-            StoreCost{.gas_cost = 5000, .gas_refund = 0},
-            StoreCost{.gas_cost = 20000, .gas_refund = 0},
-            StoreCost{.gas_cost = 5000, .gas_refund = 15000},
-            StoreCost{.gas_cost = 20000, .gas_refund = 0},
-            StoreCost{.gas_cost = 5000, .gas_refund = 15000},
-            StoreCost{.gas_cost = 5000, .gas_refund = 0},
-        };
-    };
-
-    template <>
-    struct StorageCostTable<EvmTraits<EVMC_HOMESTEAD>>
-    {
-        static constexpr auto costs = std::array{
-            StoreCost{.gas_cost = 5000, .gas_refund = 0},
-            StoreCost{.gas_cost = 20000, .gas_refund = 0},
-            StoreCost{.gas_cost = 5000, .gas_refund = 15000},
-            StoreCost{.gas_cost = 5000, .gas_refund = 0},
-            StoreCost{.gas_cost = 20000, .gas_refund = 0},
-            StoreCost{.gas_cost = 5000, .gas_refund = 15000},
-            StoreCost{.gas_cost = 20000, .gas_refund = 0},
-            StoreCost{.gas_cost = 5000, .gas_refund = 15000},
-            StoreCost{.gas_cost = 5000, .gas_refund = 0},
-        };
-    };
-
-    template <>
-    struct StorageCostTable<EvmTraits<EVMC_TANGERINE_WHISTLE>>
-    {
-        static constexpr auto costs = std::array{
-            StoreCost{.gas_cost = 5000, .gas_refund = 0},
-            StoreCost{.gas_cost = 20000, .gas_refund = 0},
-            StoreCost{.gas_cost = 5000, .gas_refund = 15000},
-            StoreCost{.gas_cost = 5000, .gas_refund = 0},
-            StoreCost{.gas_cost = 20000, .gas_refund = 0},
-            StoreCost{.gas_cost = 5000, .gas_refund = 15000},
-            StoreCost{.gas_cost = 20000, .gas_refund = 0},
-            StoreCost{.gas_cost = 5000, .gas_refund = 15000},
-            StoreCost{.gas_cost = 5000, .gas_refund = 0},
-        };
-    };
-
-    template <>
-    struct StorageCostTable<EvmTraits<EVMC_SPURIOUS_DRAGON>>
-    {
-        static constexpr auto costs = std::array{
-            StoreCost{.gas_cost = 5000, .gas_refund = 0},
-            StoreCost{.gas_cost = 20000, .gas_refund = 0},
-            StoreCost{.gas_cost = 5000, .gas_refund = 15000},
-            StoreCost{.gas_cost = 5000, .gas_refund = 0},
-            StoreCost{.gas_cost = 20000, .gas_refund = 0},
-            StoreCost{.gas_cost = 5000, .gas_refund = 15000},
-            StoreCost{.gas_cost = 20000, .gas_refund = 0},
-            StoreCost{.gas_cost = 5000, .gas_refund = 15000},
-            StoreCost{.gas_cost = 5000, .gas_refund = 0},
-        };
-    };
 
     template <>
     struct StorageCostTable<EvmTraits<EVMC_BYZANTIUM>>

@@ -15,16 +15,14 @@
 
 #include <category/core/byte_string.hpp>
 #include <category/core/int.hpp>
+#include <category/core/rlp/decode_error.hpp>
 #include <category/execution/ethereum/core/rlp/address_rlp.hpp>
 #include <category/execution/ethereum/core/rlp/bytes_rlp.hpp>
 #include <category/execution/ethereum/core/rlp/int_rlp.hpp>
 #include <category/execution/ethereum/rlp/decode.hpp>
-#include <category/execution/ethereum/rlp/decode_error.hpp>
 #include <category/execution/ethereum/rlp/encode2.hpp>
 
 #include <evmc/evmc.hpp>
-
-#include <intx/intx.hpp>
 
 #include <gtest/gtest.h>
 
@@ -173,7 +171,6 @@ TEST(Rlp_Number, DecodeEncodeUnsigned)
 
 TEST(Rlp_Number, DecodeEncodeBigNumers)
 {
-    using namespace intx;
 
     // uint128_t
     {
@@ -230,7 +227,7 @@ TEST(Rlp_Number, DecodeEncodeBigNumers)
             0xbea34dd04b09ad3b6014251ee24578074087ee60fda8c391cf466dfe5d687d7b_u256);
     }
 
-    using namespace evmc::literals;
+    using namespace monad::literals;
     // bytes32
     {
         auto const encoding = encode_bytes32(

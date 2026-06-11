@@ -15,6 +15,7 @@
 
 #include "fixture.hpp"
 
+#include <category/core/address.hpp>
 #include <category/core/runtime/uint256.hpp>
 #include <category/vm/evm/traits.hpp>
 #include <category/vm/runtime/create.hpp>
@@ -28,11 +29,13 @@ using namespace monad::vm;
 using namespace monad::vm::runtime;
 using namespace monad::vm::compiler::test;
 
-constexpr vm::runtime::uint256_t prog = 0x63FFFFFFFF6000526004601CF3_u256;
-constexpr evmc_address result_addr = {0x42};
+constexpr uint256_t prog = 0x63FFFFFFFF6000526004601CF3_u256;
+constexpr Address result_addr = Address{uint8_t{0x42}};
 
 TYPED_TEST(RuntimeTraitsTest, Create)
 {
+    static_assert(TestFixture::Trait::evm_rev() > EVMC_HOMESTEAD);
+
     TestFixture::call(mstore<typename TestFixture::Trait>, 0, prog);
     ASSERT_EQ(this->ctx_.memory.data[31], 0xF3);
 
@@ -42,15 +45,12 @@ TYPED_TEST(RuntimeTraitsTest, Create)
 
     auto do_create = TestFixture::wrap(create<typename TestFixture::Trait>);
 
-    vm::runtime::uint256_t const addr = do_create(0, 19, 13);
+    uint256_t const addr = do_create(0, 19, 13);
 
     ASSERT_EQ(addr, uint256_from_address(result_addr));
     ASSERT_EQ(this->ctx_.result.status, StatusCode::Success);
     constexpr auto gas_remaining = [] {
-        if constexpr (TestFixture::Trait::evm_rev() < EVMC_TANGERINE_WHISTLE) {
-            return 900'000;
-        }
-        else if constexpr (TestFixture::Trait::evm_rev() < EVMC_SHANGHAI) {
+        if constexpr (TestFixture::Trait::evm_rev() < EVMC_SHANGHAI) {
             return 915'625;
         }
         else {
@@ -63,24 +63,18 @@ TYPED_TEST(RuntimeTraitsTest, Create)
 
 TYPED_TEST(RuntimeTraitsTest, CreateSizeIsZero)
 {
+    static_assert(TestFixture::Trait::evm_rev() > EVMC_HOMESTEAD);
+
     this->ctx_.gas_remaining = 1000000;
     this->host_.call_result = TestFixture::create_result(result_addr, 900000);
 
     auto do_create = TestFixture::wrap(create<typename TestFixture::Trait>);
 
-    vm::runtime::uint256_t const addr = do_create(0, 0, 0);
+    uint256_t const addr = do_create(0, 0, 0);
 
     ASSERT_EQ(this->ctx_.result.status, StatusCode::Success);
     ASSERT_EQ(addr, uint256_from_address(result_addr));
-    constexpr auto gas_remaining = [] {
-        if constexpr (TestFixture::Trait::evm_rev() < EVMC_TANGERINE_WHISTLE) {
-            return 900'000;
-        }
-        else {
-            return 915'625;
-        }
-    }();
-    ASSERT_EQ(this->ctx_.gas_remaining, gas_remaining);
+    ASSERT_EQ(this->ctx_.gas_remaining, 915'625);
 }
 
 TYPED_TEST(RuntimeTraitsTest, CreateFailure)
@@ -89,7 +83,7 @@ TYPED_TEST(RuntimeTraitsTest, CreateFailure)
 
     auto do_create = TestFixture::wrap(create<typename TestFixture::Trait>);
 
-    vm::runtime::uint256_t const addr = do_create(0, 0, 0);
+    uint256_t const addr = do_create(0, 0, 0);
 
     ASSERT_EQ(this->ctx_.result.status, StatusCode::Success);
     ASSERT_EQ(addr, 0);
@@ -108,7 +102,7 @@ TYPED_TEST(RuntimeTraitsTest, Create2)
         auto do_create2 =
             TestFixture::wrap(create2<typename TestFixture::Trait>);
 
-        vm::runtime::uint256_t const addr = do_create2(0, 19, 13, 0x99);
+        uint256_t const addr = do_create2(0, 19, 13, 0x99);
 
         ASSERT_EQ(this->ctx_.result.status, StatusCode::Success);
         ASSERT_EQ(addr, uint256_from_address(result_addr));
@@ -165,8 +159,7 @@ TYPED_TEST(RuntimeTraitsTest, CreateAboveMaxCodeSize)
         ASSERT_EQ(this->ctx_.result.status, StatusCode::OutOfGas);
         ASSERT_EQ(addr, 0);
 
-        std::free(
-            const_cast<std::uint8_t *>(this->host_.call_result.output_data));
+        std::free(const_cast<uint8_t *>(this->host_.call_result.output_data));
     }
 }
 
@@ -215,7 +208,6 @@ TYPED_TEST(RuntimeTraitsTest, Create2AboveMaxCodeSize)
         ASSERT_EQ(this->ctx_.result.status, StatusCode::OutOfGas);
         ASSERT_EQ(addr, 0);
 
-        std::free(
-            const_cast<std::uint8_t *>(this->host_.call_result.output_data));
+        std::free(const_cast<uint8_t *>(this->host_.call_result.output_data));
     }
 }

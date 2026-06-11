@@ -15,9 +15,9 @@
 
 #pragma once
 
+#include <category/core/assert.h>
 #include <category/core/runtime/non_temporal_memory.hpp>
 #include <category/core/runtime/uint256.hpp>
-#include <category/vm/core/assert.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -55,7 +55,7 @@ namespace monad::vm::runtime
             return empty() ? 0 : elements->idx;
         }
 
-        void push(CachedAllocatorElement *e)
+        void push(CachedAllocatorElement *const e)
         {
             e->next = elements;
             e->idx = size() + 1;
@@ -64,7 +64,7 @@ namespace monad::vm::runtime
 
         CachedAllocatorElement *pop()
         {
-            MONAD_VM_DEBUG_ASSERT(!empty());
+            MONAD_DEBUG_ASSERT(!empty());
             auto *ptr = elements;
             elements = ptr->next;
             return ptr;
@@ -106,7 +106,8 @@ namespace monad::vm::runtime
         /// `max_cache_byte_size_per_thread` number of bytes being
         /// consumed by each (thread local) cache.
         constexpr explicit CachedAllocator(
-            size_t max_cache_byte_size_per_thread = DEFAULT_MAX_CACHE_BYTE_SIZE)
+            size_t const max_cache_byte_size_per_thread =
+                DEFAULT_MAX_CACHE_BYTE_SIZE)
         {
             max_slots_in_cache = max_cache_byte_size_per_thread / alloc_size;
         };
@@ -132,7 +133,7 @@ namespace monad::vm::runtime
         }
 
         /// Free memory allocated with `aligned_alloc_cached`.
-        void free_cached(uint8_t *ptr) const
+        void free_cached(uint8_t *const ptr) const
         {
             if (T::cache_list.size() >= max_slots_in_cache) {
                 std::free(ptr);
