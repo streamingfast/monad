@@ -3,6 +3,7 @@
 packages=(
   apt-utils
   ca-certificates
+  ccache
   clang-19
   clang-tools-19
   clang-tidy-19
@@ -18,6 +19,7 @@ packages=(
   libclang-rt-19-dev
   llvm-19-dev
   make
+  mold
   ninja-build
   pkg-config
   python-is-python3

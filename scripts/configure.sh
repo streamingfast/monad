@@ -11,4 +11,12 @@ if [ -n "${CMAKE_TOOLCHAIN_FILE:-}" ]; then
   cmake_args+=("-DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}")
 fi
 
+# Use ccache if available for faster incremental builds
+if command -v ccache &> /dev/null; then
+  cmake_args+=(
+    "-DCMAKE_C_COMPILER_LAUNCHER=ccache"
+    "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+  )
+fi
+
 cmake "${cmake_args[@]}"

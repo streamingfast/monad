@@ -63,3 +63,4 @@ jobs:
           ulimit: "memlock=-1:-1"
           target: build_and_test
           cache-from: type=gha,scope=base
+          cache-to: type=gha,scope=build-${{ matrix.compiler.CC }}-${{ matrix.CMAKE_BUILD_TYPE }},mode=max

@@ -19,7 +19,7 @@ function(monad_compile_options target)
   set_property(TARGET ${target} PROPERTY CXX_STANDARD 23)
   set_property(TARGET ${target} PROPERTY CXX_STANDARD_REQUIRED ON)
 
-  target_compile_options(${target} PRIVATE -Wall -Wextra -Wconversion -Werror)
+  target_compile_options(${target} PRIVATE -Wall -Wextra -Wconversion -Werror -pipe)
   target_compile_definitions(${target} PUBLIC "_GNU_SOURCE")
 
   target_compile_options(
@@ -29,6 +29,11 @@ function(monad_compile_options target)
     ${target} PRIVATE $<$<AND:$<CXX_COMPILER_ID:GNU>,$<CONFIG:Release>>:-Wno-maybe-uninitialized>)
 
   target_compile_options(${target} PRIVATE $<$<CONFIG:Debug>:-Og>)
+
+  # Split DWARF: write debug info to separate .dwo files to reduce linker I/O.
+  # Only for GCC non-Release builds (where -g is active).
+  target_compile_options(${target} PRIVATE
+    $<$<AND:$<CXX_COMPILER_ID:GNU>,$<NOT:$<CONFIG:Release>>>:-gsplit-dwarf>)
 
   target_compile_definitions(${target} PUBLIC QUILL_ROOT_LOGGER_ONLY)
 

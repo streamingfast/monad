@@ -42,7 +42,9 @@ RUN cd src && CC=${CC:?} CXX=${CXX:?} CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE:?} CMA
 # Clean up to save disk space before the heavy build
 RUN apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-RUN cd src && ./scripts/build.sh
+RUN --mount=type=cache,target=/root/.ccache \
+    cd src && CCACHE_DIR=/root/.ccache ccache -M 2G && \
+    CCACHE_DIR=/root/.ccache ./scripts/build.sh
 
 # security=insecure for tests which use io_uring
 RUN --security=insecure cd src && CC=${CC:?} CXX=${CXX:?} CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE:?} ./scripts/test.sh
@@ -59,7 +61,8 @@ ARG TOOLCHAIN
 RUN cd src && CC=${CC:?} CXX=${CXX:?} CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE:?} CMAKE_TOOLCHAIN_FILE=category/core/toolchains/${TOOLCHAIN:?}.cmake ./scripts/configure.sh
 RUN cd src && cmake build -DMONAD_COMPILER_TESTING=On
 
-RUN cd src && ./scripts/vm/build-tests.sh
+RUN --mount=type=cache,target=/root/.ccache \
+    cd src && CCACHE_DIR=/root/.ccache ./scripts/vm/build-tests.sh
 RUN cd src && ./scripts/vm/test.sh
 
 FROM base_rust AS build_and_test_rust
@@ -72,8 +75,14 @@ ENV TRIEDB_TARGET="triedb_driver"
 
 RUN cd src/rust && cargo update --workspace --locked
 RUN cd src/rust && cargo +nightly-2025-12-09 fmt --all --check
-RUN cd src/rust && CC=${CC:?} CXX=${CXX:?} CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" ASMFLAGS="-march=haswell" RUSTFLAGS="-C linker=${CC:?}" cargo build --release --all-targets --all-features
-RUN cd src/rust && CC=${CC:?} CXX=${CXX:?} CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" ASMFLAGS="-march=haswell" RUSTFLAGS="-C linker=${CC:?}" cargo test  --release --all-targets --all-features
+RUN --mount=type=cache,target=/root/.ccache \
+    cd src/rust && CC=${CC:?} CXX=${CXX:?} CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" ASMFLAGS="-march=haswell" RUSTFLAGS="-C linker=${CC:?}" \
+    CMAKE_C_COMPILER_LAUNCHER=ccache CMAKE_CXX_COMPILER_LAUNCHER=ccache \
+    cargo build --release --all-targets --all-features
+RUN --mount=type=cache,target=/root/.ccache \
+    cd src/rust && CC=${CC:?} CXX=${CXX:?} CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" ASMFLAGS="-march=haswell" RUSTFLAGS="-C linker=${CC:?}" \
+    CMAKE_C_COMPILER_LAUNCHER=ccache CMAKE_CXX_COMPILER_LAUNCHER=ccache \
+    cargo test  --release --all-targets --all-features
 
 FROM base AS code_quality
 
@@ -168,7 +177,8 @@ RUN cd src && CMAKE_TOOLCHAIN_FILE=category/core/toolchains/gcc-avx2.cmake cmake
   -DCMAKE_C_COMPILER=clang-19 \
   -DCMAKE_CXX_COMPILER=clang++-19
 
-RUN cd src && cmake --build build -t monad-compiler-fuzzer
+RUN --mount=type=cache,target=/root/.ccache \
+    cd src && CCACHE_DIR=/root/.ccache cmake --build build -t monad-compiler-fuzzer
 RUN cd src && ./scripts/vm/ci-fuzzer.sh
 
 FROM base AS runner

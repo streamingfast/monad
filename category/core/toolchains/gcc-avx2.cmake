@@ -17,3 +17,11 @@
 set(CMAKE_ASM_FLAGS_INIT "-march=haswell")
 set(CMAKE_C_FLAGS_INIT "-march=haswell")
 set(CMAKE_CXX_FLAGS_INIT "-march=haswell")
+
+# Use mold linker for dramatically faster link times
+find_program(MOLD_LINKER "mold")
+if(MOLD_LINKER)
+  set(CMAKE_EXE_LINKER_FLAGS_INIT "-fuse-ld=mold")
+  set(CMAKE_SHARED_LINKER_FLAGS_INIT "-fuse-ld=mold")
+  set(CMAKE_MODULE_LINKER_FLAGS_INIT "-fuse-ld=mold")
+endif()
