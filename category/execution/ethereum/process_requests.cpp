@@ -167,7 +167,7 @@ append_deposit_event_field(byte_string &deposits, byte_string_view &cursor)
     if (field.has_error()) {
         return BlockError::InvalidDepositLog;
     }
-    deposits.append_range(field.value());
+    deposits.append(field.value().data(), field.value().size());
     return success();
 }
 
@@ -238,9 +238,9 @@ bytes32_t compute_requests_hash(std::span<BlockRequest const> const requests)
         byte_string buf;
         buf.reserve(1 + req.data.size());
         buf.push_back(req.type);
-        buf.append_range(req.data);
+        buf += req.data;
         monad_sha256(inner.bytes, buf.data(), buf.size(), true);
-        inner_hashes.append_range(inner.bytes);
+        inner_hashes.insert(inner_hashes.end(), std::begin(inner.bytes), std::end(inner.bytes));
     }
 
     static constexpr uint8_t EMPTY_SHA256_INPUT = 0;
