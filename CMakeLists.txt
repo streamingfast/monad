@@ -347,8 +347,6 @@ set(MONAD_PCH_HEADERS
 
 # Apply PCH to the heaviest object libraries independently (REUSE_FROM cannot
 # be used here because these OBJECT libraries have circular weak dependencies).
-# NOTE: monad_core is excluded because it contains C sources and the PCH headers
-# are C++-only.
 target_precompile_headers(monad_execution_ethereum PRIVATE ${MONAD_PCH_HEADERS})
 target_precompile_headers(monad-vm-runtime PRIVATE ${MONAD_PCH_HEADERS})
 target_precompile_headers(monad-vm-evm PRIVATE ${MONAD_PCH_HEADERS})
@@ -356,6 +354,24 @@ target_precompile_headers(monad-vm-compiler PRIVATE ${MONAD_PCH_HEADERS})
 target_precompile_headers(monad-vm-interpreter PRIVATE ${MONAD_PCH_HEADERS})
 target_precompile_headers(monad_execution_native PRIVATE ${MONAD_PCH_HEADERS})
 target_precompile_headers(monad_rpc PRIVATE ${MONAD_PCH_HEADERS})
+
+# monad_core is a mixed C/C++ target; use COMPILE_LANGUAGE guard so that
+# CMake only generates the C++ PCH (the C sources skip it).
+target_precompile_headers(monad_core PRIVATE
+    "$<$<COMPILE_LANGUAGE:CXX>:<cstdint$<ANGLE-R>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<cstddef$<ANGLE-R>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<cstring$<ANGLE-R>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<optional$<ANGLE-R>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<vector$<ANGLE-R>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<span$<ANGLE-R>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<memory$<ANGLE-R>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<algorithm$<ANGLE-R>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<string$<ANGLE-R>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<string_view$<ANGLE-R>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<array$<ANGLE-R>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<utility$<ANGLE-R>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<evmc/evmc.h$<ANGLE-R>>"
+)
 
 # ##############################################################################
 # cmds
