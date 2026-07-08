@@ -18,6 +18,7 @@
 #include <category/core/byte_string.hpp>
 #include <category/core/bytes.hpp>
 #include <category/core/config.hpp>
+#include <category/core/int.hpp>
 #include <category/core/keccak.hpp>
 #include <category/core/likely.h>
 #include <category/core/runtime/uint256.hpp>
@@ -46,7 +47,7 @@ namespace
 
     bool sender_has_balance(State &state, evmc_message const &msg) noexcept
     {
-        uint256_t const value = uint256_t::load_be(msg.value.bytes);
+        uint256_t const value = load_be<uint256_t>(msg.value);
         // for optimistic execution, we do NOT require the original balance to
         // match exactly, just add a lower bound constraint to suffice for this
         // debit
@@ -58,7 +59,7 @@ namespace
         State &state, EvmcHost<traits> &host, evmc_message const &msg,
         Address const &to)
     {
-        uint256_t const value = uint256_t::load_be(msg.value.bytes);
+        uint256_t const value = load_be<uint256_t>(msg.value);
         state.subtract_from_balance(msg.sender, value);
         state.add_to_balance(to, value);
         host.emit_native_transfer_event(msg.sender, to, value);
@@ -70,12 +71,12 @@ template <Traits traits>
 evmc::Result deploy_contract_code(
     State &state, Address const &address, evmc::Result result) noexcept
 {
-    static_assert(traits::evm_rev() > EVMC_TANGERINE_WHISTLE);
+    static_assert(traits::evm_rev() >= MONAD_ETH_SPURIOUS_DRAGON);
 
     MONAD_ASSERT(result.status_code == EVMC_SUCCESS);
 
     // EIP-3541
-    if constexpr (traits::evm_rev() >= EVMC_LONDON) {
+    if constexpr (traits::evm_rev() >= MONAD_ETH_LONDON) {
         if (result.output_size > 0 && result.output_data[0] == 0xef) {
             return evmc::Result{EVMC_CONTRACT_VALIDATION_FAILURE};
         }
@@ -124,7 +125,7 @@ pre_call(EvmcHost<traits> &host, evmc_message const &msg, State &state)
         }
     }
 
-    if constexpr (traits::evm_rev() < EVMC_PRAGUE) {
+    if constexpr (traits::evm_rev() < MONAD_ETH_PRAGUE) {
         MONAD_ASSERT(
             msg.kind != EVMC_CALL ||
             Address{msg.recipient} == Address{msg.code_address});
@@ -176,7 +177,7 @@ template <Traits traits>
 evmc::Result execute_create_message(
     EvmcHost<traits> *const host, State &state, evmc_message const &msg)
 {
-    static_assert(traits::evm_rev() > EVMC_TANGERINE_WHISTLE);
+    static_assert(traits::evm_rev() >= MONAD_ETH_SPURIOUS_DRAGON);
 
     MONAD_ASSERT(msg.kind == EVMC_CREATE || msg.kind == EVMC_CREATE2);
 
@@ -277,6 +278,7 @@ evmc::Result execute_create_message(
                 host->base_fee_per_gas_.value_or(0),
                 host->i_,
                 state,
+                host->state_tracer_,
                 host->chain_ctx_)) {
             result.status_code = EVMC_MONAD_RESERVE_BALANCE_VIOLATION;
         }
@@ -325,6 +327,7 @@ evmc::Result execute_call_message(
     else {
         auto const hash = state.get_code_hash(msg.code_address);
         auto const code = state.read_code(hash);
+        trace::on_read_code(host->state_tracer_, hash, code->intercode());
         result = state.vm().execute<traits>(*host, &msg, hash, code);
     }
 
@@ -335,6 +338,7 @@ evmc::Result execute_call_message(
                 host->base_fee_per_gas_.value_or(0),
                 host->i_,
                 state,
+                host->state_tracer_,
                 host->chain_ctx_)) {
             result.status_code = EVMC_MONAD_RESERVE_BALANCE_VIOLATION;
             result.gas_refund = 0;

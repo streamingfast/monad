@@ -52,7 +52,7 @@ MONAD_NAMESPACE_BEGIN
 template <Traits traits>
 void deploy_block_hash_history_contract(State &state)
 {
-    if constexpr (traits::evm_rev() < EVMC_PRAGUE) {
+    if constexpr (traits::evm_rev() < MONAD_ETH_PRAGUE) {
         return;
     }
 
@@ -82,7 +82,7 @@ EXPLICIT_TRAITS(deploy_block_hash_history_contract);
 template <Traits traits>
 void set_block_hash_history(State &state, BlockHeader const &header)
 {
-    if constexpr (traits::evm_rev() < EVMC_PRAGUE) {
+    if constexpr (traits::evm_rev() < MONAD_ETH_PRAGUE) {
         return;
     }
 
@@ -118,7 +118,7 @@ void set_block_hash_history(State &state, BlockHeader const &header)
 
         uint64_t const parent_number = header.number - 1;
         uint256_t const index{parent_number % BLOCK_HISTORY_LENGTH};
-        bytes32_t const key{to_bytes(to_big_endian(index))};
+        bytes32_t const key{store_be_as<bytes32_t>(index)};
         state.set_storage(BLOCK_HISTORY_ADDRESS, key, header.parent_hash);
 
         uint32_t const num_account_accesses =
@@ -151,7 +151,7 @@ bytes32_t get_block_hash_history(State &state, uint64_t const block_number)
 
     uint256_t const index{block_number % BLOCK_HISTORY_LENGTH};
     return state.get_storage(
-        BLOCK_HISTORY_ADDRESS, to_bytes(to_big_endian(index)));
+        BLOCK_HISTORY_ADDRESS, store_be_as<bytes32_t>(index));
 }
 
 MONAD_NAMESPACE_END

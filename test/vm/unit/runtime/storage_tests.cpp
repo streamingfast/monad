@@ -15,9 +15,10 @@
 
 #include "fixture.hpp"
 
+#include <category/core/bytes.hpp>
+#include <category/core/int.hpp>
 #include <category/core/runtime/uint256.hpp>
 #include <category/vm/runtime/storage.hpp>
-#include <category/vm/runtime/transmute.hpp>
 
 #include <evmc/evmc.h>
 
@@ -65,7 +66,7 @@ TYPED_TEST(RuntimeTraitsTest, StorageLoadCold)
                 return 8000;
             }
         }
-        if constexpr (traits::evm_rev() <= EVMC_ISTANBUL) {
+        if constexpr (traits::evm_rev() <= MONAD_ETH_ISTANBUL) {
             return 0;
         }
         else {
@@ -86,7 +87,7 @@ TYPED_TEST(RuntimeTraitsTest, StorageLoadWarm)
     auto load = TestFixture::wrap(sload<traits>);
 
     this->host_.access_storage(
-        this->ctx_.env.recipient, bytes32_from_uint256(key));
+        this->ctx_.env.recipient, store_be_as<bytes32_t>(key));
 
     this->ctx_.gas_remaining = 0;
     ASSERT_EQ(load(key), 0);
@@ -96,6 +97,8 @@ TYPED_TEST(RuntimeTraitsTest, StorageLoadWarm)
 
 TYPED_TEST(RuntimeTraitsTest, StorageOriginalEmpty)
 {
+    static_assert(TestFixture::Trait::evm_rev() >= MONAD_ETH_ISTANBUL);
+
     using traits = TestFixture::Trait;
     auto load = TestFixture::wrap(sload<traits>);
     auto store = TestFixture::wrap(sstore<traits>);
@@ -129,19 +132,14 @@ TYPED_TEST(RuntimeTraitsTest, StorageOriginalEmpty)
     };
 
     if constexpr (is_monad_trait_v<traits>) {
+        if constexpr (traits::mip_8_active()) {
+            return do_test(27800, 0);
+        }
         if constexpr (traits::monad_rev() >= MONAD_SEVEN) {
             return do_test(28000, 19900);
         }
     }
-    if constexpr (
-        traits::evm_rev() <= EVMC_BYZANTIUM ||
-        traits::evm_rev() == EVMC_PETERSBURG) {
-        do_test(15000, 15000);
-    }
-    else if constexpr (traits::evm_rev() == EVMC_CONSTANTINOPLE) {
-        do_test(19800, 19800);
-    }
-    else if constexpr (traits::evm_rev() == EVMC_ISTANBUL) {
+    if constexpr (traits::evm_rev() == MONAD_ETH_ISTANBUL) {
         do_test(19200, 19200);
     }
     else {
@@ -151,15 +149,17 @@ TYPED_TEST(RuntimeTraitsTest, StorageOriginalEmpty)
 
 TYPED_TEST(RuntimeTraitsTest, StorageOriginalNonEmpty)
 {
+    static_assert(TestFixture::Trait::evm_rev() >= MONAD_ETH_ISTANBUL);
+
     using traits = TestFixture::Trait;
     auto load = TestFixture::wrap(sload<traits>);
     auto store = TestFixture::wrap(sstore<traits>);
 
     // current == original
     auto &loc = this->host_.accounts[this->ctx_.env.recipient]
-                    .storage[bytes32_from_uint256(key)];
-    loc.original = bytes32_from_uint256(val);
-    loc.current = bytes32_from_uint256(val);
+                    .storage[store_be_as<bytes32_t>(key)];
+    loc.original = store_be_as<bytes32_t>(val);
+    loc.current = store_be_as<bytes32_t>(val);
 
     auto do_test = [&load, &store, &ctx_ = this->ctx_](
                        int64_t nonempty_same_nonempty_cold_remaining,
@@ -185,7 +185,10 @@ TYPED_TEST(RuntimeTraitsTest, StorageOriginalNonEmpty)
         store(key, 0);
         ASSERT_EQ(ctx_.result.status, StatusCode::Success);
         ASSERT_EQ(ctx_.gas_remaining, 2301);
-        if constexpr (traits::evm_rev() <= EVMC_BERLIN) {
+        if constexpr (traits::mip_8_active()) {
+            ASSERT_EQ(ctx_.gas_refund, 0);
+        }
+        else if constexpr (traits::evm_rev() <= MONAD_ETH_BERLIN) {
             ASSERT_EQ(ctx_.gas_refund, 15000);
         }
         else {
@@ -196,22 +199,55 @@ TYPED_TEST(RuntimeTraitsTest, StorageOriginalNonEmpty)
     };
 
     if constexpr (is_monad_trait_v<traits>) {
+        if constexpr (traits::mip_8_active()) {
+            return do_test(100, 2800);
+        }
         if constexpr (traits::monad_rev() >= MONAD_SEVEN) {
             return do_test(0, 2800);
         }
     }
-    if constexpr (
-        traits::evm_rev() <= EVMC_BYZANTIUM ||
-        traits::evm_rev() == EVMC_PETERSBURG) {
-        do_test(8100, 0);
-    }
-    else if constexpr (traits::evm_rev() == EVMC_CONSTANTINOPLE) {
-        do_test(8100, 4800);
-    }
-    else if constexpr (traits::evm_rev() == EVMC_ISTANBUL) {
+    if constexpr (traits::evm_rev() == MONAD_ETH_ISTANBUL) {
         do_test(8100, 4200);
     }
     else {
         do_test(6000, 2800);
+    }
+}
+
+TYPED_TEST(RuntimeTraitsTest, StorageLoadDifferentSlotsSamePage)
+{
+    using traits = TestFixture::Trait;
+    if constexpr (!traits::mip_8_active()) {
+        GTEST_SKIP();
+    }
+    else {
+        auto load = TestFixture::wrap(sload<traits>);
+
+        this->ctx_.gas_remaining = traits::cold_storage_cost();
+        ASSERT_EQ(load(0), 0);
+        ASSERT_EQ(this->ctx_.gas_remaining, 0);
+
+        this->ctx_.gas_remaining = 0;
+        ASSERT_EQ(load(1), 0);
+        ASSERT_EQ(this->ctx_.gas_remaining, 0);
+    }
+}
+
+TYPED_TEST(RuntimeTraitsTest, StorageColdAddChargesSpecTotal)
+{
+    using traits = TestFixture::Trait;
+    if constexpr (!traits::mip_8_active()) {
+        GTEST_SKIP();
+    }
+    else {
+        auto store = TestFixture::wrap(sstore<traits>);
+
+        this->ctx_.gas_remaining = 27800;
+        store(key, val);
+        ASSERT_EQ(this->ctx_.gas_remaining, 0);
+        static_assert(
+            traits::cold_storage_cost() + traits::page_write_cost() +
+                traits::page_growth_cost() ==
+            27800);
     }
 }

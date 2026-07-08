@@ -15,6 +15,7 @@
 
 #pragma once
 
+#include <category/core/int.hpp>
 #include <category/core/runtime/uint256.hpp>
 #include <category/vm/evm/opcodes.hpp>
 #include <category/vm/evm/traits.hpp>
@@ -92,9 +93,9 @@ namespace monad::vm::interpreter
     template <Traits traits>
     consteval InstrTable make_instruction_table()
     {
-        static_assert(traits::evm_rev() > EVMC_SPURIOUS_DRAGON);
+        static_assert(traits::evm_rev() >= MONAD_ETH_ISTANBUL);
 
-        constexpr auto since = [](evmc_revision first, InstrEval impl) {
+        constexpr auto since = [](monad_eth_revision first, InstrEval impl) {
             return (traits::evm_rev() >= first) ? impl : invalid;
         };
 
@@ -127,10 +128,10 @@ namespace monad::vm::interpreter
             xor_<traits>, // 0x18,
             not_<traits>, // 0x19,
             byte<traits>, // 0x1A,
-            since(EVMC_CONSTANTINOPLE, shl<traits>), // 0x1B,
-            since(EVMC_CONSTANTINOPLE, shr<traits>), // 0x1C,
-            since(EVMC_CONSTANTINOPLE, sar<traits>), // 0x1D,
-            since(EVMC_OSAKA, clz<traits>), // 0x1E,
+            shl<traits>, // 0x1B,
+            shr<traits>, // 0x1C,
+            sar<traits>, // 0x1D,
+            since(MONAD_ETH_OSAKA, clz<traits>), // 0x1E,
             invalid, //
 
             sha3<traits>, // 0x20,
@@ -166,7 +167,7 @@ namespace monad::vm::interpreter
             extcodecopy<traits>, // 0x3C,
             returndatasize<traits>, // 0x3D,
             returndatacopy<traits>, // 0x3E,
-            since(EVMC_CONSTANTINOPLE, extcodehash<traits>), // 0x3F,
+            extcodehash<traits>, // 0x3F,
 
             blockhash<traits>, // 0x40,
             coinbase<traits>, // 0x41,
@@ -174,11 +175,11 @@ namespace monad::vm::interpreter
             number<traits>, // 0x43,
             prevrandao<traits>, // 0x44,
             gaslimit<traits>, // 0x45,
-            since(EVMC_ISTANBUL, chainid<traits>), // 0x46,
-            since(EVMC_ISTANBUL, selfbalance<traits>), // 0x47,
-            since(EVMC_LONDON, basefee<traits>), // 0x48,
-            since(EVMC_CANCUN, blobhash<traits>), // 0x49,
-            since(EVMC_CANCUN, blobbasefee<traits>), // 0x4A,
+            chainid<traits>, // 0x46,
+            selfbalance<traits>, // 0x47,
+            since(MONAD_ETH_LONDON, basefee<traits>), // 0x48,
+            since(MONAD_ETH_CANCUN, blobhash<traits>), // 0x49,
+            since(MONAD_ETH_CANCUN, blobbasefee<traits>), // 0x4A,
             invalid, //
             invalid, //
             invalid, //
@@ -197,10 +198,10 @@ namespace monad::vm::interpreter
             msize<traits>, // 0x59,
             gas<traits>, // 0x5A,
             jumpdest<traits>, // 0x5B,
-            since(EVMC_CANCUN, tload<traits>), // 0x5C,
-            since(EVMC_CANCUN, tstore<traits>), // 0x5D,
-            since(EVMC_CANCUN, mcopy<traits>), // 0x5E,
-            since(EVMC_SHANGHAI, push<0, traits>), // 0x5F,
+            since(MONAD_ETH_CANCUN, tload<traits>), // 0x5C,
+            since(MONAD_ETH_CANCUN, tstore<traits>), // 0x5D,
+            since(MONAD_ETH_CANCUN, mcopy<traits>), // 0x5E,
+            since(MONAD_ETH_SHANGHAI, push<0, traits>), // 0x5F,
 
             push<1, traits>, // 0x60,
             push<2, traits>, // 0x61,
@@ -360,7 +361,7 @@ namespace monad::vm::interpreter
             callcode<traits>, // 0xF2,
             return_<traits>, // 0xF3,
             delegatecall<traits>, // 0xF4,
-            since(EVMC_CONSTANTINOPLE, create2<traits>), // 0xF5,
+            create2<traits>, // 0xF5,
             invalid, //
             invalid, //
             invalid, //
@@ -436,7 +437,7 @@ namespace monad::vm::interpreter
         int64_t gas_remaining, uint8_t const *instr_ptr)
     {
         checked_runtime_call<MUL, traits>(
-            monad_vm_runtime_mul,
+            runtime::mul,
             ctx,
             analysis,
             stack_bottom,
@@ -899,7 +900,7 @@ namespace monad::vm::interpreter
     {
         check_requirements<CALLVALUE, traits>(
             ctx, analysis, stack_bottom, stack_top, gas_remaining);
-        push(stack_top, runtime::uint256_from_bytes32(ctx.env.value));
+        push(stack_top, load_be<uint256_t>(ctx.env.value));
 
         MONAD_VM_NEXT(CALLVALUE);
     }
@@ -992,9 +993,7 @@ namespace monad::vm::interpreter
     {
         check_requirements<GASPRICE, traits>(
             ctx, analysis, stack_bottom, stack_top, gas_remaining);
-        push(
-            stack_top,
-            runtime::uint256_from_bytes32(ctx.env.tx_context->tx_gas_price));
+        push(stack_top, load_be<uint256_t>(ctx.env.tx_context->tx_gas_price));
 
         MONAD_VM_NEXT(GASPRICE);
     }
@@ -1153,8 +1152,7 @@ namespace monad::vm::interpreter
             ctx, analysis, stack_bottom, stack_top, gas_remaining);
         push(
             stack_top,
-            runtime::uint256_from_bytes32(
-                ctx.env.tx_context->block_prev_randao));
+            load_be<uint256_t>(ctx.env.tx_context->block_prev_randao));
 
         MONAD_VM_NEXT(DIFFICULTY);
     }
@@ -1180,9 +1178,7 @@ namespace monad::vm::interpreter
     {
         check_requirements<CHAINID, traits>(
             ctx, analysis, stack_bottom, stack_top, gas_remaining);
-        push(
-            stack_top,
-            runtime::uint256_from_bytes32(ctx.env.tx_context->chain_id));
+        push(stack_top, load_be<uint256_t>(ctx.env.tx_context->chain_id));
 
         MONAD_VM_NEXT(CHAINID);
     }
@@ -1213,9 +1209,7 @@ namespace monad::vm::interpreter
     {
         check_requirements<BASEFEE, traits>(
             ctx, analysis, stack_bottom, stack_top, gas_remaining);
-        push(
-            stack_top,
-            runtime::uint256_from_bytes32(ctx.env.tx_context->block_base_fee));
+        push(stack_top, load_be<uint256_t>(ctx.env.tx_context->block_base_fee));
 
         MONAD_VM_NEXT(BASEFEE);
     }
@@ -1246,9 +1240,7 @@ namespace monad::vm::interpreter
     {
         check_requirements<BLOBBASEFEE, traits>(
             ctx, analysis, stack_bottom, stack_top, gas_remaining);
-        push(
-            stack_top,
-            runtime::uint256_from_bytes32(ctx.env.tx_context->blob_base_fee));
+        push(stack_top, load_be<uint256_t>(ctx.env.tx_context->blob_base_fee));
 
         MONAD_VM_NEXT(BLOBBASEFEE);
     }
@@ -1731,7 +1723,7 @@ namespace monad::vm::interpreter
         {
             for (auto *result_loc : {&ctx.result.offset, &ctx.result.size}) {
                 std::copy_n(
-                    stack_top->as_bytes(),
+                    as_bytes(*stack_top),
                     32,
                     reinterpret_cast<uint8_t *>(result_loc));
 

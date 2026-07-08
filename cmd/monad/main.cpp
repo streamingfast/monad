@@ -20,6 +20,7 @@
 
 #include <category/core/assert.h>
 #include <category/core/basic_formatter.hpp>
+#include <category/core/cli/help_formatter.hpp>
 #include <category/core/config.hpp>
 #include <category/core/fiber/priority_pool.hpp>
 #include <category/core/likely.h>
@@ -35,6 +36,7 @@
 #include <category/execution/ethereum/core/log_level_map.hpp>
 #include <category/execution/ethereum/core/rlp/block_rlp.hpp>
 #include <category/execution/ethereum/db/block_db.hpp>
+#include <category/execution/ethereum/db/state_machine_init.hpp>
 #include <category/execution/ethereum/db/trie_db.hpp>
 #include <category/execution/ethereum/event/exec_event_ctypes.h>
 #include <category/execution/ethereum/precompiles.hpp>
@@ -52,6 +54,8 @@
 #include <CLI/CLI.hpp>
 
 #include <boost/outcome/try.hpp>
+
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -114,7 +118,9 @@ try {
     cxx_runtime_terminate_handler = std::get_terminate();
     std::set_terminate(backtrace_terminate_handler);
 
-    CLI::App cli{"monad"};
+    CLI::App cli{
+        "Run the Monad execution engine against a block database.", "monad"};
+    monad::cli::HelpFormatter{GIT_COMMIT_HASH}.install(cli);
     cli.option_defaults()->always_capture_default();
 
     monad_chain_config chain_config;
@@ -128,6 +134,7 @@ try {
     std::chrono::seconds block_db_timeout = std::chrono::seconds::zero();
     std::string exec_event_ring_config;
     unsigned sq_thread_cpu = static_cast<unsigned>(get_nprocs() - 1);
+    bool disable_sq_thread_cpu = false;
     std::optional<unsigned> ro_sq_thread_cpu;
     std::vector<fs::path> dbname_paths;
     fs::path snapshot;
@@ -159,6 +166,11 @@ try {
         sq_thread_cpu,
         "sq_thread_cpu field in io_uring_params, to specify the cpu set "
         "kernel poll thread is bound to in SQPOLL mode");
+    cli.add_flag(
+        "--disable-sq-thread-cpu,--disable_sq_thread_cpu",
+        disable_sq_thread_cpu,
+        "disable SQPOLL for the rw db (skip the kernel io_uring poll "
+        "thread); --sq-thread-cpu is ignored when set");
     cli.add_option(
         "--ro-sq-thread-cpu,--ro_sq_thread_cpu",
         ro_sq_thread_cpu,
@@ -265,19 +277,24 @@ try {
     if (!statesync.empty()) {
         net.emplace(statesync.c_str());
     }
+    // The on-disk Db ctor reads the persisted state_machine_kind from
+    // db_metadata and constructs the StateMachine via the registry. The
+    // in-memory path has no metadata to read from and constructs the SM
+    // inline.
+    register_ethereum_state_machines();
     mpt::Db raw_db = [&] {
         if (!db_in_memory) {
-            return mpt::Db{
-                std::make_unique<OnDiskMachine>(),
-                mpt::OnDiskDbConfig{
-                    .append = true,
-                    .compaction = !no_compaction,
-                    .rewind_to_latest_finalized = true,
-                    .rd_buffers = 8192,
-                    .wr_buffers = 32,
-                    .uring_entries = 128,
-                    .sq_thread_cpu = sq_thread_cpu,
-                    .dbname_paths = dbname_paths}};
+            return mpt::Db{mpt::OnDiskDbConfig{
+                .append = true,
+                .compaction = !no_compaction,
+                .rewind_to_latest_finalized = true,
+                .rd_buffers = 8192,
+                .wr_buffers = 32,
+                .uring_entries = 128,
+                .sq_thread_cpu = disable_sq_thread_cpu
+                                     ? std::optional<unsigned>{}
+                                     : std::optional<unsigned>{sq_thread_cpu},
+                .dbname_paths = dbname_paths}};
         }
         return mpt::Db{std::make_unique<InMemoryMachine>()};
     }();

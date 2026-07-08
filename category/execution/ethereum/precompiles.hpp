@@ -68,17 +68,14 @@ uint64_t ecadd_gas_cost(byte_string_view);
 template <Traits traits>
 uint64_t ecmul_gas_cost(byte_string_view);
 
-template <evmc_revision Rev>
+template <monad_eth_revision Rev>
 [[gnu::always_inline]] inline uint64_t
 snarkv_gas_cost_ethereum(byte_string_view const input)
 {
+    static_assert(Rev >= MONAD_ETH_ISTANBUL);
+
     uint64_t const k{input.size() / 192};
-    if constexpr (Rev >= EVMC_ISTANBUL) {
-        return 34'000 * k + 45'000; // EIP-1108
-    }
-    else {
-        return 80'000 * k + 100'000; // EIP-197
-    }
+    return 34'000 * k + 45'000; // EIP-1108
 }
 
 template <Traits traits>

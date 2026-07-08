@@ -34,10 +34,6 @@
 #include <boost/outcome/config.hpp>
 #include <boost/outcome/success_failure.hpp>
 
-#include <intx/intx.hpp>
-#include <silkpre/secp256k1n.hpp>
-
-#include <bit>
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
@@ -52,7 +48,7 @@ Result<void> static_validate_transaction(
     Transaction const &tx, std::optional<uint256_t> const &base_fee_per_gas,
     std::optional<uint64_t> const &excess_blob_gas, uint256_t const &chain_id)
 {
-    static_assert(traits::evm_rev() > EVMC_TANGERINE_WHISTLE);
+    static_assert(traits::evm_rev() >= MONAD_ETH_SPURIOUS_DRAGON);
 
     // EIP-155
     if (MONAD_LIKELY(tx.sc.chain_id.has_value())) {
@@ -70,20 +66,20 @@ Result<void> static_validate_transaction(
 
     // TODO: remove the below logic once we fully migrate over to traits
     // EIP-2930 & EIP-2718
-    if constexpr (traits::evm_rev() < EVMC_BERLIN) {
+    if constexpr (traits::evm_rev() < MONAD_ETH_BERLIN) {
         if (MONAD_UNLIKELY(tx.type != TransactionType::legacy)) {
             return TransactionError::TypeNotSupported;
         }
     }
     // EIP-1559
-    else if constexpr (traits::evm_rev() < EVMC_LONDON) {
+    else if constexpr (traits::evm_rev() < MONAD_ETH_LONDON) {
         if (MONAD_UNLIKELY(
                 tx.type != TransactionType::legacy &&
                 tx.type != TransactionType::eip2930)) {
             return TransactionError::TypeNotSupported;
         }
     }
-    else if constexpr (traits::evm_rev() < EVMC_CANCUN) {
+    else if constexpr (traits::evm_rev() < MONAD_ETH_CANCUN) {
         if (MONAD_UNLIKELY(
                 tx.type != TransactionType::legacy &&
                 tx.type != TransactionType::eip2930 &&
@@ -91,7 +87,7 @@ Result<void> static_validate_transaction(
             return TransactionError::TypeNotSupported;
         }
     }
-    else if constexpr (traits::evm_rev() < EVMC_PRAGUE) {
+    else if constexpr (traits::evm_rev() < MONAD_ETH_PRAGUE) {
         if (MONAD_UNLIKELY(
                 tx.type != TransactionType::legacy &&
                 tx.type != TransactionType::eip2930 &&
@@ -120,7 +116,7 @@ Result<void> static_validate_transaction(
     }
 
     // EIP-3860
-    if constexpr (traits::evm_rev() >= EVMC_SHANGHAI) {
+    if constexpr (traits::evm_rev() >= MONAD_ETH_SHANGHAI) {
         // In `MONAD_TWO`, the maximum code size for contracts was increased
         // without explicitly changing every corresponding check on initcode
         // size. This meant that in some places, the maximum initcode size was
@@ -143,7 +139,7 @@ Result<void> static_validate_transaction(
         return TransactionError::IntrinsicGasGreaterThanLimit;
     }
 
-    if constexpr (traits::evm_rev() >= EVMC_PRAGUE) {
+    if constexpr (traits::evm_rev() >= MONAD_ETH_PRAGUE) {
         // EIP-7623
         if (MONAD_UNLIKELY(floor_data_gas(tx) > tx.gas_limit)) {
             return TransactionError::IntrinsicGasGreaterThanLimit;
@@ -168,36 +164,12 @@ Result<void> static_validate_transaction(
         return TransactionError::GasLimitOverflow;
     }
 
-    // silkpre expects intx::uint256; verify layout matches monad::uint256_t
-    static_assert(sizeof(uint256_t) == sizeof(intx::uint256));
-    static_assert(alignof(uint256_t) == alignof(intx::uint256));
-    static_assert(std::is_trivially_copyable_v<uint256_t>);
-    static_assert(std::is_trivially_copyable_v<intx::uint256>);
-    static_assert(
-        std::has_unique_object_representations_v<uint256_t>,
-        "uint256_t must have no padding to round-trip via bit_cast");
-    static_assert(
-        std::has_unique_object_representations_v<intx::uint256>,
-        "intx::uint256 must have no padding to round-trip via bit_cast");
-    static_assert(
-        [] {
-            // Verify that word[i] in monad::uint256_t maps to word[i] in
-            // intx::uint256 (both little-endian word order).
-            uint256_t const src{1, 2, 3, 4};
-            auto const dst = std::bit_cast<intx::uint256>(src);
-            return dst[0] == 1 && dst[1] == 2 && dst[2] == 3 && dst[3] == 4;
-        }(),
-        "monad::uint256_t and intx::uint256 word layout must match");
-    // TODO: remove silkpre
     // EIP-2
-    if (MONAD_UNLIKELY(!silkpre::is_valid_signature(
-            std::bit_cast<intx::uint256>(tx.sc.r),
-            std::bit_cast<intx::uint256>(tx.sc.s),
-            true))) {
+    if (MONAD_UNLIKELY(!tx.sc.is_valid())) {
         return TransactionError::InvalidSignature;
     }
 
-    if constexpr (traits::evm_rev() >= EVMC_CANCUN) {
+    if constexpr (traits::evm_rev() >= MONAD_ETH_CANCUN) {
         if (tx.type == TransactionType::eip4844) {
             if (MONAD_UNLIKELY(tx.blob_versioned_hashes.empty())) {
                 return TransactionError::InvalidBlobHash;
@@ -212,7 +184,8 @@ Result<void> static_validate_transaction(
 
             if (MONAD_UNLIKELY(
                     tx.max_fee_per_blob_gas <
-                    get_base_fee_per_blob_gas(excess_blob_gas.value()))) {
+                    get_base_fee_per_blob_gas<traits>(
+                        excess_blob_gas.value_or(0)))) {
                 return TransactionError::GasLimitOverflow;
             }
         }
@@ -227,10 +200,12 @@ template <Traits traits>
 Result<void> validate_transaction(
     Transaction const &tx, Address const &sender, State &state,
     uint256_t const & /*base_fee_per_gas*/,
-    std::span<std::optional<Address> const> const /*authorities*/)
+    std::span<std::optional<Address> const> const /*authorities*/,
+    trace::StateTracer &state_tracer)
 {
     static_assert(is_evm_trait_v<traits>);
-    return validate_ethereum_transaction<traits>(tx, sender, state);
+    return validate_ethereum_transaction<traits>(
+        tx, sender, state, state_tracer);
 }
 
 EXPLICIT_EVM_TRAITS(validate_transaction);

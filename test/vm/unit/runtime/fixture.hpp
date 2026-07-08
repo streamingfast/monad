@@ -20,12 +20,12 @@
 #include <category/vm/runtime/detail.hpp>
 #include <category/vm/runtime/types.hpp>
 #include <monad/test/traits_test.hpp>
+#include <test/vm/unit/runtime/mocked_host.hpp>
 #include <test/vm/utils/test_context.hpp>
 
 #include <gtest/gtest.h>
 
 #include <evmc/evmc.hpp>
-#include <evmc/mocked_host.hpp>
 
 #include <limits>
 
@@ -46,7 +46,7 @@ namespace monad::vm::compiler::test
         std::array<std::uint8_t, 128> call_return_data_;
 
         std::array<evmc_bytes32, 2> blob_hashes_;
-        evmc::MockedHost host_;
+        monad::vm::test::MockedHost host_;
         monad::vm::test::TestContext test_ctx_;
         vm::runtime::Context &ctx_;
 
@@ -201,7 +201,7 @@ namespace monad::vm::compiler::test
 
             ASSERT_EQ(host_.recorded_calls.size(), 1);
 
-            if constexpr (TraitsTest<T>::Trait::evm_rev() >= EVMC_PRAGUE) {
+            if constexpr (TraitsTest<T>::Trait::evm_rev() >= MONAD_ETH_PRAGUE) {
                 ASSERT_EQ(
                     host_.access_account(delegate_addr), EVMC_ACCESS_WARM);
                 ASSERT_EQ(

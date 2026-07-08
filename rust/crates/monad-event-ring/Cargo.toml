@@ -13,9 +13,9 @@ criterion = { workspace = true }
 itertools = { workspace = true }
 
 [build-dependencies]
-bindgen = { workspace = true }
-cc = { workspace = true }
-cmake = { workspace = true }
+monad-build = { workspace = true, features = ["bindgen-static", "cmake", "metadata"] }
+
+build-rs = { workspace = true }
 
 [[bench]]
 name = "snapshot_raw"

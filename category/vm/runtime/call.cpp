@@ -14,12 +14,13 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include <category/core/address.hpp>
-#include <category/core/assert.h>
 #include <category/core/bytes.hpp>
+#include <category/core/int.hpp>
 #include <category/core/likely.h>
 #include <category/core/runtime/uint256.hpp>
 #include <category/vm/evm/delegation.hpp>
 #include <category/vm/evm/explicit_traits.hpp>
+#include <category/vm/evm/revision.h>
 #include <category/vm/evm/traits.hpp>
 #include <category/vm/runtime/bin.hpp>
 #include <category/vm/runtime/call.hpp>
@@ -62,7 +63,7 @@ namespace monad::vm::runtime
         evmc_call_kind const call_kind, bool const static_call,
         int64_t const remaining_block_base_gas)
     {
-        static_assert(traits::evm_rev() > EVMC_TANGERINE_WHISTLE);
+        static_assert(traits::evm_rev() >= MONAD_ETH_SPURIOUS_DRAGON);
 
         ctx->env.clear_return_data();
 
@@ -89,7 +90,7 @@ namespace monad::vm::runtime
         }
 
         auto const code_address = [&]() -> Address {
-            if constexpr (traits::evm_rev() >= EVMC_PRAGUE) {
+            if constexpr (traits::evm_rev() >= MONAD_ETH_PRAGUE) {
                 // EIP-7702: if the code address starts with 0xEF0100, then
                 // treat it as a delegated call in the context of the
                 // current authority.
@@ -208,7 +209,7 @@ namespace monad::vm::runtime
             *gas_ptr,
             *address_ptr,
             *value_ptr != 0,
-            bytes32_from_uint256(*value_ptr),
+            store_be_as<bytes32_t>(*value_ptr),
             *args_offset_ptr,
             *args_size_ptr,
             *ret_offset_ptr,
@@ -233,7 +234,7 @@ namespace monad::vm::runtime
             *gas_ptr,
             *address_ptr,
             *value_ptr != 0,
-            bytes32_from_uint256(*value_ptr),
+            store_be_as<bytes32_t>(*value_ptr),
             *args_offset_ptr,
             *args_size_ptr,
             *ret_offset_ptr,
@@ -276,7 +277,8 @@ namespace monad::vm::runtime
         uint256_t const *args_size_ptr, uint256_t const *ret_offset_ptr,
         uint256_t const *ret_size_ptr, int64_t const remaining_block_base_gas)
     {
-        MONAD_DEBUG_ASSERT(traits::evm_rev() >= EVMC_BYZANTIUM);
+        static_assert(traits::evm_rev() >= MONAD_ETH_CONSTANTINOPLE);
+
         *result_ptr = call_impl<traits>(
             ctx,
             *gas_ptr,

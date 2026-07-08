@@ -14,10 +14,13 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include <category/core/address.hpp>
+#include <category/core/bytes.hpp>
+#include <category/core/int.hpp>
 #include <category/core/likely.h>
 #include <category/core/runtime/uint256.hpp>
 #include <category/vm/evm/delegation.hpp>
 #include <category/vm/evm/explicit_traits.hpp>
+#include <category/vm/evm/revision.h>
 #include <category/vm/evm/traits.hpp>
 #include <category/vm/runtime/bin.hpp>
 #include <category/vm/runtime/create.hpp>
@@ -31,14 +34,14 @@
 
 namespace monad::vm::runtime
 {
-    consteval Bin<2> create_code_word_cost(evmc_revision const rev)
+    consteval Bin<2> create_code_word_cost(monad_eth_revision const rev)
     {
-        return (rev >= EVMC_SHANGHAI) ? bin<2> : bin<0>;
+        return (rev >= MONAD_ETH_SHANGHAI) ? bin<2> : bin<0>;
     }
 
-    consteval Bin<4> create2_code_word_cost(evmc_revision const rev)
+    consteval Bin<4> create2_code_word_cost(monad_eth_revision const rev)
     {
-        return (rev >= EVMC_SHANGHAI) ? bin<8> : bin<6>;
+        return (rev >= MONAD_ETH_SHANGHAI) ? bin<8> : bin<6>;
     }
 
     template <Traits traits>
@@ -47,14 +50,14 @@ namespace monad::vm::runtime
         uint256_t const &size_word, uint256_t const &salt_word,
         evmc_call_kind const kind, int64_t const remaining_block_base_gas)
     {
-        static_assert(traits::evm_rev() > EVMC_HOMESTEAD);
+        static_assert(traits::evm_rev() >= MONAD_ETH_TANGERINE_WHISTLE);
 
         if (MONAD_UNLIKELY(ctx->env.evmc_flags & EVMC_STATIC)) {
             ctx->exit(StatusCode::Error);
         }
 
         if constexpr (
-            traits::evm_rev() >= EVMC_PRAGUE &&
+            traits::evm_rev() >= MONAD_ETH_PRAGUE &&
             !traits::can_create_inside_delegated()) {
             if (evm::resolve_delegation(
                     ctx->host, ctx->context, ctx->env.recipient)) {
@@ -72,7 +75,7 @@ namespace monad::vm::runtime
             ctx->expand_memory<traits>(offset + size);
         }
 
-        if constexpr (traits::evm_rev() >= EVMC_SHANGHAI) {
+        if constexpr (traits::evm_rev() >= MONAD_ETH_SHANGHAI) {
             if (MONAD_UNLIKELY(*size > traits::max_initcode_size())) {
                 ctx->exit(StatusCode::OutOfGas);
             }
@@ -101,9 +104,9 @@ namespace monad::vm::runtime
             .sender = ctx->env.recipient,
             .input_data = (*size > 0) ? ctx->memory.data + *offset : nullptr,
             .input_size = *size,
-            .value = static_cast<evmc::bytes32>(bytes32_from_uint256(value)),
+            .value = static_cast<evmc::bytes32>(store_be_as<bytes32_t>(value)),
             .create2_salt =
-                static_cast<evmc::bytes32>(bytes32_from_uint256(salt_word)),
+                static_cast<evmc::bytes32>(store_be_as<bytes32_t>(salt_word)),
             .code_address = {},
             .memory_handle = ctx->memory.data_handle,
             .memory = ctx->memory.data + ctx->memory.size,

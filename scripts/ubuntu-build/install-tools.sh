@@ -16,13 +16,13 @@ packages=(
   gnupg
   libclang-common-19-dev
   libclang-rt-19-dev
-  libhugetlbfs-bin
   llvm-19-dev
   make
   ninja-build
   pkg-config
   python-is-python3
   python3-pytest
+  ripgrep
   software-properties-common
   valgrind
   wget

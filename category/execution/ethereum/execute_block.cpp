@@ -21,6 +21,7 @@
 #include <category/core/fiber/priority_pool.hpp>
 #include <category/core/int.hpp>
 #include <category/core/likely.h>
+#include <category/core/monad_exception.hpp>
 #include <category/core/result.hpp>
 #include <category/execution/ethereum/block_hash_buffer.hpp>
 #include <category/execution/ethereum/block_hash_history.hpp>
@@ -110,12 +111,11 @@ void set_beacon_root(State &state, BlockHeader const &header)
         }
 
         uint256_t timestamp{header.timestamp};
-        bytes32_t k1{
-            to_bytes(to_big_endian(timestamp % HISTORY_BUFFER_LENGTH))};
-        bytes32_t k2{to_bytes(to_big_endian(
-            timestamp % HISTORY_BUFFER_LENGTH + HISTORY_BUFFER_LENGTH))};
+        bytes32_t k1{store_be_as<bytes32_t>(timestamp % HISTORY_BUFFER_LENGTH)};
+        bytes32_t k2{store_be_as<bytes32_t>(
+            timestamp % HISTORY_BUFFER_LENGTH + HISTORY_BUFFER_LENGTH)};
         state.set_storage(
-            BEACON_ROOTS_ADDRESS, k1, to_bytes(to_big_endian(timestamp)));
+            BEACON_ROOTS_ADDRESS, k1, store_be_as<bytes32_t>(timestamp));
         state.set_storage(
             BEACON_ROOTS_ADDRESS, k2, header.parent_beacon_block_root.value());
 
@@ -208,14 +208,14 @@ std::vector<std::vector<std::optional<Address>>> recover_authorities(
 template <Traits traits>
 void execute_block_header(BlockState &block_state, BlockHeader const &header)
 {
-    static_assert(traits::evm_rev() > EVMC_HOMESTEAD);
+    static_assert(traits::evm_rev() >= MONAD_ETH_TANGERINE_WHISTLE);
 
     State state{block_state, Incarnation{header.number, 0}};
 
     deploy_block_hash_history_contract<traits>(state);
     set_block_hash_history<traits>(state, header);
 
-    if constexpr (traits::evm_rev() >= EVMC_CANCUN) {
+    if constexpr (traits::evm_rev() >= MONAD_ETH_CANCUN) {
         set_beacon_root(state, header);
     }
 
@@ -240,7 +240,7 @@ Result<std::vector<Receipt>> execute_block_transactions(
     fiber::FiberGroup &priority_pool, BlockMetrics &block_metrics,
     std::span<std::unique_ptr<CallTracerBase>> const call_tracers,
     std::span<std::unique_ptr<trace::StateTracer>> const state_tracers,
-    ChainContext<traits> const &chain_ctx)
+    ChainContext<traits> const &chain_ctx, bool const trace_transfers)
 {
     MONAD_ASSERT(senders.size() == transactions.size());
     MONAD_ASSERT(senders.size() == call_tracers.size());
@@ -271,7 +271,8 @@ Result<std::vector<Receipt>> execute_block_transactions(
              &block_metrics,
              &call_tracer = *call_tracers[i],
              &state_tracer = *state_tracers[i],
-             &chain_ctx = chain_ctx] {
+             &chain_ctx = chain_ctx,
+             trace_transfers = trace_transfers] {
                 record_txn_marker_event(MONAD_EXEC_TXN_PERF_EVM_ENTER, i);
                 try {
                     results[i] = dispatch_transaction<traits>(
@@ -287,7 +288,8 @@ Result<std::vector<Receipt>> execute_block_transactions(
                         promises[i],
                         call_tracer,
                         state_tracer,
-                        chain_ctx);
+                        chain_ctx,
+                        trace_transfers);
                     if (results[i]->has_error()) {
                         record_txn_error_event(i, results[i]->error());
                     }
@@ -310,7 +312,8 @@ Result<std::vector<Receipt>> execute_block_transactions(
 
     std::vector<Receipt> retvals;
     for (unsigned i = 0; i < transactions.size(); ++i) {
-        MONAD_ASSERT(results[i].has_value());
+        MONAD_ASSERT_THROW(
+            results[i].has_value(), "missing transaction result");
         if (MONAD_UNLIKELY(results[i].value().has_error())) {
             LOG_ERROR(
                 "tx {} {} validation failed: {}",
@@ -341,9 +344,10 @@ Result<std::vector<Receipt>> execute_block(
     fiber::FiberGroup &priority_pool, BlockMetrics &block_metrics,
     std::span<std::unique_ptr<CallTracerBase>> const call_tracers,
     std::span<std::unique_ptr<trace::StateTracer>> const state_tracers,
-    ChainContext<traits> const &chain_ctx)
+    trace::StateTracer &system_call_state_tracer,
+    ChainContext<traits> const &chain_ctx, bool const trace_transfers)
 {
-    static_assert(traits::evm_rev() > EVMC_TANGERINE_WHISTLE);
+    static_assert(traits::evm_rev() >= MONAD_ETH_SPURIOUS_DRAGON);
 
     TRACE_BLOCK_EVENT(StartBlock);
 
@@ -367,20 +371,27 @@ Result<std::vector<Receipt>> execute_block(
             block_metrics,
             call_tracers,
             state_tracers,
-            chain_ctx));
+            chain_ctx,
+            trace_transfers));
 
     State state{
         block_state, Incarnation{block.header.number, Incarnation::LAST_TX}};
 
-    if constexpr (traits::evm_rev() >= EVMC_SHANGHAI) {
+    if constexpr (traits::evm_rev() >= MONAD_ETH_SHANGHAI) {
         process_withdrawal(state, block.withdrawals);
     }
 
-    if constexpr (traits::eip_7002_active()) {
+    if constexpr (traits::eip_7685_active()) {
         BOOST_OUTCOME_TRY(
             auto const computed_requests_hash,
             process_requests<traits>(
-                chain, state, block_hash_buffer, block.header, chain_ctx));
+                chain,
+                state,
+                block_hash_buffer,
+                block.header,
+                system_call_state_tracer,
+                chain_ctx,
+                retvals));
         MONAD_ASSERT(block.header.requests_hash.has_value());
         if (MONAD_UNLIKELY(
                 computed_requests_hash != block.header.requests_hash.value())) {

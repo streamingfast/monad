@@ -21,6 +21,7 @@
 #include <category/async/storage_pool.hpp>
 #include <category/async/util.hpp>
 #include <category/core/assert.h>
+#include <category/core/cli/help_formatter.hpp>
 #include <category/core/detail/start_lifetime_as_polyfill.hpp>
 #include <category/core/hex.hpp>
 #include <category/core/io/buffers.hpp>
@@ -29,8 +30,11 @@
 #include <category/mpt/config.hpp>
 #include <category/mpt/detail/db_metadata.hpp>
 #include <category/mpt/detail/kbhit.hpp>
+#include <category/mpt/detail/timeline.hpp>
 #include <category/mpt/detail/unsigned_20.hpp>
+#include <category/mpt/state_machine_kind.hpp>
 #include <category/mpt/trie.hpp>
+#include <category/mpt/util.hpp>
 
 #include <CLI/CLI.hpp>
 
@@ -50,6 +54,7 @@
 #include <iomanip>
 #include <iostream>
 #include <iterator>
+#include <map>
 #include <memory>
 #include <optional>
 #include <span>
@@ -107,6 +112,16 @@ std::string print_bytes(MONAD_ASYNC_NAMESPACE::file_offset_t const bytes_)
     }
     s << bytes << " bytes";
     return std::move(s).str();
+}
+
+static char const *
+state_machine_kind_name(MONAD_MPT_NAMESPACE::state_machine_kind const kind)
+{
+    switch (kind) {
+    case MONAD_MPT_NAMESPACE::state_machine_kind::ethereum:
+        return "ethereum";
+    }
+    return "unknown";
 }
 
 static size_t const true_hardware_concurrency = [] {
@@ -401,6 +416,12 @@ struct impl_t
     bool create_database = false;
     bool truncate_database = false;
     bool create_empty_database = false;
+    bool upgrade_database = false;
+    bool activate_secondary = false;
+    bool deactivate_secondary = false;
+    bool promote_secondary = false;
+    MONAD_MPT_NAMESPACE::state_machine_kind state_machine =
+        MONAD_MPT_NAMESPACE::state_machine_kind::ethereum;
     std::optional<uint64_t> rewind_database_to;
     std::optional<uint64_t> reset_history_length;
     bool create_chunk_increasing = false;
@@ -484,17 +505,35 @@ public:
         return total_used;
     }
 
+    void print_timeline_info(
+        MONAD_MPT_NAMESPACE::UpdateAux &aux, monad::mpt::timeline_id const tid,
+        char const *const name)
+    {
+        MONAD_ASSERT(aux.metadata_ctx().timeline_active(tid));
+        cout << "     " << name << ":\n        State machine kind: "
+             << state_machine_kind_name(
+                    aux.metadata_ctx().get_state_machine_kind(tid))
+             << "\n        History: ";
+        auto const max_v = aux.metadata_ctx().db_history_max_version(tid);
+        if (max_v == monad::mpt::INVALID_BLOCK_NUM) {
+            cout << "empty (no roots written yet)";
+        }
+        else {
+            auto const min_v =
+                aux.metadata_ctx().db_history_min_valid_version(tid);
+            cout << (1 + max_v - min_v) << " versions, earliest is " << min_v
+                 << ", latest is " << max_v;
+        }
+        cout << "\n        Auto expire version: "
+             << aux.metadata_ctx().get_auto_expire_version_metadata(tid)
+             << "\n";
+    }
+
     void print_db_history_summary(MONAD_MPT_NAMESPACE::UpdateAux &aux)
     {
-        cout << "MPT database has "
-             << (1 + aux.metadata_ctx().db_history_max_version() -
-                 aux.metadata_ctx().db_history_min_valid_version())
-             << " history, earliest is "
-             << aux.metadata_ctx().db_history_min_valid_version()
-             << " latest is " << aux.metadata_ctx().db_history_max_version()
-             << ".\n     It has been configured to retain no more than "
+        cout << "MPT database has been configured to retain no more than "
              << aux.metadata_ctx().version_history_length()
-             << ".\n     Latest proposed is ("
+             << " versions.\n     Latest proposed is ("
              << aux.metadata_ctx().get_latest_proposed_version() << ", "
              << monad::to_hex(monad::byte_string_view(
                     aux.metadata_ctx().get_latest_proposed_block_id().bytes,
@@ -507,9 +546,14 @@ public:
              << ").\n     Latest finalized is "
              << aux.metadata_ctx().get_latest_finalized_version()
              << ", latest verified is "
-             << aux.metadata_ctx().get_latest_verified_version()
-             << ", auto expire version is "
-             << aux.metadata_ctx().get_auto_expire_version_metadata() << "\n";
+             << aux.metadata_ctx().get_latest_verified_version() << "\n";
+        cout << "Active timelines:\n";
+        print_timeline_info(aux, monad::mpt::timeline_id::primary, "Primary");
+        if (aux.metadata_ctx().timeline_active(
+                monad::mpt::timeline_id::secondary)) {
+            print_timeline_info(
+                aux, monad::mpt::timeline_id::secondary, "Secondary");
+        }
     }
 
     void do_restore_database()
@@ -743,7 +787,8 @@ public:
                     break;
                 }
                 auto const chunkid = item->index(aux.metadata_ctx().main());
-                MONAD_ASSERT(chunkid != UINT32_MAX);
+                MONAD_ASSERT(
+                    chunkid != monad::mpt::detail::db_metadata::NULL_CHUNK);
                 aux.metadata_ctx().remove(chunkid);
                 chunks.push_back(chunkid);
             }
@@ -753,7 +798,8 @@ public:
                     break;
                 }
                 auto const chunkid = item->index(aux.metadata_ctx().main());
-                MONAD_ASSERT(chunkid != UINT32_MAX);
+                MONAD_ASSERT(
+                    chunkid != monad::mpt::detail::db_metadata::NULL_CHUNK);
                 aux.metadata_ctx().remove(chunkid);
                 chunks.push_back(chunkid);
             }
@@ -763,7 +809,8 @@ public:
                     break;
                 }
                 auto const chunkid = item->index(aux.metadata_ctx().main());
-                MONAD_ASSERT(chunkid != UINT32_MAX);
+                MONAD_ASSERT(
+                    chunkid != monad::mpt::detail::db_metadata::NULL_CHUNK);
                 aux.metadata_ctx().remove(chunkid);
                 chunks.push_back(chunkid);
             }
@@ -816,10 +863,14 @@ public:
             UINT32_MAX);
         monad::mpt::detail::unsigned_20 slow_list_base_insertion_count(
             UINT32_MAX);
-        uint32_t fast_list_begin_index{UINT32_MAX};
-        uint32_t fast_list_end_index{UINT32_MAX};
-        uint32_t slow_list_begin_index{UINT32_MAX};
-        uint32_t slow_list_end_index{UINT32_MAX};
+        uint32_t fast_list_begin_index{
+            monad::mpt::detail::db_metadata::NULL_CHUNK};
+        uint32_t fast_list_end_index{
+            monad::mpt::detail::db_metadata::NULL_CHUNK};
+        uint32_t slow_list_begin_index{
+            monad::mpt::detail::db_metadata::NULL_CHUNK};
+        uint32_t slow_list_end_index{
+            monad::mpt::detail::db_metadata::NULL_CHUNK};
         for (auto &i : todecompress) {
             if (i.type == monad::async::storage_pool::cnv) {
                 if (i.chunk_id == 0) {
@@ -876,14 +927,8 @@ public:
                     });
                     do_([&](monad::mpt::detail::db_metadata *metadata) {
                         metadata->db_offsets.store(old_metadata->db_offsets);
-                        metadata->root_offsets.next_version_ =
-                            old_metadata->root_offsets.next_version_;
-                        metadata->root_offsets.version_lower_bound_ =
-                            old_metadata->root_offsets.version_lower_bound_;
-                        memcpy(
-                            &metadata->root_offsets.storage_,
-                            &old_metadata->root_offsets.storage_,
-                            sizeof(metadata->root_offsets.storage_));
+                        metadata->root_offsets.restore_from(
+                            old_metadata->root_offsets);
                         metadata->history_length = old_metadata->history_length;
                         metadata->latest_finalized_version =
                             old_metadata->latest_finalized_version;
@@ -891,17 +936,48 @@ public:
                             old_metadata->latest_verified_version;
                         metadata->latest_voted_version =
                             old_metadata->latest_voted_version;
+                        metadata->latest_proposed_version =
+                            old_metadata->latest_proposed_version;
                         metadata->latest_voted_block_id =
                             old_metadata->latest_voted_block_id;
-                        metadata->auto_expire_version =
-                            old_metadata->auto_expire_version;
+                        metadata->latest_proposed_block_id =
+                            old_metadata->latest_proposed_block_id;
+                        // Carries auto_expire_version_ and state_machine_kind_;
+                        // copying it preserves the source DB's kind (a zeroed
+                        // byte would default to ethereum, silently
+                        // mis-restoring a non-ethereum DB).
+                        metadata->root_offsets_state =
+                            old_metadata->root_offsets_state;
+                        // Dual-timeline role + secondary ring header.
+                        // Without primary_ring_idx the restored DB would
+                        // route the primary role at ring_a even when the
+                        // source DB had promoted ring_b — silent data
+                        // loss. Copy the secondary ring header so its
+                        // chunks (restored under the same cnv ids) are
+                        // mapped by map_ring_b_storage at reopen.
+                        metadata->primary_ring_idx =
+                            old_metadata->primary_ring_idx;
+                        metadata->secondary_timeline_active_ =
+                            old_metadata->secondary_timeline_active_;
+                        metadata->secondary_timeline.restore_from(
+                            old_metadata->secondary_timeline);
+                        metadata->secondary_timeline_state =
+                            old_metadata->secondary_timeline_state;
+                        // Deliberately NOT copied: pending_shrink_grow stays
+                        // at its zero-initialised value (op_kind NONE) so the
+                        // restored DB starts quiescent and does not replay an
+                        // in-flight op against freshly-restored ring data.
                     });
                     fast_list_base_insertion_count =
                         old_metadata->fast_list_begin()->insertion_count();
                     slow_list_base_insertion_count =
                         old_metadata->slow_list_begin()->insertion_count();
-                    MONAD_ASSERT(old_metadata->fast_list.begin != UINT32_MAX);
-                    MONAD_ASSERT(old_metadata->slow_list.begin != UINT32_MAX);
+                    MONAD_ASSERT(
+                        old_metadata->fast_list.begin !=
+                        monad::mpt::detail::db_metadata::NULL_CHUNK);
+                    MONAD_ASSERT(
+                        old_metadata->slow_list.begin !=
+                        monad::mpt::detail::db_metadata::NULL_CHUNK);
                     fast_list_begin_index = old_metadata->fast_list.begin;
                     slow_list_begin_index = old_metadata->slow_list.begin;
                     if (auto const max_seq_chunk = std::max(
@@ -1026,7 +1102,7 @@ public:
                     auto const it =
                         std::find(chunks.begin(), chunks.end(), i.chunk_id);
                     MONAD_ASSERT(it != chunks.end());
-                    *it = UINT32_MAX;
+                    *it = monad::mpt::detail::db_metadata::NULL_CHUNK;
                 }
             }
         }
@@ -1040,7 +1116,7 @@ public:
             auto const it =
                 std::find(chunks.begin(), chunks.end(), fast_list_begin_index);
             MONAD_ASSERT(it != chunks.end());
-            *it = UINT32_MAX;
+            *it = monad::mpt::detail::db_metadata::NULL_CHUNK;
             // override the first insertion count
             aux.metadata_ctx().modify_metadata(
                 override_insertion_count,
@@ -1059,7 +1135,7 @@ public:
             auto const it =
                 std::find(chunks.begin(), chunks.end(), slow_list_begin_index);
             MONAD_ASSERT(it != chunks.end());
-            *it = UINT32_MAX;
+            *it = monad::mpt::detail::db_metadata::NULL_CHUNK;
             // override the first insertion count
             aux.metadata_ctx().modify_metadata(
                 override_insertion_count,
@@ -1073,7 +1149,7 @@ public:
             aux.metadata_ctx().main()->slow_list.end == slow_list_end_index);
 
         for (unsigned int const &chunk : chunks) {
-            if (chunk != UINT32_MAX) {
+            if (chunk != monad::mpt::detail::db_metadata::NULL_CHUNK) {
                 aux.metadata_ctx().append(
                     monad::mpt::UpdateAux::chunk_list::free, chunk);
             }
@@ -1219,8 +1295,18 @@ public:
                         i.uncompressed.subspan(0, db_metadata_size);
                     auto const *m = monad::start_lifetime_as<
                         monad::mpt::detail::db_metadata>(i.uncompressed.data());
+                    // The archive loop below walks contiguous cnv chunk
+                    // ids [0, additional_cnv_chunks_to_archive]; that
+                    // assumption breaks once activate_secondary_header
+                    // has split chunks between root_offsets and
+                    // secondary_timeline. Deactivate before archiving.
+                    MONAD_ASSERT_PRINTF(
+                        m->secondary_timeline_active_ == 0,
+                        "archive of a pool with an active secondary "
+                        "timeline is not supported; run monad-mpt "
+                        "--deactivate-secondary first");
                     additional_cnv_chunks_to_archive =
-                        m->root_offsets.storage_.cnv_chunks_len;
+                        m->root_offsets.cnv_chunks_len();
                 }
                 i.compression_thread =
                     std::async(std::launch::async, [i = &i, this] {
@@ -1381,6 +1467,7 @@ int main_impl(
     std::span<std::string_view> const args)
 {
     CLI::App cli("Tool for managing MPT databases", "monad-mpt");
+    monad::cli::HelpFormatter{GIT_COMMIT_HASH}.install(cli);
     cli.footer(R"(Suitable sources of block storage:
 
 1. Raw partitions on a storage device.
@@ -1431,6 +1518,26 @@ opened.
                 impl.create_empty_database,
                 "create a new database if needed, otherwise truncate "
                 "existing.");
+            cli_ops_group->add_flag(
+                "--activate-secondary",
+                impl.activate_secondary,
+                "activate the secondary timeline on an existing database. "
+                "Stamps the secondary ring with the kind given via "
+                "--state-machine and shrinks the primary ring to make room "
+                "(see Db::activate_secondary_timeline). Operator must run "
+                "this with the daemon stopped.");
+            cli_ops_group->add_flag(
+                "--deactivate-secondary",
+                impl.deactivate_secondary,
+                "deactivate the secondary timeline; returns its chunks to "
+                "the primary ring.");
+            cli_ops_group->add_flag(
+                "--promote-secondary",
+                impl.promote_secondary,
+                "atomically flip primary_ring_idx so the secondary becomes "
+                "the new primary. Per-ring metadata (kind, auto_expire) "
+                "travels with the physical data; the daemon picks up the new "
+                "primary kind on next open.");
             cli_ops_group->add_option(
                 "--reset-history-length",
                 impl.reset_history_length,
@@ -1439,6 +1546,13 @@ opened.
                 "--rewind-to",
                 impl.rewind_database_to,
                 "rewind database to an earlier point in its history.");
+            cli_ops_group->add_flag(
+                "--upgrade",
+                impl.upgrade_database,
+                "migrate the database metadata to the current on-disk "
+                "format (MONAD008) and ensure it is durable on disk "
+                "before exiting. Run after upgrading the monad apt "
+                "package and before starting monad services.");
             cli.add_option(
                 "--archive",
                 impl.archive_database,
@@ -1463,13 +1577,24 @@ opened.
                    "Number of chunks to allocate for storing root offsets. "
                    "Must be a positive number that is a power of 2. Default is "
                    "16. Each chunk holds approx 16.5M history entries.")
-                ->check([](std::string const &s) {
+                ->check([](std::string const &s) -> std::string {
                     auto const v = std::stoll(s);
                     if (v <= 0) {
                         return "Value must be positive";
                     }
                     if ((v & (v - 1)) != 0) {
                         return "Value must be a power of 2";
+                    }
+                    // The per-ring cnv_chunks[] list holds SIZE_ - 1 entries;
+                    // a larger count overflows the array during new-pool init.
+                    constexpr auto max_ring_chunks =
+                        monad::mpt::detail::db_metadata::root_offsets_ring_t::
+                            SIZE_ -
+                        1;
+                    if (static_cast<unsigned long long>(v) > max_ring_chunks) {
+                        return "Value must be <= " +
+                               std::to_string(max_ring_chunks) +
+                               " (root offsets ring capacity)";
                     }
                     return "";
                 });
@@ -1478,6 +1603,23 @@ opened.
                 impl.create_chunk_increasing,
                 "if creating a new database, order the chunks sequentially "
                 "increasing instead of randomly mixed.");
+            cli.add_option(
+                   "--state-machine",
+                   impl.state_machine,
+                   "StateMachine kind to stamp on the affected timeline. "
+                   "Persisted per-timeline in db_metadata; consumed by "
+                   "mpt::Db on open to pick the right StateMachine "
+                   "implementation via the registry. Defaults to 'ethereum'; "
+                   "honored on --create, --create-empty, --truncate (stamps "
+                   "the primary) and --activate-secondary (stamps the "
+                   "secondary); ignored on other subcommands.")
+                ->transform(CLI::CheckedTransformer(
+                    std::map<
+                        std::string,
+                        MONAD_MPT_NAMESPACE::state_machine_kind>{
+                        {"ethereum",
+                         MONAD_MPT_NAMESPACE::state_machine_kind::ethereum}},
+                    CLI::ignore_case));
             cli.add_option(
                 "--compression-level",
                 impl.compression_level,
@@ -1553,6 +1695,18 @@ opened.
                 impl.flags.open_read_only = false;
                 impl.flags.open_read_only_allow_dirty = false;
             }
+            else if (impl.upgrade_database) {
+                mode = MONAD_ASYNC_NAMESPACE::storage_pool::mode::open_existing;
+                impl.flags.open_read_only = false;
+                impl.flags.open_read_only_allow_dirty = false;
+                impl.flags.allow_migration = true;
+            }
+            else if (
+                impl.activate_secondary || impl.deactivate_secondary ||
+                impl.promote_secondary) {
+                impl.flags.open_read_only = false;
+                impl.flags.open_read_only_allow_dirty = false;
+            }
             if (mode == MONAD_ASYNC_NAMESPACE::storage_pool::mode::truncate) {
                 MONAD_ASYNC_NAMESPACE::storage_pool const pool{
                     {impl.storage_paths}, mode, impl.flags};
@@ -1568,12 +1722,16 @@ opened.
 
         monad::io::Ring ring(monad::io::RingConfig{1});
 
+        bool const needs_write_ring =
+            impl.rewind_database_to || impl.reset_history_length ||
+            impl.activate_secondary || impl.deactivate_secondary ||
+            impl.promote_secondary;
         auto wr_ring(
-            (impl.rewind_database_to || impl.reset_history_length)
+            needs_write_ring
                 ? std::optional<monad::io::Ring>(monad::io::RingConfig{4})
                 : std::nullopt);
         monad::io::Buffers rwbuf =
-            (impl.rewind_database_to || impl.reset_history_length)
+            needs_write_ring
                 ? monad::io::make_buffers_for_segregated_read_write(
                       ring,
                       *wr_ring,
@@ -1590,6 +1748,61 @@ opened.
                           MONAD_IO_BUFFERS_READ_SIZE);
         auto io = MONAD_ASYNC_NAMESPACE::AsyncIO{*impl.pool, rwbuf};
         MONAD_MPT_NAMESPACE::UpdateAux aux(io);
+
+        // Stamp the persisted StateMachine kind on freshly-created or
+        // truncated pools. Existing pools keep whatever was previously
+        // stamped — passing --state-machine on an open here is a no-op.
+        if (aux.metadata_ctx().is_new_pool()) {
+            aux.metadata_ctx().set_state_machine_kind(
+                MONAD_MPT_NAMESPACE::timeline_id::primary, impl.state_machine);
+            cout << "Stamped state-machine kind on primary timeline.\n";
+        }
+
+        // Secondary timeline lifecycle. These execute against the open
+        // UpdateAux; the daemon must be stopped beforehand (UpdateAux's
+        // open holds the storage pool exclusively). On the next daemon
+        // start, the metadata-driven Db ctor / open_secondary_timeline()
+        // picks up the new state.
+        if (impl.activate_secondary) {
+            if (aux.metadata_ctx().timeline_active(
+                    MONAD_MPT_NAMESPACE::timeline_id::secondary)) {
+                cerr << "Secondary timeline already active; nothing to do.\n";
+                return 1;
+            }
+            // Order matters: stamp the kind first, then flip the active bit.
+            // open_secondary_timeline gates on the active bit, so flipping it
+            // first and crashing before the stamp would expose a secondary
+            // whose kind byte is still the zero (ethereum) default, silently
+            // building an ethereum StateMachine even when the secondary is
+            // another kind. Stamping first makes that window impossible.
+            aux.metadata_ctx().set_state_machine_kind(
+                MONAD_MPT_NAMESPACE::timeline_id::secondary,
+                impl.state_machine);
+            aux.activate_secondary_timeline();
+            cout << "Activated secondary timeline; stamped state-machine "
+                    "kind.\n";
+        }
+        else if (impl.deactivate_secondary) {
+            if (!aux.metadata_ctx().timeline_active(
+                    MONAD_MPT_NAMESPACE::timeline_id::secondary)) {
+                cerr << "Secondary timeline is not active; nothing to do.\n";
+                return 1;
+            }
+            // The kind byte is left as-is; readers gate on the active bit,
+            // and the next activate restamps it before flipping active.
+            aux.deactivate_secondary_timeline();
+            cout << "Deactivated secondary timeline.\n";
+        }
+        else if (impl.promote_secondary) {
+            if (!aux.metadata_ctx().timeline_active(
+                    MONAD_MPT_NAMESPACE::timeline_id::secondary)) {
+                cerr << "Secondary timeline is not active; cannot promote.\n";
+                return 1;
+            }
+            aux.promote_secondary_to_primary();
+            cout << "Promoted secondary timeline to primary "
+                    "(primary_ring_idx flipped).\n";
+        }
 
         {
             cout << R"(MPT database on storages:
@@ -1623,6 +1836,22 @@ opened.
             impl.print_list_info(
                 aux, aux.metadata_ctx().main()->free_list_begin(), "Free");
             impl.print_db_history_summary(aux);
+
+            if (impl.upgrade_database) {
+                if (aux.metadata_ctx().is_new_pool()) {
+                    cout << "\nWARNING: --upgrade found no existing DB "
+                            "metadata; a fresh MONAD008 pool was created. "
+                            "Use --create for an explicit new-pool "
+                            "workflow.\n";
+                }
+                else {
+                    cout << "\nDB is on version MONAD008; flushing "
+                            "metadata...\n";
+                }
+                aux.metadata_ctx().sync_metadata_to_disk();
+                cout << "Success.\n";
+                return 0;
+            }
 
             if (impl.reset_history_length) {
                 // set to fixed history length, database will prune any outdated

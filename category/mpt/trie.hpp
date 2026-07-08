@@ -23,6 +23,7 @@
 #include <category/mpt/db_metadata_context.hpp>
 #include <category/mpt/detail/collected_stats.hpp>
 #include <category/mpt/detail/db_metadata.hpp>
+#include <category/mpt/detail/timeline.hpp>
 #include <category/mpt/node.hpp>
 #include <category/mpt/node_cursor.hpp>
 #include <category/mpt/state_machine.hpp>
@@ -166,7 +167,8 @@ public:
 
 chunk_offset_t async_write_node_set_spare(UpdateAux &, Node &, bool is_fast);
 
-chunk_offset_t write_new_root_node(UpdateAux &, Node &root, uint64_t version);
+chunk_offset_t
+write_new_root_node(UpdateAux &, Node &root, uint64_t version, timeline_id tid);
 
 node_writer_unique_ptr_type
 replace_node_writer(UpdateAux &, node_writer_unique_ptr_type const &);
@@ -176,12 +178,13 @@ class UpdateAux
 {
     void reset_node_writers();
 
-    void advance_compact_offsets(Node::SharedPtr prev_root);
+    void advance_compact_offsets(Node::SharedPtr prev_root, timeline_id tid);
 
     void free_compacted_chunks();
 
-    // clear root offsets of versions <= version
-    void clear_root_offsets_up_to_and_including(uint64_t version);
+    // clear a timeline's root offsets of versions <= version
+    void
+    clear_root_offsets_up_to_and_including(uint64_t version, timeline_id tid);
     void release_unreferenced_chunks();
 
     double
@@ -197,7 +200,8 @@ class UpdateAux
     TODO: Develop a more efficient and scalable mechanism for auto-expiration
     throttling. The goal is to ensure stable database commit times despite
     varying block loads. */
-    int64_t calc_auto_expire_version(uint64_t upsert_version) noexcept;
+    int64_t
+    calc_auto_expire_version(uint64_t upsert_version, timeline_id tid) noexcept;
 
     void update_disk_growth_data();
 
@@ -220,12 +224,6 @@ class UpdateAux
         MIN_COMPACT_VIRTUAL_OFFSET};
     compact_virtual_chunk_offset_t last_block_disk_growth_slow_{
         MIN_COMPACT_VIRTUAL_OFFSET};
-    // compaction range
-    compact_virtual_chunk_offset_t compact_offset_range_fast_{
-        MIN_COMPACT_VIRTUAL_OFFSET};
-    compact_virtual_chunk_offset_t compact_offset_range_slow_{
-        MIN_COMPACT_VIRTUAL_OFFSET};
-
     bool alternate_slow_fast_writer_{false};
     bool can_write_to_fast_{true};
 
@@ -233,9 +231,17 @@ public:
     // Allocate the first cnv chunk for db metadata copies
     static constexpr unsigned cnv_chunks_for_db_metadata = 1;
 
-    int64_t curr_upsert_auto_expire_version{0};
-    compact_offset_pair compact_offsets{
-        MIN_COMPACT_VIRTUAL_OFFSET, MIN_COMPACT_VIRTUAL_OFFSET};
+    timeline_compaction_state timeline_[NUM_TIMELINES];
+
+    timeline_compaction_state &tl(timeline_id id) noexcept
+    {
+        return timeline_[static_cast<unsigned>(id)];
+    }
+
+    timeline_compaction_state const &tl(timeline_id id) const noexcept
+    {
+        return timeline_[static_cast<unsigned>(id)];
+    }
 
     // On disk stuff
     MONAD_ASYNC_NAMESPACE::AsyncIO *io{nullptr};
@@ -263,23 +269,25 @@ public:
 
     Node::SharedPtr do_update(
         Node::SharedPtr prev_root, StateMachine &, UpdateList &&,
-        uint64_t version, bool compaction = false,
-        bool can_write_to_fast = true, bool write_root = true);
+        uint64_t version, bool compaction, bool can_write_to_fast,
+        bool write_root, timeline_id tid);
 
     void adjust_history_length_based_on_disk_usage();
-    void move_trie_version_forward(uint64_t src, uint64_t dest);
+    void move_trie_version_forward(
+        uint64_t src, uint64_t dest, timeline_id tid = timeline_id::primary);
 
     // collect and print trie update stats
     void reset_stats();
     void collect_expire_stats(bool is_read);
     void collect_number_nodes_created_stats();
     void collect_compaction_read_stats(
-        chunk_offset_t node_offset, unsigned bytes_to_read);
+        chunk_offset_t node_offset, unsigned bytes_to_read, timeline_id tid);
     void collect_compacted_nodes_stats(
         bool copy_node_for_fast, bool rewrite_to_fast,
-        virtual_chunk_offset_t node_offset, uint32_t node_disk_size);
+        virtual_chunk_offset_t node_offset, uint32_t node_disk_size,
+        timeline_id tid);
 
-    void print_update_stats(uint64_t version);
+    void print_update_stats(uint64_t version, timeline_id tid);
 
     using chunk_list = DbMetadataContext::chunk_list;
 
@@ -296,7 +304,7 @@ public:
     }
 
     // clear all versions <= version, release unused disk space
-    void erase_versions_up_to_and_including(uint64_t version);
+    void erase_versions_up_to_and_including(uint64_t version, timeline_id tid);
 
     // translate between virtual and physical addresses chunk_offset_t
     virtual_chunk_offset_t physical_to_virtual(chunk_offset_t) const noexcept;
@@ -354,12 +362,18 @@ public:
                (double)num_chunks(chunk_list::free) / (double)io->chunk_count();
     }
 
-    uint32_t num_chunks(chunk_list list) const noexcept;
+    uint32_t num_chunks(chunk_list const list) const noexcept;
+
+    // Timeline lifecycle. The metadata-header portion of each operation lives
+    // on DbMetadataContext; these methods keep the per-timeline compaction
+    // state (tl()) in sync with the header.
+    void activate_secondary_timeline();
+    void deactivate_secondary_timeline();
+    void promote_secondary_to_primary();
 };
 
-// sizeof changed: db_metadata_[2] replaced by unique_ptr<DbMetadataContext>
 static_assert(
-    sizeof(UpdateAux) == 96 + sizeof(detail::TrieUpdateCollectedStats));
+    sizeof(UpdateAux) == 120 + sizeof(detail::TrieUpdateCollectedStats));
 static_assert(alignof(UpdateAux) == 8);
 
 template <receiver Receiver>
@@ -396,17 +410,19 @@ void async_read(UpdateAux &aux, Receiver &&receiver)
 // batch upsert, updates can be nested
 Node::SharedPtr upsert(
     UpdateAux &, uint64_t version, StateMachine &, Node::SharedPtr old,
-    UpdateList &&, bool write_root = true);
+    UpdateList &&, bool write_root, timeline_id tid);
 
 // Performs a deep copy of a subtrie from `src_root` trie at
 // `src_prefix` to the `dest_root` trie at `dest_prefix`.
 // Note that `src_root` may be of a different version than `dest_root`.
 // Any pre-existing trie at `dest_prefix` will be overwritten.
 // The in-memory effect is similar to a move operation.
+// `tid` selects which timeline reads the source nodes (and which
+// timeline's root-offset metadata is updated when `write_root` is true).
 Node::SharedPtr copy_trie_to_dest(
     UpdateAux &, Node::SharedPtr src_root, NibblesView src_prefix,
     Node::SharedPtr dest_root, NibblesView dest_prefix, uint64_t dest_version,
-    bool write_root = true);
+    timeline_id tid, bool write_root = true);
 
 // load all nodes as far as caching policy would allow
 size_t load_all(UpdateAux &, StateMachine &, NodeCursor const &);
@@ -505,8 +521,9 @@ the node through blocking read.
 synchronization is provided, and user code should make sure no other place is
 modifying trie.
 */
-find_cursor_result_type
-find_blocking(UpdateAux const &, NodeCursor, NibblesView key, uint64_t version);
+find_cursor_result_type find_blocking(
+    UpdateAux const &, NodeCursor, NibblesView key, uint64_t version,
+    timeline_id tid);
 
 /* This function reads a node from the specified physical offset `node_offset`,
 where the spare bits indicate the number of pages to read. It returns a valid
@@ -514,7 +531,8 @@ where the spare bits indicate the number of pages to read. It returns a valid
 becomes invalid.
 */
 Node::SharedPtr read_node_blocking(
-    UpdateAux const &, chunk_offset_t node_offset, uint64_t version);
+    UpdateAux const &, chunk_offset_t node_offset, uint64_t version,
+    timeline_id tid);
 
 //////////////////////////////////////////////////////////////////////////////
 // helpers

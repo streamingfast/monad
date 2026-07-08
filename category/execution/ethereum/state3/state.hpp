@@ -77,7 +77,7 @@ class State
         requires is_monad_trait_v<traits>
     friend void init_reserve_balance_context(
         State &, Address const &, Transaction const &,
-        std::optional<uint256_t> const &, uint64_t,
+        std::optional<uint256_t> const &, uint64_t, trace::StateTracer &,
         ChainContext<traits> const &);
 
 public:
@@ -167,7 +167,11 @@ public:
 
     evmc_access_status access_account(Address const &);
 
+    template <Traits traits>
     evmc_access_status access_storage(Address const &, bytes32_t const &key);
+
+    vm::Host::PageStorageStatus update_page(
+        Address const &, bytes32_t const &key, evmc_storage_status status);
 
     ////////////////////////////////////////
 

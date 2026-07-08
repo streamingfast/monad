@@ -34,12 +34,14 @@ target_sources(monad-vm-runtime PRIVATE
     "environment.hpp"
     "environment.cpp"
     "exit.S"
+    "exit.hpp"
     "exit.cpp"
     "keccak.hpp"
     "log.hpp"
     "log.cpp"
     "math.S"
     "math.hpp"
+    "math/intrinsics.hpp"
     "memory.hpp"
     "runtime.hpp"
     "selfdestruct.hpp"
@@ -49,6 +51,7 @@ target_sources(monad-vm-runtime PRIVATE
     "storage_costs.hpp"
     "transmute.S"
     "transmute.hpp"
+    "transmute/intrinsics.hpp"
     "types.hpp"
 )
 

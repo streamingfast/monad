@@ -15,6 +15,7 @@
 
 #include <category/core/assert.h>
 #include <category/core/cases.hpp>
+#include <category/core/int.hpp>
 #include <category/core/likely.h>
 #include <category/core/runtime/uint256.hpp>
 #include <category/vm/compiler/ir/basic_blocks.hpp>
@@ -24,8 +25,9 @@
 #include <category/vm/compiler/types.hpp>
 #include <category/vm/interpreter/intercode.hpp>
 #include <category/vm/runtime/math.hpp>
+#include <category/vm/runtime/math/intrinsics.hpp>
 #include <category/vm/runtime/storage.hpp>
-#include <category/vm/runtime/transmute.hpp>
+#include <category/vm/runtime/transmute/intrinsics.hpp>
 #include <category/vm/runtime/types.hpp>
 #include <category/vm/utils/debug.hpp>
 
@@ -343,7 +345,7 @@ namespace monad::vm::compiler::native
         }
 
         std::array<uint8_t, 32> a;
-        x.store_le(a.data());
+        store_le(a.data(), x);
         int32_t const next_offset = static_cast<int32_t>(data_.size()) << 5;
         auto const [it, is_new] = sub32_.offmap.emplace(a, next_offset);
         if (is_new) {
@@ -425,7 +427,7 @@ namespace monad::vm::compiler::native
                 static_cast<size_t>(next_partial_index) < data_.size());
             static_assert(sizeof(size_t) >= sizeof(next_partial_index));
             auto &a = data_[static_cast<size_t>(next_partial_index)];
-            std::memcpy(a.as_bytes() + next_partial_sub_index, &x, N);
+            std::memcpy(as_bytes(a) + next_partial_sub_index, &x, N);
             partial_index_ = next_partial_index;
             partial_sub_index_ = next_partial_sub_index + n;
         }
@@ -2281,8 +2283,7 @@ namespace monad::vm::compiler::native
     void Emitter::mov_stack_elem_to_mem_be(StackElemRef const e, x86::Mem m)
     {
         if (e->literal()) {
-            auto const x =
-                uint256_t::load_be_unsafe(e->literal()->value.as_bytes());
+            auto const x = bswap(e->literal()->value);
             mov_literal_to_mem<false>(Literal{x}, m);
         }
         else if (e->general_reg()) {
@@ -2293,6 +2294,7 @@ namespace monad::vm::compiler::native
             }
         }
         else {
+            AvxRegReserv const e_reserv{e};
             auto [tmp_elem, reserv] = alloc_avx_reg();
             auto const y = avx_reg_to_ymm(*tmp_elem->avx_reg());
             if (e->avx_reg()) {
@@ -4410,7 +4412,7 @@ namespace monad::vm::compiler::native
         auto const tmp_y = avx_reg_to_ymm(*tmp->avx_reg());
 
         uint256_t shuf = std::numeric_limits<uint256_t>::max();
-        std::memset(shuf.as_bytes() + ix + 1, ix, static_cast<size_t>(31 - ix));
+        std::memset(as_bytes(shuf) + ix + 1, ix, static_cast<size_t>(31 - ix));
         as_.vmovaps(tmp_y, rodata_.add32(shuf));
         // tmp_y[0] = -1
         // tmp_y[1] = -1

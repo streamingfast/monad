@@ -15,6 +15,7 @@
 
 #pragma once
 
+#include <category/core/thread_local.h>
 #include <category/vm/runtime/cached_allocator.hpp>
 
 namespace monad::vm::runtime
@@ -24,7 +25,7 @@ namespace monad::vm::runtime
         using base_type = uint256_t;
         static constexpr size_t size = 1024;
         static constexpr size_t alignment = 32;
-        static thread_local CachedAllocatorList cache_list;
+        static MONAD_THREAD_LOCAL CachedAllocatorList cache_list;
     };
 
     using EvmStackAllocator = CachedAllocator<EvmStackAllocatorMeta>;

@@ -19,17 +19,36 @@
 #include <category/core/config.hpp>
 #include <category/core/result.hpp>
 #include <category/execution/ethereum/chain/chain.hpp>
+#include <category/execution/ethereum/trace/state_tracer.hpp>
 #include <category/vm/evm/traits.hpp>
+
+#include <cstdint>
+#include <span>
 
 MONAD_NAMESPACE_BEGIN
 
 class BlockHashBuffer;
+struct Receipt;
 class State;
 struct BlockHeader;
+
+struct BlockRequest
+{
+    uint8_t type;
+    byte_string data;
+};
+
+// EIP-7685: Canonical callers must supply requests ordered by ascending request
+// type.  The hash function preserves the supplied order.
+bytes32_t compute_requests_hash(std::span<BlockRequest const> requests);
+
+// EIP-6110: extract concatenated deposit request payloads from receipt logs.
+Result<byte_string> extract_deposit_requests(std::span<Receipt const> receipts);
 
 template <Traits traits>
 Result<bytes32_t> process_requests(
     Chain const &, State &, BlockHashBuffer const &, BlockHeader const &,
-    ChainContext<traits> const &);
+    trace::StateTracer &, ChainContext<traits> const &,
+    std::span<Receipt const>);
 
 MONAD_NAMESPACE_END

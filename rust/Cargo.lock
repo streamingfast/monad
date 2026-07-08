@@ -443,6 +443,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "build-rs"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe808acca98fccf920154ee7833e791bfb683299be4aae7ec222ddffad8cd4f8"
+dependencies = [
+ "unicode-ident",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -470,6 +479,39 @@ dependencies = [
  "libc",
  "once_cell",
  "serde",
+]
+
+[[package]]
+name = "camino"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e629a66d692cb9ff1a1c664e41771b3dcaf961985a9774c0eb0bd1b51cf60a48"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
+name = "cargo-platform"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd0061da739915fae12ea00e16397555ed4371a6bb285431aab930f61b0aa4ba"
+dependencies = [
+ "serde",
+ "serde_core",
+]
+
+[[package]]
+name = "cargo_metadata"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef987d17b0a113becdd19d3d0022d04d7ef41f9efe4f3fb63ac44ba61df3ade9"
+dependencies = [
+ "camino",
+ "cargo-platform",
+ "semver",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
@@ -1411,11 +1453,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "monad-cxx"
+name = "monad-build"
 version = "0.1.0"
 dependencies = [
  "bindgen",
+ "cargo_metadata",
+ "cc",
  "cmake",
+]
+
+[[package]]
+name = "monad-cxx"
+version = "0.1.0"
+dependencies = [
+ "monad-build",
  "tracing",
 ]
 
@@ -1428,9 +1479,9 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "alloy-sol-types",
- "bindgen",
  "futures",
  "hex",
+ "monad-build",
  "monad-cxx",
  "serde",
  "tracing",
@@ -1440,13 +1491,12 @@ dependencies = [
 name = "monad-event-ring"
 version = "0.1.0"
 dependencies = [
- "bindgen",
- "cc",
+ "build-rs",
  "clap",
- "cmake",
  "criterion",
  "itertools 0.10.5",
  "libc",
+ "monad-build",
 ]
 
 [[package]]
@@ -1457,13 +1507,13 @@ dependencies = [
  "alloy-eips",
  "alloy-primitives",
  "alloy-rpc-types",
- "bindgen",
- "cc",
  "chrono",
  "clap",
  "criterion",
  "hex",
  "itertools 0.10.5",
+ "lazy_static",
+ "monad-build",
  "monad-event-ring",
  "ratatui",
  "serde",
@@ -1473,12 +1523,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-statesync"
+version = "0.1.0"
+dependencies = [
+ "monad-build",
+ "monad-cxx",
+]
+
+[[package]]
 name = "monad-triedb"
 version = "0.1.0"
 dependencies = [
- "bindgen",
- "cmake",
  "futures",
+ "monad-build",
  "monad-cxx",
  "tracing",
 ]
@@ -1987,6 +2044,10 @@ name = "semver"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d767eb0aabc880b29956c35734170f26ed551a859dbd361d140cdbeca61ab1e2"
+dependencies = [
+ "serde",
+ "serde_core",
+]
 
 [[package]]
 name = "serde"

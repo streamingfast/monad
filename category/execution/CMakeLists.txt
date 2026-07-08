@@ -103,6 +103,8 @@ add_library(
   "ethereum/db/file_db.hpp"
   "ethereum/db/partial_trie_db.hpp"
   "ethereum/db/partial_trie_db.cpp"
+  "ethereum/db/state_machine_init.cpp"
+  "ethereum/db/state_machine_init.hpp"
   "ethereum/db/trie_db.cpp"
   "ethereum/db/trie_db.hpp"
   "ethereum/db/trie_rodb.hpp"
@@ -188,6 +190,7 @@ add_library(
   "ethereum/state3/account_state.cpp"
   "ethereum/state3/account_state.hpp"
   "ethereum/state3/account_substate.hpp"
+  "ethereum/state3/page_tracker.hpp"
   "ethereum/state3/state.cpp"
   "ethereum/state3/state.hpp"
   "ethereum/state3/version_stack.hpp"
@@ -199,6 +202,9 @@ add_library(
 
 add_library(
   monad_execution_native OBJECT
+  # monad/db
+  "monad/db/storage_page.cpp"
+  "monad/db/storage_page.hpp"
   # monad/chain
   "monad/chain/monad_chain.cpp"
   "monad/chain/monad_chain.hpp"
@@ -264,6 +270,7 @@ add_library(
   "monad/staking/util/bls.hpp"
   "monad/staking/util/consensus_view.cpp"
   "monad/staking/util/consensus_view.hpp"
+  "monad/staking/util/constants.cpp"
   "monad/staking/util/constants.hpp"
   "monad/staking/util/delegator.cpp"
   "monad/staking/util/delegator.hpp"
@@ -307,6 +314,7 @@ target_link_libraries(
   PRIVATE Boost::fiber
   PRIVATE Boost::json
   PUBLIC c-kzg-4844
+  PRIVATE monad_crypto
   PRIVATE PkgConfig::brotli
   PRIVATE PkgConfig::crypto++
   PUBLIC ethash::keccak

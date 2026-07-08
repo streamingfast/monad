@@ -33,6 +33,11 @@ MONAD_MPT_NAMESPACE_BEGIN
 class DbMetadataContext;
 class UpdateAux;
 
+namespace test
+{
+    struct DbMetadataTestAccess; // test-only access to ring internals
+}
+
 namespace detail
 {
     struct db_metadata;
@@ -60,11 +65,23 @@ namespace detail
     inline void
     db_copy(db_metadata *dest, db_metadata const *src, size_t bytes);
 
+    // In-place relocation of one metadata copy's fixed-header fields from the
+    // MONAD007 layout to MONAD008, rewriting the magic on success. chunk_count
+    // is the seq-chunk count (== chunk_info[] length). The caller is
+    // responsible for holding the copy's hold_dirty, healing dirty copies from
+    // a clean sibling beforehand, and flushing afterward. Exposed for unit
+    // tests that exercise large chunk_count layouts the constructor cannot
+    // reach without an impractically large pool.
+    void migrate_monad007_to_monad008(db_metadata *m, uint32_t chunk_count);
+
     // For the memory map of the first conventional chunk
     struct db_metadata
     {
-        static constexpr char const *MAGIC = "MONAD007";
+        static constexpr char const *MAGIC = "MONAD008";
         static constexpr unsigned MAGIC_STRING_LEN = 8;
+        // Previous magic supported via on-the-fly migration (see
+        // DbMetadataContext constructor).
+        static constexpr char const *PREVIOUS_MAGIC = "MONAD007";
 
         friend class MONAD_MPT_NAMESPACE::DbMetadataContext;
         friend class MONAD_MPT_NAMESPACE::UpdateAux;
@@ -88,10 +105,22 @@ namespace detail
         // design works well, because this min is always known to be stored N
         // elements before the max, so no special handling is required when the
         // ring buffer is under capacity.
+        //
+        // Two physically-distinct rings of this type live in db_metadata:
+        // `root_offsets` (ring_a) and `secondary_timeline` (ring_b). Which one
+        // is the logical primary is selected by `primary_ring_idx` below.
+        // SIZE_-1 caps the per-ring cnv_chunks[] list length (vastly over-
+        // provisioned vs. real pools that use at most a handful per ring).
         struct root_offsets_ring_t
         {
-            static constexpr size_t SIZE_ = 65536;
+            static constexpr size_t SIZE_ = 32;
 
+            friend class MONAD_MPT_NAMESPACE::DbMetadataContext;
+            friend inline void
+            db_copy(db_metadata *dest, db_metadata const *src, size_t bytes);
+            friend struct MONAD_MPT_NAMESPACE::test::DbMetadataTestAccess;
+
+        private:
             uint64_t version_lower_bound_;
             uint64_t
                 next_version_; // all bits zero turns into INVALID_BLOCK_NUM
@@ -109,7 +138,43 @@ namespace detail
                     uint32_t cnv_chunk_id; // The read-write chunk id
                 } cnv_chunks[SIZE_ - 1];
             } storage_;
+
+        public:
+            // Mutated only by offline shrink/grow; concurrent readers must use
+            // the atomic accessor in root_offsets_delegator. Plain access here
+            // is for offline/single-threaded callers (CLI restore, tests,
+            // init).
+            uint32_t cnv_chunks_len() const noexcept
+            {
+                return storage_.cnv_chunks_len;
+            }
+
+            void restore_from(root_offsets_ring_t const &other) noexcept
+            {
+                version_lower_bound_ = other.version_lower_bound_;
+                next_version_ = other.next_version_;
+                storage_ = other.storage_;
+            }
         } root_offsets;
+
+        // Mutable per-timeline state that travels with the physical ring on
+        // promote (the role label flips, but the values stay attached to the
+        // data). Kept as a sibling of root_offsets_ring_t so the ring struct
+        // describes only the chunk storage. Read/written under hold_dirty.
+        struct timeline_state_t
+        {
+            // Last upsert's auto-expire version threshold for this timeline.
+            // Accessed via start_lifetime_as<std::atomic_int64_t>.
+            int64_t auto_expire_version_;
+            // mpt::state_machine_kind for the timeline currently bound to
+            // this physical ring. Stamped at pool create time by monad-mpt
+            // --state-machine, and on activate-secondary for whichever ring
+            // hosts the secondary at that moment. Read by mpt::Db ctor to
+            // pick the right StateMachine via the registry in
+            // state_machine_kind.hpp.
+            uint8_t state_machine_kind_;
+            uint8_t reserved_sm_[7]; // alignment + future per-ring scalars
+        } root_offsets_state;
 
         struct db_offsets_info_t
         {
@@ -152,12 +217,60 @@ namespace detail
         uint64_t latest_verified_version;
         uint64_t latest_voted_version;
         uint64_t latest_proposed_version;
-        int64_t auto_expire_version;
         bytes32_t latest_voted_block_id;
         bytes32_t latest_proposed_block_id;
 
-        // padding for adding future atomics without requiring DB reset
-        uint8_t future_variables_unused[4032];
+        // Ring B: second physical root-offsets ring, structurally identical
+        // to root_offsets (ring_a). Both rings have the same header type,
+        // but physically ring_a's cnv_chunks list is populated at pool init
+        // (all ring chunks go to it) while ring_b starts empty. On
+        // activate_secondary_header, ring_a atomically shrinks and the
+        // freed chunks are handed to ring_b; on deactivate they return.
+        root_offsets_ring_t secondary_timeline;
+        timeline_state_t secondary_timeline_state;
+
+        // Which physical ring is the logical primary:
+        //   0 = root_offsets (ring_a), 1 = secondary_timeline (ring_b).
+        // Promote flips this byte atomically on both metadata copies. Headers
+        // and physical storage stay attached to their rings — only the role
+        // label moves.
+        uint8_t primary_ring_idx;
+        // 1 = secondary role is currently active (the non-primary ring holds
+        // valid data and is being read/written). 0 = inactive; the non-
+        // primary ring's header/data are garbage.
+        uint8_t secondary_timeline_active_;
+        // Pads the two role bytes out to 16 and reserves room for future
+        // per-timeline role fields without bumping the metadata magic.
+        uint8_t reserved_timeline_[14];
+
+        // Intent log for crash-safe metadata transitions (ring shrink/grow
+        // and primary-role promote). Stamped + msync'd before the mutation;
+        // cleared + msync'd after the (idempotent) body completes. On open,
+        // a nonzero op_kind triggers replay.
+        enum pending_op_kind : uint32_t
+        {
+            PENDING_OP_NONE = 0,
+            PENDING_OP_ACTIVATE = 1, // activate_secondary_header
+            PENDING_OP_DEACTIVATE = 2, // deactivate_secondary_header
+            PENDING_OP_PROMOTE = 3, // promote_secondary_to_primary_header
+        };
+
+        struct pending_shrink_grow_t
+        {
+            uint32_t op_kind; // pending_op_kind
+            // op-specific param: target primary cnv_chunks_len for
+            // ACTIVATE/DEACTIVATE; target primary_ring_idx for PROMOTE.
+            uint32_t op_param;
+        } pending_shrink_grow;
+
+        static_assert(sizeof(pending_shrink_grow_t) == 8);
+
+        // padding for adding future atomics without requiring DB reset.
+        // Sized so sizeof(db_metadata) stays at 4480 regardless of how
+        // timeline_state_t grows in subsequent PRs.
+        uint8_t future_variables_unused
+            [4040 - sizeof(root_offsets_ring_t) - 2 * sizeof(timeline_state_t) -
+             16 - sizeof(pending_shrink_grow_t)];
 
         // used to know if the metadata was being
         // updated when the process suddenly exited
@@ -175,6 +288,11 @@ namespace detail
         {
             uint32_t begin, end;
         } free_list, fast_list, slow_list;
+
+        // Empty-list sentinel for id_pair begin/end: a full-width uint32
+        // array index, unlike the 20-bit chunk_info_t::INVALID_CHUNK_ID node
+        // id used in the prev/next links.
+        static constexpr uint32_t NULL_CHUNK = UINT32_MAX;
 
         struct chunk_info_t
         {
@@ -284,7 +402,7 @@ namespace detail
 
         chunk_info_t const *free_list_begin() const noexcept
         {
-            if (free_list.begin == UINT32_MAX) {
+            if (free_list.begin == NULL_CHUNK) {
                 return nullptr;
             }
             return at(free_list.begin);
@@ -292,7 +410,7 @@ namespace detail
 
         chunk_info_t const *free_list_end() const noexcept
         {
-            if (free_list.end == UINT32_MAX) {
+            if (free_list.end == NULL_CHUNK) {
                 return nullptr;
             }
             return at(free_list.end);
@@ -300,7 +418,7 @@ namespace detail
 
         chunk_info_t const *fast_list_begin() const noexcept
         {
-            if (fast_list.begin == UINT32_MAX) {
+            if (fast_list.begin == NULL_CHUNK) {
                 return nullptr;
             }
             return at(fast_list.begin);
@@ -308,7 +426,7 @@ namespace detail
 
         chunk_info_t const *fast_list_end() const noexcept
         {
-            if (fast_list.end == UINT32_MAX) {
+            if (fast_list.end == NULL_CHUNK) {
                 return nullptr;
             }
             return at(fast_list.end);
@@ -316,7 +434,7 @@ namespace detail
 
         chunk_info_t const *slow_list_begin() const noexcept
         {
-            if (slow_list.begin == UINT32_MAX) {
+            if (slow_list.begin == NULL_CHUNK) {
                 return nullptr;
             }
             return at(slow_list.begin);
@@ -324,7 +442,7 @@ namespace detail
 
         chunk_info_t const *slow_list_end() const noexcept
         {
-            if (slow_list.end == UINT32_MAX) {
+            if (slow_list.end == NULL_CHUNK) {
                 return nullptr;
             }
             return at(slow_list.end);
@@ -346,8 +464,8 @@ namespace detail
             info.in_slow_list = (&list == &slow_list);
             info.insertion_count0_ = info.insertion_count1_ = 0;
             info.next_chunk_id = chunk_info_t::INVALID_CHUNK_ID;
-            if (list.end == UINT32_MAX) {
-                MONAD_ASSERT(list.begin == UINT32_MAX);
+            if (list.end == NULL_CHUNK) {
+                MONAD_ASSERT(list.begin == NULL_CHUNK);
                 info.prev_chunk_id = chunk_info_t::INVALID_CHUNK_ID;
                 list.begin = list.end = i->index(this);
             }
@@ -393,7 +511,7 @@ namespace detail
                 id_pair &list = get_list();
                 MONAD_ASSERT(list.begin == i->index(this));
                 MONAD_ASSERT(list.end == i->index(this));
-                list.begin = list.end = UINT32_MAX;
+                list.begin = list.end = NULL_CHUNK;
 #ifndef NDEBUG
                 i->in_fast_list = i->in_slow_list = false;
 #endif
@@ -459,7 +577,13 @@ namespace detail
 
     static_assert(std::is_trivially_copyable_v<db_metadata>);
     static_assert(std::is_trivially_copy_assignable_v<db_metadata>);
-    static_assert(sizeof(db_metadata) == 528512);
+    // The fixed-header size is pinned so that adding or shrinking a
+    // field in the header is a conscious decision. The actual mmap
+    // region is sizeof(db_metadata) + chunk_count * sizeof(chunk_info_t)
+    // and must fit in cnv.capacity()/2 (copy 0 at offset 0, copy 1 at
+    // cnv.capacity()/2); enlarging the fixed header eats into the
+    // chunk_info[] budget for any given chunk_count.
+    static_assert(sizeof(db_metadata) == 4480);
     static_assert(alignof(db_metadata) == 8);
 
     inline void atomic_memcpy(
@@ -513,6 +637,9 @@ namespace detail
         dest->root_offsets.next_version_ = 0; // INVALID_BLOCK_NUM
         auto const old_next_version = intr->root_offsets.next_version_;
         intr->root_offsets.next_version_ = 0; // INVALID_BLOCK_NUM
+        dest->secondary_timeline.next_version_ = 0;
+        auto const old_secondary_next = intr->secondary_timeline.next_version_;
+        intr->secondary_timeline.next_version_ = 0;
         atomic_memcpy((void *)dest, buffer, sizeof(db_metadata));
         atomic_memcpy(
             ((std::byte *)dest) + sizeof(db_metadata),
@@ -520,6 +647,8 @@ namespace detail
             bytes - sizeof(db_metadata));
         std::atomic_ref<uint64_t>(dest->root_offsets.next_version_)
             .store(old_next_version, std::memory_order_release);
+        std::atomic_ref<uint64_t>(dest->secondary_timeline.next_version_)
+            .store(old_secondary_next, std::memory_order_release);
     };
 }
 

@@ -62,6 +62,8 @@ add_library(
   "request.hpp"
   "read_node_blocking.cpp"
   "state_machine.hpp"
+  "state_machine_kind.cpp"
+  "state_machine_kind.hpp"
   "traverse.hpp"
   "traverse_util.hpp"
   "trie.cpp"
@@ -80,6 +82,9 @@ add_executable(monad-mpt "cli_tool_main.cpp" "cli_tool_impl.cpp")
 monad_compile_options(monad-mpt)
 target_link_libraries(monad-mpt PUBLIC monad_execution PkgConfig::zstd
                                        PkgConfig::archive CLI11::CLI11)
+
+target_compile_definitions(monad-mpt
+                           PRIVATE GIT_COMMIT_HASH="${GIT_COMMIT_HASH}")
 
 function(add_trie_test)
   set(ONE_VALUE_ARGS TARGET TEST_FILTER)

@@ -15,5 +15,4 @@ futures = { workspace = true }
 tracing = { workspace = true }
 
 [build-dependencies]
-bindgen = { workspace = true }
-cmake = { workspace = true }
+monad-build = { workspace = true, features = ["bindgen", "cmake", "metadata"] }

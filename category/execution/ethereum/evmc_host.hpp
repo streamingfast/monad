@@ -57,9 +57,11 @@ protected:
     bool const log_native_transfers_;
 
 public:
+    trace::StateTracer &state_tracer_;
+
     EvmcHostBase(
-        CallTracerBase &, evmc_tx_context const &, BlockHashBuffer const &,
-        State &, bool log_native_transfers) noexcept;
+        CallTracerBase &, trace::StateTracer &, evmc_tx_context const &,
+        BlockHashBuffer const &, State &, bool log_native_transfers) noexcept;
 
     virtual ~EvmcHostBase() noexcept = default;
 
@@ -91,9 +93,6 @@ public:
         evmc::address const &, uint8_t const *data, size_t data_size,
         evmc::bytes32 const topics[], size_t num_topics) noexcept override;
 
-    virtual evmc_access_status access_storage(
-        evmc::address const &, evmc::bytes32 const &key) noexcept override;
-
     virtual evmc::bytes32 get_transient_storage(
         evmc::address const &,
         evmc::bytes32 const &key) const noexcept override;
@@ -101,9 +100,13 @@ public:
     virtual void set_transient_storage(
         evmc::address const &, evmc::bytes32 const &key,
         evmc::bytes32 const &value) noexcept override;
+
+    virtual PageStorageStatus update_page(
+        evmc::address const &, evmc::bytes32 const &page_key,
+        evmc_storage_status) noexcept override;
 };
 
-static_assert(sizeof(EvmcHostBase) == 64);
+static_assert(sizeof(EvmcHostBase) == 72);
 static_assert(alignof(EvmcHostBase) == 8);
 
 template <Traits traits>
@@ -113,7 +116,6 @@ struct EvmcHost final : public EvmcHostBase
     std::optional<uint256_t> base_fee_per_gas_;
     uint64_t i_;
     ChainContext<traits> const &chain_ctx_;
-    trace::StateTracer &state_tracer_;
 
     EvmcHost(
         CallTracerBase &call_tracer, trace::StateTracer &state_tracer,
@@ -122,19 +124,18 @@ struct EvmcHost final : public EvmcHostBase
         Transaction const &tx, std::optional<uint256_t> const base_fee_per_gas,
         uint64_t const i, ChainContext<traits> const &chain_ctx,
         bool const log_native_transfers = false) noexcept
-        : EvmcHostBase{call_tracer, tx_context, block_hash_buffer, state, log_native_transfers}
+        : EvmcHostBase{call_tracer, state_tracer, tx_context, block_hash_buffer, state, log_native_transfers}
         , tx_{tx}
         , base_fee_per_gas_{base_fee_per_gas}
         , i_{i}
         , chain_ctx_{chain_ctx}
-        , state_tracer_{state_tracer}
     {
     }
 
     virtual bool
     account_exists(evmc::address const &address) const noexcept override
     {
-        static_assert(traits::evm_rev() > EVMC_TANGERINE_WHISTLE);
+        static_assert(traits::evm_rev() >= MONAD_ETH_SPURIOUS_DRAGON);
 
         try {
             return !state_.account_is_dead(address);
@@ -209,6 +210,19 @@ struct EvmcHost final : public EvmcHostBase
         stack_unwind();
     }
 
+    virtual evmc_access_status access_storage(
+        evmc::address const &address,
+        evmc::bytes32 const &key) noexcept override
+    {
+        try {
+            return state_.access_storage<traits>(address, key);
+        }
+        catch (...) {
+            capture_current_exception();
+        }
+        stack_unwind();
+    }
+
     CallTracerBase &get_call_tracer() noexcept
     {
         return call_tracer_;
@@ -241,8 +255,10 @@ struct EvmcHost final : public EvmcHostBase
     }
 };
 
-static_assert(sizeof(EvmcHost<EvmTraits<EVMC_LATEST_STABLE_REVISION>>) == 136);
-static_assert(alignof(EvmcHost<EvmTraits<EVMC_LATEST_STABLE_REVISION>>) == 8);
+static_assert(
+    sizeof(EvmcHost<EvmTraits<MONAD_ETH_LATEST_STABLE_REVISION>>) == 136);
+static_assert(
+    alignof(EvmcHost<EvmTraits<MONAD_ETH_LATEST_STABLE_REVISION>>) == 8);
 static_assert(sizeof(EvmcHost<MonadTraits<MONAD_NEXT>>) == 136);
 static_assert(alignof(EvmcHost<MonadTraits<MONAD_NEXT>>) == 8);
 

@@ -55,7 +55,7 @@ using db_t = TrieDb;
 
 TYPED_TEST(TraitsTest, irrevocable_gas_and_refund_new_contract)
 {
-    static_assert(TestFixture::Trait::evm_rev() > EVMC_FRONTIER);
+    static_assert(TestFixture::Trait::evm_rev() >= MONAD_ETH_HOMESTEAD);
 
     static constexpr auto from{
         0xf8636377b7a998b51a3cf2bd711b870b3ab0ad56_address};
@@ -237,7 +237,7 @@ TYPED_TEST(TraitsTest, TopLevelCreate)
         }
     }
     else {
-        if constexpr (TestFixture::Trait::evm_rev() >= EVMC_SHANGHAI) {
+        if constexpr (TestFixture::Trait::evm_rev() >= MONAD_ETH_SHANGHAI) {
             ASSERT_TRUE(receipt.has_error());
         }
         else {
@@ -248,6 +248,7 @@ TYPED_TEST(TraitsTest, TopLevelCreate)
 
 TYPED_TEST(TraitsTest, refunds_delete)
 {
+    static_assert(TestFixture::Trait::evm_rev() >= MONAD_ETH_ISTANBUL);
 
     static constexpr auto from{
         0xf8636377b7a998b51a3cf2bd711b870b3ab0ad56_address};
@@ -269,10 +270,7 @@ TYPED_TEST(TraitsTest, refunds_delete)
             }
         }
 
-        if constexpr (TestFixture::Trait::evm_rev() < EVMC_ISTANBUL) {
-            return 41'092;
-        }
-        else if constexpr (TestFixture::Trait::evm_rev() == EVMC_ISTANBUL) {
+        if constexpr (TestFixture::Trait::evm_rev() == MONAD_ETH_ISTANBUL) {
             // Gas decreased due to calldata cost reduction in EIP-2028
             // where gas per non-zero byte was reduced from 68 to 16
             return 41'040;
@@ -295,7 +293,7 @@ TYPED_TEST(TraitsTest, refunds_delete)
 
     // X -> X -> 0
     static constexpr auto storage_refund_tx2_evm_uncapped = [] {
-        if constexpr (TestFixture::Trait::evm_rev() >= EVMC_LONDON) {
+        if constexpr (TestFixture::Trait::evm_rev() >= MONAD_ETH_LONDON) {
             return 4'800;
         }
         else {
@@ -308,7 +306,7 @@ TYPED_TEST(TraitsTest, refunds_delete)
                 return 0;
             }
         }
-        if constexpr (TestFixture::Trait::evm_rev() >= EVMC_LONDON) {
+        if constexpr (TestFixture::Trait::evm_rev() >= MONAD_ETH_LONDON) {
             // due to EIP-3529 introduced in London revision
             return std::min(
                 gas_charged_tx2 / 5, storage_refund_tx2_evm_uncapped);
@@ -463,6 +461,7 @@ TYPED_TEST(TraitsTest, refunds_delete)
 
 TYPED_TEST(TraitsTest, refunds_delete_then_set)
 {
+    static_assert(TestFixture::Trait::evm_rev() >= MONAD_ETH_ISTANBUL);
 
     static constexpr auto from{
         0xf8636377b7a998b51a3cf2bd711b870b3ab0ad56_address};
@@ -565,36 +564,19 @@ TYPED_TEST(TraitsTest, refunds_delete_then_set)
                 }
 
                 if constexpr (
-                    TestFixture::Trait::evm_rev() == EVMC_CONSTANTINOPLE) {
-                    return 26'212;
-                }
-
-                if constexpr (TestFixture::Trait::evm_rev() == EVMC_ISTANBUL) {
+                    TestFixture::Trait::evm_rev() == MONAD_ETH_ISTANBUL) {
                     return 26'812;
                 }
 
-                if constexpr (TestFixture::Trait::evm_rev() < EVMC_ISTANBUL) {
-                    return 46'012;
-                }
-                else {
-                    return 26'112;
-                }
+                return 26'112;
             }();
 
             static constexpr auto storage_refund_evm_uncapped = [] {
                 if constexpr (
-                    TestFixture::Trait::evm_rev() == EVMC_CONSTANTINOPLE) {
-                    return 4800;
-                }
-                if constexpr (TestFixture::Trait::evm_rev() == EVMC_ISTANBUL) {
+                    TestFixture::Trait::evm_rev() == MONAD_ETH_ISTANBUL) {
                     return 4200;
                 }
-                if constexpr (TestFixture::Trait::evm_rev() < EVMC_ISTANBUL) {
-                    return 15000;
-                }
-                else {
-                    return 2800;
-                }
+                return 2800;
             }();
             static constexpr auto storage_refund = [=] {
                 if constexpr (TestFixture::is_monad_trait()) {
@@ -603,7 +585,8 @@ TYPED_TEST(TraitsTest, refunds_delete_then_set)
                         return 0;
                     }
                 }
-                if constexpr (TestFixture::Trait::evm_rev() >= EVMC_LONDON) {
+                if constexpr (
+                    TestFixture::Trait::evm_rev() >= MONAD_ETH_LONDON) {
                     // due to EIP-3529 introduced in London revision
                     return std::min(
                         gas_charged / 5, storage_refund_evm_uncapped);
@@ -625,7 +608,7 @@ TYPED_TEST(TraitsTest, refunds_delete_then_set)
 
 TYPED_TEST(TraitsTest, static_validate_transaction_failure)
 {
-    static_assert(TestFixture::Trait::evm_rev() > EVMC_TANGERINE_WHISTLE);
+    static_assert(TestFixture::Trait::evm_rev() >= MONAD_ETH_SPURIOUS_DRAGON);
     mpt::Db db{std::make_unique<InMemoryMachine>()};
     db_t tdb{db};
     vm::VM vm;

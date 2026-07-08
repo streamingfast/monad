@@ -71,9 +71,9 @@ constexpr void irrevocable_change(
     }
 
     uint256_t blob_gas = 0;
-    if constexpr (traits::evm_rev() >= EVMC_CANCUN) {
+    if constexpr (traits::evm_rev() >= MONAD_ETH_CANCUN) {
         blob_gas = (tx.type == TransactionType::eip4844)
-                       ? calc_blob_fee(tx, excess_blob_gas)
+                       ? calc_blob_fee<traits>(tx, excess_blob_gas)
                        : 0;
     }
     auto const upfront_cost =
@@ -115,7 +115,7 @@ uint64_t ExecuteTransactionNoValidation<traits>::process_authorizations(
         // 1. Verify the chain ID is 0 or the ID of the current chain.
         auto const &chain_id = *auth_entry.sc.chain_id;
         auto const host_chain_id =
-            uint256_t::load_be(host.get_tx_context()->chain_id.bytes);
+            load_be<uint256_t>(host.get_tx_context()->chain_id);
 
         if (!(chain_id == 0 || chain_id == host_chain_id)) {
             continue;
@@ -142,7 +142,9 @@ uint64_t ExecuteTransactionNoValidation<traits>::process_authorizations(
         state.access_account(*authority);
 
         // 5. Verify the code of authority is empty or already delegated.
-        auto const icode = state.get_code(*authority)->intercode();
+        auto const code_hash = state.get_code_hash(*authority);
+        auto const icode = state.read_code(code_hash)->intercode();
+        trace::on_read_code(host.state_tracer_, code_hash, icode);
         auto const code = std::span{icode->code(), *icode->code_size()};
         if (!(code.empty() || vm::evm::is_delegated(code))) {
             continue;
@@ -213,14 +215,13 @@ evmc_message ExecuteTransactionNoValidation<traits>::to_message(
         .sender = sender_,
         .input_data = tx_.data.data(),
         .input_size = tx_.data.size(),
-        .value = {},
+        .value = store_be_as<evmc::uint256be>(tx_.value),
         .create2_salt = {},
         .code_address = to_address.second,
         .memory_handle = msg_memory.get(),
         .memory = msg_memory.get(),
         .memory_capacity = msg_memory_capacity,
     };
-    store_be(msg.value.bytes, tx_.value);
     return msg;
 }
 
@@ -235,6 +236,7 @@ evmc::Result ExecuteTransactionNoValidation<traits>::operator()(
             tx_,
             header_.base_fee_per_gas,
             host.i_,
+            host.state_tracer_,
             host.chain_ctx_);
     }
 
@@ -247,12 +249,12 @@ evmc::Result ExecuteTransactionNoValidation<traits>::operator()(
 
     // EIP-7702
     uint64_t auth_refund = 0u;
-    if constexpr (traits::evm_rev() >= EVMC_PRAGUE) {
+    if constexpr (traits::evm_rev() >= MONAD_ETH_PRAGUE) {
         auth_refund = process_authorizations(state, host);
     }
 
     // EIP-3651
-    if constexpr (traits::evm_rev() >= EVMC_SHANGHAI) {
+    if constexpr (traits::evm_rev() >= MONAD_ETH_SHANGHAI) {
         host.access_account(header_.beneficiary);
     }
 
@@ -260,7 +262,7 @@ evmc::Result ExecuteTransactionNoValidation<traits>::operator()(
     for (auto const &ae : tx_.access_list) {
         state.access_account(ae.a);
         for (auto const &keys : ae.keys) {
-            state.access_storage(ae.a, keys);
+            state.access_storage<traits>(ae.a, keys);
         }
     }
     if (MONAD_LIKELY(tx_.to)) {
@@ -271,7 +273,7 @@ evmc::Result ExecuteTransactionNoValidation<traits>::operator()(
     auto msg = to_message(msg_memory, state.vm().message_memory_capacity());
 
     // EIP-7702
-    if constexpr (traits::evm_rev() >= EVMC_PRAGUE) {
+    if constexpr (traits::evm_rev() >= MONAD_ETH_PRAGUE) {
         if (tx_.to.has_value()) {
             if (auto const delegate = vm::evm::resolve_delegation(
                     &host.get_interface(), host.to_context(), *tx_.to)) {
@@ -301,7 +303,8 @@ ExecuteTransaction<traits>::ExecuteTransaction(
     BlockHeader const &header, BlockHashBuffer const &block_hash_buffer,
     BlockState &block_state, BlockMetrics &block_metrics,
     boost::fibers::promise<void> &prev, CallTracerBase &call_tracer,
-    trace::StateTracer &state_tracer, ChainContext<traits> const &chain_ctx)
+    trace::StateTracer &state_tracer, ChainContext<traits> const &chain_ctx,
+    bool const trace_transfers)
     : ExecuteTransactionNoValidation<
           traits>{chain, tx, sender, authorities, header}
     , i_{i}
@@ -312,6 +315,7 @@ ExecuteTransaction<traits>::ExecuteTransaction(
     , prev_{prev}
     , call_tracer_{call_tracer}
     , state_tracer_{state_tracer}
+    , trace_transfers_{trace_transfers}
 {
     record_txn_header_events(static_cast<uint32_t>(i), tx, sender, authorities);
 }
@@ -325,7 +329,8 @@ Result<evmc::Result> ExecuteTransaction<traits>::execute_impl2(State &state)
             sender_,
             state,
             header_.base_fee_per_gas.value_or(0),
-            authorities_);
+            authorities_,
+            state_tracer_);
         if (!result) {
             // RELAXED MERGE
             // if `validate_transaction` fails using current values, require
@@ -347,7 +352,8 @@ Result<evmc::Result> ExecuteTransaction<traits>::execute_impl2(State &state)
         tx_,
         header_.base_fee_per_gas,
         i_,
-        chain_ctx_};
+        chain_ctx_,
+        trace_transfers_};
 
     return ExecuteTransactionNoValidation<traits>::operator()(state, host);
 }
@@ -356,7 +362,7 @@ template <Traits traits>
 Receipt ExecuteTransaction<traits>::execute_final(
     State &state, evmc::Result const &result)
 {
-    static_assert(traits::evm_rev() > EVMC_TANGERINE_WHISTLE);
+    static_assert(traits::evm_rev() >= MONAD_ETH_SPURIOUS_DRAGON);
 
     MONAD_ASSERT(result.gas_left >= 0);
     MONAD_ASSERT(result.gas_refund >= 0);
@@ -375,7 +381,7 @@ Receipt ExecuteTransaction<traits>::execute_final(
     auto gas_used = tx_.gas_limit - gas_refund;
 
     // EIP-7623
-    if constexpr (traits::evm_rev() >= EVMC_PRAGUE) {
+    if constexpr (traits::evm_rev() >= MONAD_ETH_PRAGUE) {
         auto const floor_gas = floor_data_gas(tx_);
         if (gas_used < floor_gas) {
             auto const delta = floor_gas - gas_used;

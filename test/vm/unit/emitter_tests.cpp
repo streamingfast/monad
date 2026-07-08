@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include <category/core/address.hpp>
+#include <category/core/int.hpp>
 #include <category/core/runtime/uint256.hpp>
 #include <category/vm/compiler/ir/basic_blocks.hpp>
 #include <category/vm/compiler/ir/x86/emitter.hpp>
@@ -302,7 +303,7 @@ namespace
 
         ASSERT_EQ(ret.status, runtime::StatusCode::Success);
         if (dup) {
-            ASSERT_EQ(uint256_t::load_le(ret.offset), result)
+            ASSERT_EQ(load_le<uint256_t>(ret.offset), result)
                 << std::format(
                        "Left operand: {} ({}), ",
                        left,
@@ -313,7 +314,7 @@ namespace
                        Emitter::location_type_to_string(right_loc));
         }
         else {
-            ASSERT_EQ(uint256_t::load_le(ret.offset), 0)
+            ASSERT_EQ(load_le<uint256_t>(ret.offset), 0)
                 << std::format(
                        "Left operand: {} ({}), ",
                        left,
@@ -323,7 +324,7 @@ namespace
                        right,
                        Emitter::location_type_to_string(right_loc));
         }
-        ASSERT_EQ(uint256_t::load_le(ret.size), result)
+        ASSERT_EQ(load_le<uint256_t>(ret.size), result)
             << std::format(
                    "Left operand: {} ({}), ",
                    left,
@@ -334,7 +335,7 @@ namespace
                    Emitter::location_type_to_string(right_loc));
     }
 
-    template <Traits traits = EvmTraits<EVMC_LATEST_STABLE_REVISION>>
+    template <Traits traits = EvmTraits<MONAD_ETH_LATEST_STABLE_REVISION>>
     void pure_una_instr_test_instance(
         asmjit::JitRuntime &rt, PureEmitterInstr instr, uint256_t const &input,
         Emitter::LocationType loc, uint256_t const &result,
@@ -382,12 +383,12 @@ namespace
 
         ASSERT_EQ(ret.status, runtime::StatusCode::Success);
         if (dup) {
-            ASSERT_EQ(uint256_t::load_le(ret.offset), result);
+            ASSERT_EQ(load_le<uint256_t>(ret.offset), result);
         }
         else {
-            ASSERT_EQ(uint256_t::load_le(ret.offset), 0);
+            ASSERT_EQ(load_le<uint256_t>(ret.offset), 0);
         }
-        ASSERT_EQ(uint256_t::load_le(ret.size), result);
+        ASSERT_EQ(load_le<uint256_t>(ret.size), result);
     }
 
     void pure_bin_instr_test(
@@ -481,7 +482,7 @@ namespace
         entry(&*ctx, stack_memory.get());
 
         ASSERT_EQ(ret.status, runtime::StatusCode::Success);
-        ASSERT_EQ(uint256_t::load_le(ret.offset), expected_gas)
+        ASSERT_EQ(load_le<uint256_t>(ret.offset), expected_gas)
             << std::format(
                    "Left operand: {} ({}), ",
                    left,
@@ -525,7 +526,7 @@ namespace
             rt, opcode, [&](Emitter &e) { (e.*instr)(); }, left, right, result);
     }
 
-    template <Traits traits = EvmTraits<EVMC_LATEST_STABLE_REVISION>>
+    template <Traits traits = EvmTraits<MONAD_ETH_LATEST_STABLE_REVISION>>
     void pure_una_instr_test(
         asmjit::JitRuntime &rt, EvmOpCode opcode, PureEmitterInstr instr,
         uint256_t const &input, uint256_t const &result)
@@ -615,8 +616,8 @@ namespace
         auto stack_memory = test_stack_memory();
         entry(&*ctx, stack_memory.get());
 
-        ASSERT_EQ(uint256_t::load_le(ret.offset), 2);
-        ASSERT_EQ(uint256_t::load_le(ret.size), 1);
+        ASSERT_EQ(load_le<uint256_t>(ret.offset), 2);
+        ASSERT_EQ(load_le<uint256_t>(ret.size), 1);
     }
 
     basic_blocks::BasicBlocksIR get_jumpi_ir(
@@ -765,8 +766,8 @@ namespace
         else {
             ASSERT_EQ(ret.status, runtime::StatusCode::Success);
         }
-        ASSERT_EQ(uint256_t::load_le(ret.offset), dest);
-        ASSERT_EQ(uint256_t::load_le(ret.size), cond);
+        ASSERT_EQ(load_le<uint256_t>(ret.offset), dest);
+        ASSERT_EQ(load_le<uint256_t>(ret.size), cond);
     }
 
     void block_epilogue_test(
@@ -851,8 +852,8 @@ namespace
         entry(&*ctx, stack_memory.get());
 
         ASSERT_EQ(ret.status, runtime::StatusCode::Success);
-        ASSERT_EQ(uint256_t::load_le(ret.offset), 869);
-        ASSERT_EQ(uint256_t::load_le(ret.size), 2);
+        ASSERT_EQ(load_le<uint256_t>(ret.offset), 869);
+        ASSERT_EQ(load_le<uint256_t>(ret.size), 2);
     }
 
     void runtime_test_12_arg_fun(
@@ -1087,8 +1088,8 @@ TEST(Emitter, return_)
     entry(&*ctx, nullptr);
 
     ASSERT_EQ(ret.status, runtime::StatusCode::Success);
-    ASSERT_EQ(uint256_t::load_le(ret.offset), offset_value);
-    ASSERT_EQ(uint256_t::load_le(ret.size), size_value);
+    ASSERT_EQ(load_le<uint256_t>(ret.offset), offset_value);
+    ASSERT_EQ(load_le<uint256_t>(ret.size), size_value);
 }
 
 TEST(Emitter, revert)
@@ -1112,8 +1113,8 @@ TEST(Emitter, revert)
     entry(&*ctx, nullptr);
 
     ASSERT_EQ(ret.status, runtime::StatusCode::Revert);
-    ASSERT_EQ(uint256_t::load_le(ret.offset), offset_value);
-    ASSERT_EQ(uint256_t::load_le(ret.size), size_value);
+    ASSERT_EQ(load_le<uint256_t>(ret.offset), offset_value);
+    ASSERT_EQ(load_le<uint256_t>(ret.size), size_value);
 }
 
 TEST(Emitter, mov_stack_index_to_avx_reg)
@@ -1173,8 +1174,8 @@ TEST(Emitter, mov_stack_index_to_avx_reg)
     entry(&*ctx, stack_memory.get());
 
     ASSERT_EQ(ret.status, runtime::StatusCode::Success);
-    ASSERT_EQ(uint256_t::load_le(ret.offset), 2);
-    ASSERT_EQ(uint256_t::load_le(ret.size), 1);
+    ASSERT_EQ(load_le<uint256_t>(ret.offset), 2);
+    ASSERT_EQ(load_le<uint256_t>(ret.size), 1);
 }
 
 TEST(Emitter, mov_literal_to_ymm)
@@ -1226,8 +1227,8 @@ TEST(Emitter, mov_literal_to_ymm)
             entry(&*ctx, stack_memory.get());
 
             ASSERT_EQ(ret.status, runtime::StatusCode::Success);
-            ASSERT_EQ(uint256_t::load_le(ret.offset), lit1);
-            ASSERT_EQ(uint256_t::load_le(ret.size), lit0);
+            ASSERT_EQ(load_le<uint256_t>(ret.offset), lit1);
+            ASSERT_EQ(load_le<uint256_t>(ret.size), lit0);
         }
     }
 }
@@ -1289,8 +1290,8 @@ TEST(Emitter, mov_stack_index_to_general_reg)
     entry(&*ctx, stack_memory.get());
 
     ASSERT_EQ(ret.status, runtime::StatusCode::Success);
-    ASSERT_EQ(uint256_t::load_le(ret.offset), 2);
-    ASSERT_EQ(uint256_t::load_le(ret.size), 1);
+    ASSERT_EQ(load_le<uint256_t>(ret.offset), 2);
+    ASSERT_EQ(load_le<uint256_t>(ret.size), 1);
 }
 
 TEST(Emitter, mov_stack_index_to_stack_offset)
@@ -1362,8 +1363,8 @@ TEST(Emitter, mov_stack_index_to_stack_offset)
     entry(&*ctx, stack_memory.get());
 
     ASSERT_EQ(ret.status, runtime::StatusCode::Success);
-    ASSERT_EQ(uint256_t::load_le(ret.offset), 2);
-    ASSERT_EQ(uint256_t::load_le(ret.size), 1);
+    ASSERT_EQ(load_le<uint256_t>(ret.offset), 2);
+    ASSERT_EQ(load_le<uint256_t>(ret.size), 1);
 }
 
 TEST(Emitter, discharge_deferred_comparison)
@@ -1414,8 +1415,8 @@ TEST(Emitter, discharge_deferred_comparison)
     entry(&*ctx, stack_memory.get());
 
     ASSERT_EQ(ret.status, runtime::StatusCode::Success);
-    ASSERT_EQ(uint256_t::load_le(ret.offset), 0);
-    ASSERT_EQ(uint256_t::load_le(ret.size), 1);
+    ASSERT_EQ(load_le<uint256_t>(ret.offset), 0);
+    ASSERT_EQ(load_le<uint256_t>(ret.size), 1);
 }
 
 TEST(Emitter, discharge_negated_deferred_comparison)
@@ -1505,8 +1506,8 @@ TEST(Emitter, discharge_negated_deferred_comparison)
     entry(&*ctx, stack_memory.get());
 
     ASSERT_EQ(ret.status, runtime::StatusCode::Success);
-    ASSERT_EQ(uint256_t::load_le(ret.offset), 0);
-    ASSERT_EQ(uint256_t::load_le(ret.size), 1);
+    ASSERT_EQ(load_le<uint256_t>(ret.offset), 0);
+    ASSERT_EQ(load_le<uint256_t>(ret.size), 1);
 }
 
 TEST(Emitter, lt)
@@ -2408,7 +2409,7 @@ TEST(Emitter, exp)
         for (int i = 0; i < rep_count; ++i) {
             emit.push(513); // some exponent over 512
             emit.push(13); // base (with popcount != 1)
-            emit.exp<EvmTraits<EVMC_LATEST_STABLE_REVISION>>(
+            emit.exp<EvmTraits<MONAD_ETH_LATEST_STABLE_REVISION>>(
                 std::numeric_limits<int32_t>::max());
             emit.pop();
             ASSERT_EQ(
@@ -2463,7 +2464,7 @@ TEST(Emitter, exp)
                 rt,
                 EXP,
                 [&](Emitter &em) {
-                    (em.exp<EvmTraits<EVMC_LATEST_STABLE_REVISION>>(
+                    (em.exp<EvmTraits<MONAD_ETH_LATEST_STABLE_REVISION>>(
                         std::numeric_limits<int32_t>::max()));
                 },
                 {b},
@@ -2473,13 +2474,13 @@ TEST(Emitter, exp)
                 rt,
                 EXP,
                 [&](Emitter &em) {
-                    (em.exp<EvmTraits<EVMC_LATEST_STABLE_REVISION>>(
+                    (em.exp<EvmTraits<MONAD_ETH_LATEST_STABLE_REVISION>>(
                         std::numeric_limits<int32_t>::max()));
                 },
                 {b},
                 {e},
                 runtime::exp_dynamic_gas_cost_multiplier<
-                    EvmTraits<EVMC_LATEST_STABLE_REVISION>>() *
+                    EvmTraits<MONAD_ETH_LATEST_STABLE_REVISION>>() *
                     count_significant_bytes(e));
         }
     }
@@ -3091,23 +3092,24 @@ TEST(Emitter, clz)
     asmjit::JitRuntime rt;
 
     // Test zero case
-    pure_una_instr_test<EvmTraits<EVMC_OSAKA>>(rt, CLZ, &Emitter::clz, 0, 256);
+    pure_una_instr_test<EvmTraits<MONAD_ETH_OSAKA>>(
+        rt, CLZ, &Emitter::clz, 0, 256);
 
     // Test all leading zeros
     for (uint64_t i = 0; i < 256; ++i) {
         // 1 hot bit at different positions
         uint256_t value{uint256_t{1} << (255 - i)};
-        pure_una_instr_test<EvmTraits<EVMC_OSAKA>>(
+        pure_una_instr_test<EvmTraits<MONAD_ETH_OSAKA>>(
             rt, CLZ, &Emitter::clz, value, countl_zero(value));
 
         // All ones except leading zeros
         value = ~uint256_t{0} >> i;
-        pure_una_instr_test<EvmTraits<EVMC_OSAKA>>(
+        pure_una_instr_test<EvmTraits<MONAD_ETH_OSAKA>>(
             rt, CLZ, &Emitter::clz, value, countl_zero(value));
 
         // Test with some random bits set after the leading one
         value = value | (uint256_t{0xDEADBEEF} << (i * 4));
-        pure_una_instr_test<EvmTraits<EVMC_OSAKA>>(
+        pure_una_instr_test<EvmTraits<MONAD_ETH_OSAKA>>(
             rt, CLZ, &Emitter::clz, value, countl_zero(value));
     }
 }
@@ -3168,8 +3170,8 @@ TEST(Emitter, call_runtime_12_arg_fun)
     auto stack_memory = test_stack_memory();
     entry(&*ctx, stack_memory.get());
 
-    ASSERT_EQ(uint256_t::load_le(ret.offset), 5);
-    ASSERT_EQ(uint256_t::load_le(ret.size), 0);
+    ASSERT_EQ(load_le<uint256_t>(ret.offset), 5);
+    ASSERT_EQ(load_le<uint256_t>(ret.size), 0);
 }
 
 TEST(Emitter, call_runtime_11_arg_fun)
@@ -3206,8 +3208,8 @@ TEST(Emitter, call_runtime_11_arg_fun)
     auto stack_memory = test_stack_memory();
     entry(&*ctx, stack_memory.get());
 
-    ASSERT_EQ(uint256_t::load_le(ret.offset), 5);
-    ASSERT_EQ(uint256_t::load_le(ret.size), 0);
+    ASSERT_EQ(load_le<uint256_t>(ret.offset), 5);
+    ASSERT_EQ(load_le<uint256_t>(ret.size), 0);
 }
 
 TEST(Emitter, runtime_exit)
@@ -3222,7 +3224,7 @@ TEST(Emitter, runtime_exit)
     emit.push(300);
     emit.push(10);
     emit.call_runtime(
-        9, true, runtime::exp<EvmTraits<EVMC_LATEST_STABLE_REVISION>>);
+        9, true, runtime::exp<EvmTraits<MONAD_ETH_LATEST_STABLE_REVISION>>);
     emit.return_();
 
     entrypoint_t entry = emit.finish_contract(rt);
@@ -3256,15 +3258,15 @@ TEST(Emitter, address)
         ctx->env.recipient.bytes[19 - i] = i + 1;
     }
     uint256_t result;
-    uint8_t *result_bytes = result.as_bytes();
+    uint8_t *result_bytes = as_bytes(result);
     for (uint8_t i = 0; i < 20; ++i) {
         result_bytes[i] = i + 1;
     }
 
     entry(&*ctx, nullptr);
 
-    ASSERT_EQ(uint256_t::load_le(ret.offset), result);
-    ASSERT_EQ(uint256_t::load_le(ret.size), result);
+    ASSERT_EQ(load_le<uint256_t>(ret.offset), result);
+    ASSERT_EQ(load_le<uint256_t>(ret.size), result);
 }
 
 TEST(Emitter, origin)
@@ -3287,8 +3289,8 @@ TEST(Emitter, origin)
 
     entry(&*ctx, nullptr);
 
-    ASSERT_EQ(uint256_t::load_le(ret.offset), 0x200);
-    ASSERT_EQ(uint256_t::load_le(ret.size), 0x200);
+    ASSERT_EQ(load_le<uint256_t>(ret.offset), 0x200);
+    ASSERT_EQ(load_le<uint256_t>(ret.size), 0x200);
 }
 
 TEST(Emitter, gasprice)
@@ -3311,8 +3313,8 @@ TEST(Emitter, gasprice)
 
     entry(&*ctx, nullptr);
 
-    ASSERT_EQ(uint256_t::load_le(ret.offset), 0x300);
-    ASSERT_EQ(uint256_t::load_le(ret.size), 0x300);
+    ASSERT_EQ(load_le<uint256_t>(ret.offset), 0x300);
+    ASSERT_EQ(load_le<uint256_t>(ret.size), 0x300);
 }
 
 TEST(Emitter, gaslimit)
@@ -3335,8 +3337,8 @@ TEST(Emitter, gaslimit)
 
     entry(&*ctx, nullptr);
 
-    ASSERT_EQ(uint256_t::load_le(ret.offset), 4);
-    ASSERT_EQ(uint256_t::load_le(ret.size), 4);
+    ASSERT_EQ(load_le<uint256_t>(ret.offset), 4);
+    ASSERT_EQ(load_le<uint256_t>(ret.size), 4);
 }
 
 TEST(Emitter, coinbase)
@@ -3359,8 +3361,8 @@ TEST(Emitter, coinbase)
 
     entry(&*ctx, nullptr);
 
-    ASSERT_EQ(uint256_t::load_le(ret.offset), 0x500);
-    ASSERT_EQ(uint256_t::load_le(ret.size), 0x500);
+    ASSERT_EQ(load_le<uint256_t>(ret.offset), 0x500);
+    ASSERT_EQ(load_le<uint256_t>(ret.size), 0x500);
 }
 
 TEST(Emitter, timestamp)
@@ -3383,8 +3385,8 @@ TEST(Emitter, timestamp)
 
     entry(&*ctx, nullptr);
 
-    ASSERT_EQ(uint256_t::load_le(ret.offset), 6);
-    ASSERT_EQ(uint256_t::load_le(ret.size), 6);
+    ASSERT_EQ(load_le<uint256_t>(ret.offset), 6);
+    ASSERT_EQ(load_le<uint256_t>(ret.size), 6);
 }
 
 TEST(Emitter, number)
@@ -3407,8 +3409,8 @@ TEST(Emitter, number)
 
     entry(&*ctx, nullptr);
 
-    ASSERT_EQ(uint256_t::load_le(ret.offset), 7);
-    ASSERT_EQ(uint256_t::load_le(ret.size), 7);
+    ASSERT_EQ(load_le<uint256_t>(ret.offset), 7);
+    ASSERT_EQ(load_le<uint256_t>(ret.size), 7);
 }
 
 TEST(Emitter, prevrandao)
@@ -3432,8 +3434,8 @@ TEST(Emitter, prevrandao)
 
     entry(&*ctx, nullptr);
 
-    ASSERT_EQ(uint256_t::load_le(ret.offset), 0x800);
-    ASSERT_EQ(uint256_t::load_le(ret.size), 0x800);
+    ASSERT_EQ(load_le<uint256_t>(ret.offset), 0x800);
+    ASSERT_EQ(load_le<uint256_t>(ret.size), 0x800);
 }
 
 TEST(Emitter, chainid)
@@ -3456,8 +3458,8 @@ TEST(Emitter, chainid)
 
     entry(&*ctx, nullptr);
 
-    ASSERT_EQ(uint256_t::load_le(ret.offset), 0x900);
-    ASSERT_EQ(uint256_t::load_le(ret.size), 0x900);
+    ASSERT_EQ(load_le<uint256_t>(ret.offset), 0x900);
+    ASSERT_EQ(load_le<uint256_t>(ret.size), 0x900);
 }
 
 TEST(Emitter, basefee)
@@ -3480,8 +3482,8 @@ TEST(Emitter, basefee)
 
     entry(&*ctx, nullptr);
 
-    ASSERT_EQ(uint256_t::load_le(ret.offset), 0xa00);
-    ASSERT_EQ(uint256_t::load_le(ret.size), 0xa00);
+    ASSERT_EQ(load_le<uint256_t>(ret.offset), 0xa00);
+    ASSERT_EQ(load_le<uint256_t>(ret.size), 0xa00);
 }
 
 TEST(Emitter, blobbasefee)
@@ -3505,8 +3507,8 @@ TEST(Emitter, blobbasefee)
 
     entry(&*ctx, nullptr);
 
-    ASSERT_EQ(uint256_t::load_le(ret.offset), 0xb00);
-    ASSERT_EQ(uint256_t::load_le(ret.size), 0xb00);
+    ASSERT_EQ(load_le<uint256_t>(ret.offset), 0xb00);
+    ASSERT_EQ(load_le<uint256_t>(ret.size), 0xb00);
 }
 
 TEST(Emitter, caller)
@@ -3529,15 +3531,15 @@ TEST(Emitter, caller)
         ctx->env.sender.bytes[19 - i] = i + 1;
     }
     uint256_t result;
-    uint8_t *result_bytes = result.as_bytes();
+    uint8_t *result_bytes = as_bytes(result);
     for (uint8_t i = 0; i < 20; ++i) {
         result_bytes[i] = i + 1;
     }
 
     entry(&*ctx, nullptr);
 
-    ASSERT_EQ(uint256_t::load_le(ret.offset), result);
-    ASSERT_EQ(uint256_t::load_le(ret.size), result);
+    ASSERT_EQ(load_le<uint256_t>(ret.offset), result);
+    ASSERT_EQ(load_le<uint256_t>(ret.size), result);
 }
 
 TEST(Emitter, calldatasize)
@@ -3560,8 +3562,8 @@ TEST(Emitter, calldatasize)
 
     entry(&*ctx, nullptr);
 
-    ASSERT_EQ(uint256_t::load_le(ret.offset), 5);
-    ASSERT_EQ(uint256_t::load_le(ret.size), 5);
+    ASSERT_EQ(load_le<uint256_t>(ret.offset), 5);
+    ASSERT_EQ(load_le<uint256_t>(ret.size), 5);
 }
 
 TEST(Emitter, returndatasize)
@@ -3584,8 +3586,8 @@ TEST(Emitter, returndatasize)
 
     entry(&*ctx, nullptr);
 
-    ASSERT_EQ(uint256_t::load_le(ret.offset), 6);
-    ASSERT_EQ(uint256_t::load_le(ret.size), 6);
+    ASSERT_EQ(load_le<uint256_t>(ret.offset), 6);
+    ASSERT_EQ(load_le<uint256_t>(ret.size), 6);
 }
 
 TEST(Emitter, msize)
@@ -3607,8 +3609,8 @@ TEST(Emitter, msize)
 
     entry(&*ctx, nullptr);
 
-    ASSERT_EQ(uint256_t::load_le(ret.offset), 0xffffffff);
-    ASSERT_EQ(uint256_t::load_le(ret.size), 0xffffffff);
+    ASSERT_EQ(load_le<uint256_t>(ret.offset), 0xffffffff);
+    ASSERT_EQ(load_le<uint256_t>(ret.size), 0xffffffff);
 
     // Override back to 0 to prevent memory invariant violation
     ctx->memory.size = 0;
@@ -3690,15 +3692,15 @@ static void memory_instructions_test_impl()
 
         if (m8) {
             ASSERT_EQ(
-                uint256_t::load_le(ret.offset),
+                load_le<uint256_t>(ret.offset),
                 uint256_t(0, 0, 0, uint64_t{1} << 56));
             ASSERT_EQ(
-                uint256_t::load_le(ret.size),
+                load_le<uint256_t>(ret.size),
                 uint256_t(0, 0, 0, uint64_t{1} << 56));
         }
         else {
-            ASSERT_EQ(uint256_t::load_le(ret.offset), uint256_t(1, 2, 3, 4));
-            ASSERT_EQ(uint256_t::load_le(ret.size), uint256_t(1, 2, 3, 4));
+            ASSERT_EQ(load_le<uint256_t>(ret.offset), uint256_t(1, 2, 3, 4));
+            ASSERT_EQ(load_le<uint256_t>(ret.size), uint256_t(1, 2, 3, 4));
         }
     };
 
@@ -3959,12 +3961,12 @@ TEST(Emitter, calldataload)
 
                 uint256_t expected;
                 std::memcpy(
-                    expected.as_bytes(),
+                    as_bytes(expected),
                     calldata + offset,
                     std::min(sizeof(expected), sizeof(calldata) - offset));
 
-                ASSERT_EQ(uint256_t::load_le(ret.offset), expected.to_be());
-                ASSERT_EQ(uint256_t::load_le(ret.size), expected.to_be());
+                ASSERT_EQ(load_be<uint256_t>(ret.offset), expected);
+                ASSERT_EQ(load_be<uint256_t>(ret.size), expected);
             }
         }
     }
@@ -4002,8 +4004,8 @@ TEST(Emitter, calldataload_not_bounded_by_bits)
         entry(&*ctx, stack_memory.get());
 
         ASSERT_EQ(ret.status, runtime::StatusCode::Success);
-        ASSERT_EQ(uint256_t::load_le(ret.offset), uint256_t{0xff} << 248);
-        ASSERT_EQ(uint256_t::load_le(ret.size), uint256_t{0xff} << 248);
+        ASSERT_EQ(load_le<uint256_t>(ret.offset), uint256_t{0xff} << 248);
+        ASSERT_EQ(load_le<uint256_t>(ret.size), uint256_t{0xff} << 248);
     }
 
     for (auto loc : all_locations) {
@@ -4028,8 +4030,8 @@ TEST(Emitter, calldataload_not_bounded_by_bits)
         entry(&*ctx, stack_memory.get());
 
         ASSERT_EQ(ret.status, runtime::StatusCode::Success);
-        ASSERT_EQ(uint256_t::load_le(ret.offset), 0);
-        ASSERT_EQ(uint256_t::load_le(ret.size), 0);
+        ASSERT_EQ(load_le<uint256_t>(ret.offset), 0);
+        ASSERT_EQ(load_le<uint256_t>(ret.size), 0);
     }
 
     for (auto loc : all_locations) {
@@ -4054,8 +4056,8 @@ TEST(Emitter, calldataload_not_bounded_by_bits)
         entry(&*ctx, stack_memory.get());
 
         ASSERT_EQ(ret.status, runtime::StatusCode::Success);
-        ASSERT_EQ(uint256_t::load_le(ret.offset), 0);
-        ASSERT_EQ(uint256_t::load_le(ret.size), 0);
+        ASSERT_EQ(load_le<uint256_t>(ret.offset), 0);
+        ASSERT_EQ(load_le<uint256_t>(ret.size), 0);
     }
 }
 
@@ -4077,8 +4079,8 @@ TEST(Emitter, gas)
 
     entry(&*ctx, nullptr);
 
-    ASSERT_EQ(uint256_t::load_le(ret.offset), 12);
-    ASSERT_EQ(uint256_t::load_le(ret.size), 12);
+    ASSERT_EQ(load_le<uint256_t>(ret.offset), 12);
+    ASSERT_EQ(load_le<uint256_t>(ret.size), 12);
 }
 
 TEST(Emitter, callvalue)
@@ -4101,15 +4103,15 @@ TEST(Emitter, callvalue)
         ctx->env.value.bytes[31 - i] = i + 1;
     }
     uint256_t result;
-    uint8_t *result_bytes = result.as_bytes();
+    uint8_t *result_bytes = as_bytes(result);
     for (uint8_t i = 0; i < 32; ++i) {
         result_bytes[i] = i + 1;
     }
 
     entry(&*ctx, nullptr);
 
-    ASSERT_EQ(uint256_t::load_le(ret.offset), result);
-    ASSERT_EQ(uint256_t::load_le(ret.size), result);
+    ASSERT_EQ(load_le<uint256_t>(ret.offset), result);
+    ASSERT_EQ(load_le<uint256_t>(ret.size), result);
 }
 
 TEST(Emitter, iszero)
@@ -4372,8 +4374,8 @@ TEST(Emitter, SpillInMovGeneralRegToAvxRegRegression)
     entry(&*ctx, stack_memory.get());
 
     ASSERT_EQ(ret.status, runtime::StatusCode::Success);
-    ASSERT_EQ(uint256_t::load_le(ret.offset), 16);
-    ASSERT_EQ(uint256_t::load_le(ret.size), 15);
+    ASSERT_EQ(load_le<uint256_t>(ret.offset), 16);
+    ASSERT_EQ(load_le<uint256_t>(ret.size), 15);
 }
 
 TEST(Emitter, ReleaseSrcAndDestRegression)
