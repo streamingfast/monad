@@ -329,35 +329,9 @@ target_link_libraries(
 
 # Heavy headers parsed by nearly every TU. Precompiling them once per target
 # instead of re-parsing per-file saves significant wall-clock build time.
+# Use COMPILE_LANGUAGE:CXX guard so that CMake never generates a C-language PCH
+# (several targets contain C sources and the C compiler cannot parse C++ headers).
 set(MONAD_PCH_HEADERS
-  <cstdint>
-  <cstddef>
-  <cstring>
-  <optional>
-  <vector>
-  <span>
-  <memory>
-  <algorithm>
-  <string>
-  <string_view>
-  <array>
-  <utility>
-  <evmc/evmc.h>
-)
-
-# Apply PCH to the heaviest object libraries independently (REUSE_FROM cannot
-# be used here because these OBJECT libraries have circular weak dependencies).
-target_precompile_headers(monad_execution_ethereum PRIVATE ${MONAD_PCH_HEADERS})
-target_precompile_headers(monad-vm-runtime PRIVATE ${MONAD_PCH_HEADERS})
-target_precompile_headers(monad-vm-evm PRIVATE ${MONAD_PCH_HEADERS})
-target_precompile_headers(monad-vm-compiler PRIVATE ${MONAD_PCH_HEADERS})
-target_precompile_headers(monad-vm-interpreter PRIVATE ${MONAD_PCH_HEADERS})
-target_precompile_headers(monad_execution_native PRIVATE ${MONAD_PCH_HEADERS})
-target_precompile_headers(monad_rpc PRIVATE ${MONAD_PCH_HEADERS})
-
-# monad_core is a mixed C/C++ target; use COMPILE_LANGUAGE guard so that
-# CMake only generates the C++ PCH (the C sources skip it).
-target_precompile_headers(monad_core PRIVATE
     "$<$<COMPILE_LANGUAGE:CXX>:<cstdint$<ANGLE-R>>"
     "$<$<COMPILE_LANGUAGE:CXX>:<cstddef$<ANGLE-R>>"
     "$<$<COMPILE_LANGUAGE:CXX>:<cstring$<ANGLE-R>>"
@@ -372,6 +346,17 @@ target_precompile_headers(monad_core PRIVATE
     "$<$<COMPILE_LANGUAGE:CXX>:<utility$<ANGLE-R>>"
     "$<$<COMPILE_LANGUAGE:CXX>:<evmc/evmc.h$<ANGLE-R>>"
 )
+
+# Apply PCH to the heaviest object libraries independently (REUSE_FROM cannot
+# be used here because these OBJECT libraries have circular weak dependencies).
+target_precompile_headers(monad_core PRIVATE ${MONAD_PCH_HEADERS})
+target_precompile_headers(monad_execution_ethereum PRIVATE ${MONAD_PCH_HEADERS})
+target_precompile_headers(monad-vm-runtime PRIVATE ${MONAD_PCH_HEADERS})
+target_precompile_headers(monad-vm-evm PRIVATE ${MONAD_PCH_HEADERS})
+target_precompile_headers(monad-vm-compiler PRIVATE ${MONAD_PCH_HEADERS})
+target_precompile_headers(monad-vm-interpreter PRIVATE ${MONAD_PCH_HEADERS})
+target_precompile_headers(monad_execution_native PRIVATE ${MONAD_PCH_HEADERS})
+target_precompile_headers(monad_rpc PRIVATE ${MONAD_PCH_HEADERS})
 
 # ##############################################################################
 # cmds
