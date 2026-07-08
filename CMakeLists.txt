@@ -327,8 +327,8 @@ target_link_libraries(
 # precompiled headers
 # ##############################################################################
 
-# Heavy headers parsed by nearly every TU. Precompiling them once instead of
-# re-parsing per-file saves significant wall-clock build time.
+# Heavy headers parsed by nearly every TU. Precompiling them once per target
+# instead of re-parsing per-file saves significant wall-clock build time.
 set(MONAD_PCH_HEADERS
   <cstdint>
   <cstddef>
@@ -345,16 +345,16 @@ set(MONAD_PCH_HEADERS
   <evmc/evmc.h>
 )
 
-# Apply PCH to the heaviest object libraries. REUSE_FROM avoids recompiling the
-# same PCH multiple times.
+# Apply PCH to the heaviest object libraries independently (REUSE_FROM cannot
+# be used here because these OBJECT libraries have circular weak dependencies).
 target_precompile_headers(monad_execution_ethereum PRIVATE ${MONAD_PCH_HEADERS})
-target_precompile_headers(monad-vm-runtime REUSE_FROM monad_execution_ethereum)
-target_precompile_headers(monad-vm-evm REUSE_FROM monad_execution_ethereum)
-target_precompile_headers(monad-vm-compiler REUSE_FROM monad_execution_ethereum)
-target_precompile_headers(monad-vm-interpreter REUSE_FROM monad_execution_ethereum)
-target_precompile_headers(monad_execution_native REUSE_FROM monad_execution_ethereum)
-target_precompile_headers(monad_core REUSE_FROM monad_execution_ethereum)
-target_precompile_headers(monad_rpc REUSE_FROM monad_execution_ethereum)
+target_precompile_headers(monad-vm-runtime PRIVATE ${MONAD_PCH_HEADERS})
+target_precompile_headers(monad-vm-evm PRIVATE ${MONAD_PCH_HEADERS})
+target_precompile_headers(monad-vm-compiler PRIVATE ${MONAD_PCH_HEADERS})
+target_precompile_headers(monad-vm-interpreter PRIVATE ${MONAD_PCH_HEADERS})
+target_precompile_headers(monad_execution_native PRIVATE ${MONAD_PCH_HEADERS})
+target_precompile_headers(monad_core PRIVATE ${MONAD_PCH_HEADERS})
+target_precompile_headers(monad_rpc PRIVATE ${MONAD_PCH_HEADERS})
 
 # ##############################################################################
 # cmds
