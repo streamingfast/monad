@@ -40,6 +40,12 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
+          sudo docker system prune -af
+          df -h /
+
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -69,5 +75,3 @@ jobs:
           allow: security.insecure # for tests which use io_uring
           ulimit: "memlock=-1:-1"
           target: build_and_test
-          cache-from: type=gha,scope=build-${{ matrix.compiler.CC }}-${{ matrix.CMAKE_BUILD_TYPE }}
-          cache-to: type=gha,scope=build-${{ matrix.compiler.CC }}-${{ matrix.CMAKE_BUILD_TYPE }},mode=max
