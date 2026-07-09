@@ -45,26 +45,40 @@ RUN apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 # Build with sccache using the GitHub Actions cache backend (ghac v2).
 # On a warm cache only changed translation units recompile.
 #
-# Requires sccache >= 0.10 and ACTIONS_RESULTS_URL: GitHub retired the v1
-# Actions Cache service (artifactcache.actions.githubusercontent.com), which
-# older sccache builds and the ACTIONS_CACHE_URL variable both target.
+# Three variables are all required, and each fails differently if missing:
 #
-# A cache miss must fail loudly. Silently falling back to an uncached build
-# produces a green run that takes ~55 minutes and caches nothing.
+#   ACTIONS_RESULTS_URL       GitHub retired the v1 cache service that
+#                             ACTIONS_CACHE_URL points at; it now 404s.
+#   ACTIONS_CACHE_SERVICE_V2  sccache's opendal ghac backend selects v1 vs v2
+#                             solely on this being non-empty. Without it, it
+#                             speaks v1 at the v2 URL: reads degrade to clean
+#                             misses, but every write fails.
+#   ACTIONS_RUNTIME_TOKEN     auth for both.
+#
+# sccache treats an unusable cache as a warning, not an error, so a broken
+# cache yields a green build that silently recompiles everything. Assert on
+# the stats instead of trusting the exit code.
 RUN --mount=type=secret,id=actions_results_url \
     --mount=type=secret,id=actions_runtime_token \
+    --mount=type=secret,id=actions_cache_service_v2 \
     cd src && \
     if [ -s /run/secrets/actions_results_url ] && [ -s /run/secrets/actions_runtime_token ]; then \
       export SCCACHE_GHA_ENABLED=true; \
       export ACTIONS_RESULTS_URL=$(cat /run/secrets/actions_results_url); \
       export ACTIONS_RUNTIME_TOKEN=$(cat /run/secrets/actions_runtime_token); \
+      export ACTIONS_CACHE_SERVICE_V2=$(cat /run/secrets/actions_cache_service_v2); \
       sccache --start-server; \
+      ./scripts/build.sh; \
+      sccache --show-stats; \
+      if [ "$(sccache --show-stats | awk '/^Cache write errors/ {print $NF}')" != "0" ]; then \
+        echo "ERROR: sccache failed to write to the GHA cache; refusing to ship an uncached build."; \
+        exit 1; \
+      fi; \
     else \
       echo "No Actions cache credentials; building without sccache."; \
       cmake -B build -DCMAKE_C_COMPILER_LAUNCHER= -DCMAKE_CXX_COMPILER_LAUNCHER=; \
-    fi && \
-    ./scripts/build.sh && \
-    { sccache --show-stats || true; }
+      ./scripts/build.sh; \
+    fi
 
 # Tests are a leaf stage: the `runner` image copies binaries from `build` and
 # never pulls this in, so publishing does not pay for the (~30 min) suite that
@@ -92,11 +106,13 @@ RUN cd src && cmake build -DMONAD_COMPILER_TESTING=On
 
 RUN --mount=type=secret,id=actions_results_url \
     --mount=type=secret,id=actions_runtime_token \
+    --mount=type=secret,id=actions_cache_service_v2 \
     cd src && \
     if [ -s /run/secrets/actions_results_url ] && [ -s /run/secrets/actions_runtime_token ]; then \
       export SCCACHE_GHA_ENABLED=true; \
       export ACTIONS_RESULTS_URL=$(cat /run/secrets/actions_results_url); \
       export ACTIONS_RUNTIME_TOKEN=$(cat /run/secrets/actions_runtime_token); \
+      export ACTIONS_CACHE_SERVICE_V2=$(cat /run/secrets/actions_cache_service_v2); \
       sccache --start-server; \
     else \
       echo "No Actions cache credentials; building without sccache."; \
@@ -118,12 +134,14 @@ RUN cd src/rust && cargo update --workspace --locked
 RUN cd src/rust && cargo +nightly-2025-12-09 fmt --all --check
 RUN --mount=type=secret,id=actions_results_url \
     --mount=type=secret,id=actions_runtime_token \
+    --mount=type=secret,id=actions_cache_service_v2 \
     cd src/rust && \
     SCCACHE_LAUNCHER="" && \
     if [ -s /run/secrets/actions_results_url ] && [ -s /run/secrets/actions_runtime_token ]; then \
       export SCCACHE_GHA_ENABLED=true; \
       export ACTIONS_RESULTS_URL=$(cat /run/secrets/actions_results_url); \
       export ACTIONS_RUNTIME_TOKEN=$(cat /run/secrets/actions_runtime_token); \
+      export ACTIONS_CACHE_SERVICE_V2=$(cat /run/secrets/actions_cache_service_v2); \
       sccache --start-server; \
       export RUSTC_WRAPPER=sccache; \
       SCCACHE_LAUNCHER=sccache; \
@@ -135,12 +153,14 @@ RUN --mount=type=secret,id=actions_results_url \
     cargo build --release --all-targets --all-features
 RUN --mount=type=secret,id=actions_results_url \
     --mount=type=secret,id=actions_runtime_token \
+    --mount=type=secret,id=actions_cache_service_v2 \
     cd src/rust && \
     SCCACHE_LAUNCHER="" && \
     if [ -s /run/secrets/actions_results_url ] && [ -s /run/secrets/actions_runtime_token ]; then \
       export SCCACHE_GHA_ENABLED=true; \
       export ACTIONS_RESULTS_URL=$(cat /run/secrets/actions_results_url); \
       export ACTIONS_RUNTIME_TOKEN=$(cat /run/secrets/actions_runtime_token); \
+      export ACTIONS_CACHE_SERVICE_V2=$(cat /run/secrets/actions_cache_service_v2); \
       sccache --start-server; \
       export RUSTC_WRAPPER=sccache; \
       SCCACHE_LAUNCHER=sccache; \
@@ -248,11 +268,13 @@ RUN cd src && CMAKE_TOOLCHAIN_FILE=category/core/toolchains/gcc-avx2.cmake cmake
 
 RUN --mount=type=secret,id=actions_results_url \
     --mount=type=secret,id=actions_runtime_token \
+    --mount=type=secret,id=actions_cache_service_v2 \
     cd src && \
     if [ -s /run/secrets/actions_results_url ] && [ -s /run/secrets/actions_runtime_token ]; then \
       export SCCACHE_GHA_ENABLED=true; \
       export ACTIONS_RESULTS_URL=$(cat /run/secrets/actions_results_url); \
       export ACTIONS_RUNTIME_TOKEN=$(cat /run/secrets/actions_runtime_token); \
+      export ACTIONS_CACHE_SERVICE_V2=$(cat /run/secrets/actions_cache_service_v2); \
       sccache --start-server; \
     else \
       echo "No Actions cache credentials; building without sccache."; \

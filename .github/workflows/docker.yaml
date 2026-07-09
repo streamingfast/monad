@@ -72,6 +72,7 @@ jobs:
           secrets: |
             actions_results_url=${{ env.ACTIONS_RESULTS_URL }}
             actions_runtime_token=${{ env.ACTIONS_RUNTIME_TOKEN }}
+            actions_cache_service_v2=${{ env.ACTIONS_CACHE_SERVICE_V2 }}
           allow: security.insecure # for tests which use io_uring
           ulimit: "memlock=-1:-1"
           target: build_and_test
