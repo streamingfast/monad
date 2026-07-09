@@ -44,6 +44,7 @@ RUN apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # Build with sccache using GitHub Actions cache backend.
 # On cache hit, only changed translation units recompile (~1-3 min vs 58 min).
+# If sccache cannot reach the cache, fall back to direct compilation.
 RUN --mount=type=secret,id=actions_cache_url \
     --mount=type=secret,id=actions_runtime_token \
     cd src && \
@@ -51,9 +52,14 @@ RUN --mount=type=secret,id=actions_cache_url \
       export SCCACHE_GHA_ENABLED=true; \
       export ACTIONS_CACHE_URL=$(cat /run/secrets/actions_cache_url); \
       export ACTIONS_RUNTIME_TOKEN=$(cat /run/secrets/actions_runtime_token); \
+      if ! sccache --start-server 2>&1; then \
+        echo "WARNING: sccache server failed to start, building without cache"; \
+        unset SCCACHE_GHA_ENABLED; \
+        cmake -B build -DCMAKE_C_COMPILER_LAUNCHER="" -DCMAKE_CXX_COMPILER_LAUNCHER=""; \
+      fi; \
     fi && \
     ./scripts/build.sh && \
-    sccache --show-stats || true
+    { sccache --show-stats || true; }
 
 # security=insecure for tests which use io_uring
 RUN --security=insecure cd src && CC=${CC:?} CXX=${CXX:?} CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE:?} ./scripts/test.sh
@@ -77,9 +83,14 @@ RUN --mount=type=secret,id=actions_cache_url \
       export SCCACHE_GHA_ENABLED=true; \
       export ACTIONS_CACHE_URL=$(cat /run/secrets/actions_cache_url); \
       export ACTIONS_RUNTIME_TOKEN=$(cat /run/secrets/actions_runtime_token); \
+      if ! sccache --start-server 2>&1; then \
+        echo "WARNING: sccache server failed to start, building without cache"; \
+        unset SCCACHE_GHA_ENABLED; \
+        cmake -B build -DCMAKE_C_COMPILER_LAUNCHER="" -DCMAKE_CXX_COMPILER_LAUNCHER=""; \
+      fi; \
     fi && \
     ./scripts/vm/build-tests.sh && \
-    sccache --show-stats || true
+    { sccache --show-stats || true; }
 RUN cd src && ./scripts/vm/test.sh
 
 FROM base_rust AS build_and_test_rust
@@ -95,26 +106,40 @@ RUN cd src/rust && cargo +nightly-2025-12-09 fmt --all --check
 RUN --mount=type=secret,id=actions_cache_url \
     --mount=type=secret,id=actions_runtime_token \
     cd src/rust && \
+    SCCACHE_LAUNCHER="" && \
     if [ -f /run/secrets/actions_cache_url ] && [ -f /run/secrets/actions_runtime_token ]; then \
       export SCCACHE_GHA_ENABLED=true; \
       export ACTIONS_CACHE_URL=$(cat /run/secrets/actions_cache_url); \
       export ACTIONS_RUNTIME_TOKEN=$(cat /run/secrets/actions_runtime_token); \
-      export RUSTC_WRAPPER=sccache; \
+      if sccache --start-server 2>&1; then \
+        export RUSTC_WRAPPER=sccache; \
+        SCCACHE_LAUNCHER=sccache; \
+      else \
+        echo "WARNING: sccache server failed to start, building without cache"; \
+        unset SCCACHE_GHA_ENABLED; \
+      fi; \
     fi && \
     CC=${CC:?} CXX=${CXX:?} CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" ASMFLAGS="-march=haswell" RUSTFLAGS="-C linker=${CC:?}" \
-    CMAKE_C_COMPILER_LAUNCHER=sccache CMAKE_CXX_COMPILER_LAUNCHER=sccache \
+    CMAKE_C_COMPILER_LAUNCHER=$SCCACHE_LAUNCHER CMAKE_CXX_COMPILER_LAUNCHER=$SCCACHE_LAUNCHER \
     cargo build --release --all-targets --all-features
 RUN --mount=type=secret,id=actions_cache_url \
     --mount=type=secret,id=actions_runtime_token \
     cd src/rust && \
+    SCCACHE_LAUNCHER="" && \
     if [ -f /run/secrets/actions_cache_url ] && [ -f /run/secrets/actions_runtime_token ]; then \
       export SCCACHE_GHA_ENABLED=true; \
       export ACTIONS_CACHE_URL=$(cat /run/secrets/actions_cache_url); \
       export ACTIONS_RUNTIME_TOKEN=$(cat /run/secrets/actions_runtime_token); \
-      export RUSTC_WRAPPER=sccache; \
+      if sccache --start-server 2>&1; then \
+        export RUSTC_WRAPPER=sccache; \
+        SCCACHE_LAUNCHER=sccache; \
+      else \
+        echo "WARNING: sccache server failed to start, building without cache"; \
+        unset SCCACHE_GHA_ENABLED; \
+      fi; \
     fi && \
     CC=${CC:?} CXX=${CXX:?} CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" ASMFLAGS="-march=haswell" RUSTFLAGS="-C linker=${CC:?}" \
-    CMAKE_C_COMPILER_LAUNCHER=sccache CMAKE_CXX_COMPILER_LAUNCHER=sccache \
+    CMAKE_C_COMPILER_LAUNCHER=$SCCACHE_LAUNCHER CMAKE_CXX_COMPILER_LAUNCHER=$SCCACHE_LAUNCHER \
     cargo test  --release --all-targets --all-features
 
 FROM base AS code_quality
@@ -219,9 +244,14 @@ RUN --mount=type=secret,id=actions_cache_url \
       export SCCACHE_GHA_ENABLED=true; \
       export ACTIONS_CACHE_URL=$(cat /run/secrets/actions_cache_url); \
       export ACTIONS_RUNTIME_TOKEN=$(cat /run/secrets/actions_runtime_token); \
+      if ! sccache --start-server 2>&1; then \
+        echo "WARNING: sccache server failed to start, building without cache"; \
+        unset SCCACHE_GHA_ENABLED; \
+        cmake -B build -DCMAKE_C_COMPILER_LAUNCHER="" -DCMAKE_CXX_COMPILER_LAUNCHER=""; \
+      fi; \
     fi && \
     cmake --build build -t monad-compiler-fuzzer && \
-    sccache --show-stats || true
+    { sccache --show-stats || true; }
 RUN cd src && ./scripts/vm/ci-fuzzer.sh
 
 FROM base AS runner
