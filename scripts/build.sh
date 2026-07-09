@@ -1,4 +1,5 @@
 #!/bin/bash
+# sccache warm-cache test
 
 VERBOSE=1 \
 cmake \
