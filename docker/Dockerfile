@@ -42,9 +42,18 @@ RUN cd src && CC=${CC:?} CXX=${CXX:?} CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE:?} CMA
 # Clean up to save disk space before the heavy build
 RUN apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-RUN --mount=type=cache,target=/root/.ccache \
-    cd src && CCACHE_DIR=/root/.ccache ccache -M 2G && \
-    CCACHE_DIR=/root/.ccache ./scripts/build.sh
+# Build with sccache using GitHub Actions cache backend.
+# On cache hit, only changed translation units recompile (~1-3 min vs 58 min).
+RUN --mount=type=secret,id=actions_cache_url \
+    --mount=type=secret,id=actions_runtime_token \
+    cd src && \
+    if [ -f /run/secrets/actions_cache_url ] && [ -f /run/secrets/actions_runtime_token ]; then \
+      export SCCACHE_GHA_ENABLED=true; \
+      export ACTIONS_CACHE_URL=$(cat /run/secrets/actions_cache_url); \
+      export ACTIONS_RUNTIME_TOKEN=$(cat /run/secrets/actions_runtime_token); \
+    fi && \
+    ./scripts/build.sh && \
+    sccache --show-stats || true
 
 # security=insecure for tests which use io_uring
 RUN --security=insecure cd src && CC=${CC:?} CXX=${CXX:?} CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE:?} ./scripts/test.sh
@@ -61,8 +70,16 @@ ARG TOOLCHAIN
 RUN cd src && CC=${CC:?} CXX=${CXX:?} CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE:?} CMAKE_TOOLCHAIN_FILE=category/core/toolchains/${TOOLCHAIN:?}.cmake ./scripts/configure.sh
 RUN cd src && cmake build -DMONAD_COMPILER_TESTING=On
 
-RUN --mount=type=cache,target=/root/.ccache \
-    cd src && CCACHE_DIR=/root/.ccache ./scripts/vm/build-tests.sh
+RUN --mount=type=secret,id=actions_cache_url \
+    --mount=type=secret,id=actions_runtime_token \
+    cd src && \
+    if [ -f /run/secrets/actions_cache_url ] && [ -f /run/secrets/actions_runtime_token ]; then \
+      export SCCACHE_GHA_ENABLED=true; \
+      export ACTIONS_CACHE_URL=$(cat /run/secrets/actions_cache_url); \
+      export ACTIONS_RUNTIME_TOKEN=$(cat /run/secrets/actions_runtime_token); \
+    fi && \
+    ./scripts/vm/build-tests.sh && \
+    sccache --show-stats || true
 RUN cd src && ./scripts/vm/test.sh
 
 FROM base_rust AS build_and_test_rust
@@ -75,13 +92,29 @@ ENV TRIEDB_TARGET="triedb_driver"
 
 RUN cd src/rust && cargo update --workspace --locked
 RUN cd src/rust && cargo +nightly-2025-12-09 fmt --all --check
-RUN --mount=type=cache,target=/root/.ccache \
-    cd src/rust && CC=${CC:?} CXX=${CXX:?} CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" ASMFLAGS="-march=haswell" RUSTFLAGS="-C linker=${CC:?}" \
-    CMAKE_C_COMPILER_LAUNCHER=ccache CMAKE_CXX_COMPILER_LAUNCHER=ccache \
+RUN --mount=type=secret,id=actions_cache_url \
+    --mount=type=secret,id=actions_runtime_token \
+    cd src/rust && \
+    if [ -f /run/secrets/actions_cache_url ] && [ -f /run/secrets/actions_runtime_token ]; then \
+      export SCCACHE_GHA_ENABLED=true; \
+      export ACTIONS_CACHE_URL=$(cat /run/secrets/actions_cache_url); \
+      export ACTIONS_RUNTIME_TOKEN=$(cat /run/secrets/actions_runtime_token); \
+      export RUSTC_WRAPPER=sccache; \
+    fi && \
+    CC=${CC:?} CXX=${CXX:?} CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" ASMFLAGS="-march=haswell" RUSTFLAGS="-C linker=${CC:?}" \
+    CMAKE_C_COMPILER_LAUNCHER=sccache CMAKE_CXX_COMPILER_LAUNCHER=sccache \
     cargo build --release --all-targets --all-features
-RUN --mount=type=cache,target=/root/.ccache \
-    cd src/rust && CC=${CC:?} CXX=${CXX:?} CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" ASMFLAGS="-march=haswell" RUSTFLAGS="-C linker=${CC:?}" \
-    CMAKE_C_COMPILER_LAUNCHER=ccache CMAKE_CXX_COMPILER_LAUNCHER=ccache \
+RUN --mount=type=secret,id=actions_cache_url \
+    --mount=type=secret,id=actions_runtime_token \
+    cd src/rust && \
+    if [ -f /run/secrets/actions_cache_url ] && [ -f /run/secrets/actions_runtime_token ]; then \
+      export SCCACHE_GHA_ENABLED=true; \
+      export ACTIONS_CACHE_URL=$(cat /run/secrets/actions_cache_url); \
+      export ACTIONS_RUNTIME_TOKEN=$(cat /run/secrets/actions_runtime_token); \
+      export RUSTC_WRAPPER=sccache; \
+    fi && \
+    CC=${CC:?} CXX=${CXX:?} CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" ASMFLAGS="-march=haswell" RUSTFLAGS="-C linker=${CC:?}" \
+    CMAKE_C_COMPILER_LAUNCHER=sccache CMAKE_CXX_COMPILER_LAUNCHER=sccache \
     cargo test  --release --all-targets --all-features
 
 FROM base AS code_quality
@@ -175,10 +208,20 @@ RUN cd src && CMAKE_TOOLCHAIN_FILE=category/core/toolchains/gcc-avx2.cmake cmake
   -DCMAKE_BUILD_TYPE=Release \
   -DMONAD_COMPILER_TESTING=On \
   -DCMAKE_C_COMPILER=clang-19 \
-  -DCMAKE_CXX_COMPILER=clang++-19
+  -DCMAKE_CXX_COMPILER=clang++-19 \
+  -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+  -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
-RUN --mount=type=cache,target=/root/.ccache \
-    cd src && CCACHE_DIR=/root/.ccache cmake --build build -t monad-compiler-fuzzer
+RUN --mount=type=secret,id=actions_cache_url \
+    --mount=type=secret,id=actions_runtime_token \
+    cd src && \
+    if [ -f /run/secrets/actions_cache_url ] && [ -f /run/secrets/actions_runtime_token ]; then \
+      export SCCACHE_GHA_ENABLED=true; \
+      export ACTIONS_CACHE_URL=$(cat /run/secrets/actions_cache_url); \
+      export ACTIONS_RUNTIME_TOKEN=$(cat /run/secrets/actions_runtime_token); \
+    fi && \
+    cmake --build build -t monad-compiler-fuzzer && \
+    sccache --show-stats || true
 RUN cd src && ./scripts/vm/ci-fuzzer.sh
 
 FROM base AS runner
