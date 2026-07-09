@@ -88,10 +88,12 @@ jobs:
             CMAKE_BUILD_TYPE=Release
             TOOLCHAIN=gcc-avx2
           secrets: |
-            actions_cache_url=${{ env.ACTIONS_CACHE_URL }}
+            actions_results_url=${{ env.ACTIONS_RESULTS_URL }}
             actions_runtime_token=${{ env.ACTIONS_RUNTIME_TOKEN }}
           builder: ${{ steps.setup-buildx.outputs.name }}
           allow: security.insecure
           ulimit: "memlock=-1:-1"
           provenance: false
           sbom: false
+          cache-from: type=gha,scope=execution-${{ github.ref_name }}
+          cache-to: type=gha,scope=execution-${{ github.ref_name }},mode=max

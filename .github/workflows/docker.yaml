@@ -70,8 +70,10 @@ jobs:
             CMAKE_BUILD_TYPE=${{ matrix.CMAKE_BUILD_TYPE }}
             TOOLCHAIN=gcc-avx2
           secrets: |
-            actions_cache_url=${{ env.ACTIONS_CACHE_URL }}
+            actions_results_url=${{ env.ACTIONS_RESULTS_URL }}
             actions_runtime_token=${{ env.ACTIONS_RUNTIME_TOKEN }}
           allow: security.insecure # for tests which use io_uring
           ulimit: "memlock=-1:-1"
           target: build_and_test
+          cache-from: type=gha,scope=bat-${{ matrix.compiler.CC }}-${{ matrix.CMAKE_BUILD_TYPE }}
+          cache-to: type=gha,scope=bat-${{ matrix.compiler.CC }}-${{ matrix.CMAKE_BUILD_TYPE }},mode=max
