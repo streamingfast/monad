@@ -58,6 +58,12 @@ RUN apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 # sccache treats an unusable cache as a warning, not an error, so a broken
 # cache yields a green build that silently recompiles everything. Assert on
 # the stats instead of trusting the exit code.
+#
+# A few write errors are normal: parallel ninja jobs race to store the same
+# object and lose with a 409, and the service rate-limits under concurrent
+# upload. Total backend failure looks different -- writes fail for nearly
+# every miss (639 errors / 639 compiles when ACTIONS_CACHE_SERVICE_V2 was
+# unset). Fail on that shape, not on any error at all.
 RUN --mount=type=secret,id=actions_results_url \
     --mount=type=secret,id=actions_runtime_token \
     --mount=type=secret,id=actions_cache_service_v2 \
@@ -70,10 +76,16 @@ RUN --mount=type=secret,id=actions_results_url \
       sccache --start-server; \
       ./scripts/build.sh; \
       sccache --show-stats; \
-      if [ "$(sccache --show-stats | awk '/^Cache write errors/ {print $NF}')" != "0" ]; then \
-        echo "ERROR: sccache failed to write to the GHA cache; refusing to ship an uncached build."; \
-        exit 1; \
-      fi; \
+      sccache --show-stats | awk '\
+        /^Cache misses/ && !m { m = $NF } \
+        /^Cache write errors/ { e = $NF } \
+        END { \
+          if (m > 0 && e > m / 2) { \
+            print "ERROR: sccache failed " e " of " m " cache writes; the GHA cache backend is not working."; \
+            exit 1; \
+          } \
+          print "sccache: " e " write errors across " m " misses (tolerated)."; \
+        }'; \
     else \
       echo "No Actions cache credentials; building without sccache."; \
       cmake -B build -DCMAKE_C_COMPILER_LAUNCHER= -DCMAKE_CXX_COMPILER_LAUNCHER=; \
