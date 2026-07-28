@@ -21,42 +21,38 @@
 #include <category/core/config.hpp>
 #include <category/core/lru/lru_cache.hpp>
 #include <category/execution/ethereum/core/account.hpp>
+#include <category/execution/ethereum/db/storage_key.hpp>
+#include <category/execution/ethereum/state2/proposal_post_state.hpp>
 #include <category/execution/ethereum/state2/state_deltas.hpp>
 #include <category/execution/monad/db/storage_page.hpp>
 #include <category/execution/monad/state2/proposal_state.hpp>
+#include <category/vm/utils/lru_weight_cache.hpp>
 
 #include <cstdint>
-#include <cstring>
+#include <format>
 #include <memory>
 #include <optional>
 #include <string>
 
 MONAD_NAMESPACE_BEGIN
 
+// Outcome of a cache read.
+enum class CacheReadStatus
+{
+    Hit, // served from proposal map or LRU
+    MissResolved, // both missed, proposal chain walked to the finalized base
+                  // -> disk value == finalized value -> safe to cache this miss
+    MissTruncated, // proposal chain truncated before the finalized base
+                   // -> can't prove finalized-consistent -> don't cache miss
+};
+
+// Encoding-agnostic LRU + proposal cache for accounts and storage leaves.
+// Storage values are held as storage_page_t, keyed by the trie key the
+// caller passes: slot_key (single slot at index 0) for slot encoding, or
+// page_key (full page) for page encoding. The caller (TrieDb) decides the
+// key and offset based on its encoding; the cache does not.
 class DbCache final
 {
-    struct StorageKey
-    {
-        static constexpr size_t k_bytes =
-            sizeof(Address) + sizeof(Incarnation) + sizeof(bytes32_t);
-
-        uint8_t bytes[k_bytes];
-
-        StorageKey() = default;
-
-        StorageKey(
-            Address const &addr, Incarnation const incarnation,
-            bytes32_t const &key)
-        {
-            memcpy(bytes, addr.bytes, sizeof(Address));
-            memcpy(&bytes[sizeof(Address)], &incarnation, sizeof(Incarnation));
-            memcpy(
-                &bytes[sizeof(Address) + sizeof(Incarnation)],
-                key.bytes,
-                sizeof(bytes32_t));
-        }
-    };
-
     using AddressHashCompare = BytesHashCompare<Address>;
     using StorageKeyHashCompare = BytesHashCompare<StorageKey>;
     using AccountsCache =
@@ -64,54 +60,102 @@ class DbCache final
     // The cache is slot-granular: keyed by slot_key, the value is a
     // storage_page_t used as a single-slot container holding the value at
     // index 0 only. This will be compatible for future page-granular reads.
-    using StorageCache =
-        LruCache<StorageKey, storage_page_t, StorageKeyHashCompare>;
+    using StorageCache = vm::utils::LruWeightCache<
+        StorageKey, storage_page_t, StorageKeyHashCompare>;
+
+    static constexpr uint32_t STORAGE_CACHE_MAX_BYTES = 256u * 1024 * 1024;
 
     AccountsCache accounts_{10'000'000};
-    StorageCache storage_{10'000'000};
+    StorageCache storage_{STORAGE_CACHE_MAX_BYTES};
     Proposals proposals_;
 
 public:
     DbCache() = default;
 
-    bool
+    CacheReadStatus
     try_read_account(Address const &address, std::optional<Account> &result)
     {
         auto const res = proposals_.try_read_account(address, result);
         if (res.found) {
-            return true;
+            return CacheReadStatus::Hit;
         }
-        if (!res.truncated) {
-            AccountsCache::ConstAccessor acc{};
-            if (accounts_.find(acc, address)) {
-                result = acc->second.value_;
-                return true;
-            }
+        if (res.truncated) {
+            return CacheReadStatus::MissTruncated;
         }
-        return false;
+        AccountsCache::ConstAccessor acc{};
+        if (accounts_.find(acc, address)) {
+            result = acc->second.value_;
+            return CacheReadStatus::Hit;
+        }
+        return CacheReadStatus::MissResolved;
     }
 
-    bool try_read_storage(
+    // Read-through: cache a finalized-consistent account fetched from disk
+    // after a `MissResolved` read. A nullopt is a valid (negative) entry: it
+    // records that the account is absent at the finalized baseline.
+    void insert_account(
+        Address const &address, std::optional<Account> const &account)
+    {
+        accounts_.insert(address, account);
+    }
+
+    CacheReadStatus try_read_storage_page(
         Address const &address, Incarnation const incarnation,
-        bytes32_t const &key, bytes32_t &result)
+        bytes32_t const &key, storage_page_t &result)
+    {
+        auto const res =
+            proposals_.try_read_storage(address, incarnation, key, result);
+        if (res.found) {
+            return CacheReadStatus::Hit;
+        }
+        if (res.truncated) {
+            return CacheReadStatus::MissTruncated;
+        }
+        StorageKey const skey{address, incarnation, key};
+        StorageCache::ConstAccessor acc{};
+        if (storage_.find(acc, skey)) {
+            result = acc->second.value_;
+            return CacheReadStatus::Hit;
+        }
+        return CacheReadStatus::MissResolved;
+    }
+
+    CacheReadStatus try_read_storage(
+        Address const &address, Incarnation const incarnation,
+        bytes32_t const &key, uint8_t const slot_offset, bytes32_t &result)
     {
         storage_page_t page;
         auto const res =
             proposals_.try_read_storage(address, incarnation, key, page);
         if (res.found) {
-            // Single-slot page: the value lives at index 0.
-            result = page[0];
-            return true;
+            // slot_offset is 0 for slot encoding, the in-page offset for page.
+            result = page[slot_offset];
+            return CacheReadStatus::Hit;
         }
-        if (!res.truncated) {
-            StorageKey const skey{address, incarnation, key};
-            StorageCache::ConstAccessor acc{};
-            if (storage_.find(acc, skey)) {
-                result = acc->second.value_[0];
-                return true;
-            }
+        if (res.truncated) {
+            return CacheReadStatus::MissTruncated;
         }
-        return false;
+        StorageKey const skey{address, incarnation, key};
+        StorageCache::ConstAccessor acc{};
+        if (storage_.find(acc, skey)) {
+            result = acc->second.value_[slot_offset];
+            return CacheReadStatus::Hit;
+        }
+        return CacheReadStatus::MissResolved;
+    }
+
+    // Read-through: insert a finalized-consistent storage page fetched from
+    // disk after a `MissResolved` read. try_insert_no_overwrite leaves an
+    // entry a concurrent sibling read already cached untouched (all concurrent
+    // read-throughs resolve against the same finalized baseline, so a colliding
+    // entry holds the same page anyway).
+    void insert_storage_page(
+        Address const &address, Incarnation const incarnation,
+        bytes32_t const &key, storage_page_t const &page)
+    {
+        StorageKey const skey{address, incarnation, key};
+        storage_.try_insert_no_overwrite(
+            skey, page, static_cast<uint32_t>(page.byte_size()));
     }
 
     void
@@ -121,11 +165,10 @@ public:
     }
 
     void update_proposal_state(
-        std::unique_ptr<StateDeltas> state_deltas, uint64_t const block_number,
+        ProposalPostState post_state, uint64_t const block_number,
         bytes32_t const &block_id)
     {
-        MONAD_ASSERT(state_deltas);
-        proposals_.commit(std::move(state_deltas), block_number, block_id);
+        proposals_.commit(std::move(post_state), block_number, block_id);
     }
 
     void on_finalize(uint64_t const block_number, bytes32_t const &block_id)
@@ -133,10 +176,12 @@ public:
         std::unique_ptr<ProposalState> const ps =
             proposals_.finalize(block_number, block_id);
         if (ps) {
-            insert_in_lru_caches(ps->state());
+            insert_in_lru_caches(ps->post_state());
         }
         else {
-            // Finalizing a truncated proposal. Clear LRU caches.
+            // Finalizing a truncated proposal. Clear LRU caches.  This is an
+            // expensive operation. However, with 100 unfinalized proposals,
+            // cache speed is the least of our problems.
             accounts_.clear();
             storage_.clear();
         }
@@ -149,28 +194,18 @@ public:
 
     std::string storage_stats()
     {
-        return storage_.print_stats();
+        return std::format(
+            "{:8} / {:10}", storage_.size(), storage_.approx_weight());
     }
 
 private:
-    void insert_in_lru_caches(StateDeltas const &state_deltas)
+    void insert_in_lru_caches(ProposalPostState const &post_state)
     {
-        for (auto const &[address, delta] : state_deltas) {
-            auto const &account_delta = delta.account;
-            accounts_.insert(address, account_delta.second);
-            auto const &storage = delta.storage;
-            auto const &account = account_delta.second;
-            if (account.has_value()) {
-                for (auto const &[key, storage_delta] : storage) {
-                    auto const incarnation = account->incarnation;
-                    // Single-slot page: store the value at index 0. A zero
-                    // value leaves the page empty, so a hit reads back zero.
-                    storage_page_t page;
-                    page.set(0, storage_delta.second);
-                    storage_.insert(
-                        StorageKey(address, incarnation, key), page);
-                }
-            }
+        for (auto const &[addr, acct] : post_state.accounts) {
+            accounts_.insert(addr, acct);
+        }
+        for (auto const &[sk, leaf] : post_state.storage) {
+            storage_.insert(sk, leaf, static_cast<uint32_t>(leaf.byte_size()));
         }
     }
 };

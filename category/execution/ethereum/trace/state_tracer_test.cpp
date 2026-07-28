@@ -18,8 +18,8 @@
 #include <category/execution/ethereum/chain/ethereum_mainnet.hpp>
 #include <category/execution/ethereum/core/account.hpp>
 #include <category/execution/ethereum/core/transaction.hpp>
-#include <category/execution/ethereum/evm.hpp>
 #include <category/execution/ethereum/evmc_host.hpp>
+#include <category/execution/ethereum/execute_message.hpp>
 #include <category/execution/ethereum/execute_transaction.hpp>
 #include <category/execution/ethereum/process_requests.hpp>
 #include <category/execution/ethereum/state2/block_state.hpp>
@@ -53,6 +53,7 @@
 
 #include <test_resource_data.h>
 
+#include <algorithm>
 #include <bit>
 #include <optional>
 #include <vector>
@@ -77,6 +78,10 @@ namespace
         0x8d8ebb65ec00cb973d4fe086a607728fd1b9de14aa48208381eed9592f0dee9a_bytes32;
     constexpr auto key7 =
         0xff896b09014882056009dedb136458f017fcef9a4729467d0d00b4fd413fb1f1_bytes32;
+    constexpr auto page0_slot1 =
+        0x0000000000000000000000000000000000000000000000000000000000000001_bytes32;
+    constexpr auto page1_slot0 =
+        0x0000000000000000000000000000000000000000000000000000000000000080_bytes32;
     constexpr auto value1 =
         0x0000000000000000000000000000000000000000000000000000000000000003_bytes32;
     constexpr auto value2 =
@@ -116,7 +121,10 @@ TEST(PrestateTracer, pre_state_to_json)
     vm::VM vm;
 
     commit_sequential(
-        tdb, sd({}), Code{{A_CODE_HASH, A_ICODE}}, BlockHeader{.number = 0});
+        tdb,
+        StateDeltas({}),
+        Code{{A_CODE_HASH, A_ICODE}},
+        BlockHeader{.number = 0});
 
     BlockState bs(tdb, vm);
     State s(bs, Incarnation{0, 0});
@@ -154,7 +162,7 @@ TEST(PrestateTracer, zero_nonce)
     TrieDb tdb{db};
     vm::VM vm;
 
-    commit_sequential(tdb, sd({}), Code{}, BlockHeader{.number = 0});
+    commit_sequential(tdb, StateDeltas({}), Code{}, BlockHeader{.number = 0});
 
     BlockState bs(tdb, vm);
     State s(bs, Incarnation{0, 0});
@@ -191,7 +199,7 @@ TEST(PrestateTracer, state_deltas_to_json)
 
     commit_sequential(
         tdb,
-        sd(state_deltas),
+        StateDeltas(state_deltas),
         Code{{A_CODE_HASH, A_ICODE}},
         BlockHeader{.number = 0});
 
@@ -231,7 +239,7 @@ TEST(PrestateTracer, statediff_account_creation)
 
     commit_sequential(
         tdb,
-        sd(state_deltas),
+        StateDeltas(state_deltas),
         Code{{A_CODE_HASH, A_ICODE}},
         BlockHeader{.number = 0});
 
@@ -270,7 +278,7 @@ TEST(PrestateTracer, statediff_balance_nonce_update)
 
     commit_sequential(
         tdb,
-        sd(state_deltas),
+        StateDeltas(state_deltas),
         Code{{A_CODE_HASH, A_ICODE}},
         BlockHeader{.number = 0});
 
@@ -321,11 +329,12 @@ TEST(PrestateTracer, statediff_delete_storage)
 
     commit_sequential(
         tdb,
-        sd(state_deltas1),
+        StateDeltas(state_deltas1),
         Code{{A_CODE_HASH, A_ICODE}},
         BlockHeader{.number = 0});
 
-    commit_sequential(tdb, sd(state_deltas2), Code{}, BlockHeader{.number = 1});
+    commit_sequential(
+        tdb, StateDeltas(state_deltas2), Code{}, BlockHeader{.number = 1});
 
     BlockState bs(tdb, vm);
     State s(bs, Incarnation{0, 0});
@@ -377,7 +386,7 @@ TEST(PrestateTracer, statediff_multiple_fields_update)
 
     commit_sequential(
         tdb,
-        sd(state_deltas),
+        StateDeltas(state_deltas),
         Code{{A_CODE_HASH, A_ICODE}, {B_CODE_HASH, B_ICODE}},
         BlockHeader{.number = 0});
 
@@ -426,13 +435,15 @@ TEST(PrestateTracer, statediff_account_deletion)
         {ADDR_A, StateDelta{.account = {std::nullopt, a}, .storage = {}}},
     };
 
-    commit_sequential(tdb, sd(state_deltas1), Code{}, BlockHeader{.number = 0});
+    commit_sequential(
+        tdb, StateDeltas(state_deltas1), Code{}, BlockHeader{.number = 0});
 
     StateDeltas state_deltas2{
         {ADDR_A, StateDelta{.account = {a, std::nullopt}, .storage = {}}},
     };
 
-    commit_sequential(tdb, sd(state_deltas2), Code{}, BlockHeader{.number = 1});
+    commit_sequential(
+        tdb, StateDeltas(state_deltas2), Code{}, BlockHeader{.number = 1});
 
     BlockState bs(tdb, vm);
     State s(bs, Incarnation{0, 0});
@@ -489,7 +500,10 @@ TEST(PrestateTracer, geth_example_prestate)
     vm::VM vm;
 
     commit_sequential(
-        tdb, sd({}), Code{{A_CODE_HASH, A_ICODE}}, BlockHeader{.number = 0});
+        tdb,
+        StateDeltas({}),
+        Code{{A_CODE_HASH, A_ICODE}},
+        BlockHeader{.number = 0});
 
     BlockState bs0(tdb, vm);
     State s(bs0, Incarnation{0, 0});
@@ -540,7 +554,8 @@ TEST(PrestateTracer, geth_example_statediff)
     TrieDb tdb{db};
     vm::VM vm;
 
-    commit_sequential(tdb, sd(state_deltas), Code{}, BlockHeader{.number = 0});
+    commit_sequential(
+        tdb, StateDeltas(state_deltas), Code{}, BlockHeader{.number = 0});
 
     BlockState bs0(tdb, vm);
     State s(bs0, Incarnation{0, 0});
@@ -573,7 +588,7 @@ TEST(PrestateTracer, prestate_empty)
     TrieDb tdb{db};
     vm::VM vm;
 
-    commit_sequential(tdb, sd({}), Code{}, BlockHeader{.number = 0});
+    commit_sequential(tdb, StateDeltas({}), Code{}, BlockHeader{.number = 0});
 
     BlockState bs(tdb, vm);
     State s(bs, Incarnation{0, 0});
@@ -593,7 +608,8 @@ TEST(PrestateTracer, statediff_empty)
     TrieDb tdb{db};
     vm::VM vm;
 
-    commit_sequential(tdb, sd(state_deltas), Code{}, BlockHeader{.number = 0});
+    commit_sequential(
+        tdb, StateDeltas(state_deltas), Code{}, BlockHeader{.number = 0});
 
     BlockState bs(tdb, vm);
     State s(bs, Incarnation{0, 0});
@@ -618,7 +634,8 @@ TYPED_TEST(TraitsTest, access_list_empty)
     TrieDb tdb{db};
     vm::VM vm;
 
-    commit_sequential(tdb, sd(state_deltas), Code{}, BlockHeader{.number = 0});
+    commit_sequential(
+        tdb, StateDeltas(state_deltas), Code{}, BlockHeader{.number = 0});
 
     BlockState bs(tdb, vm);
     State s(bs, Incarnation{0, 0});
@@ -637,7 +654,7 @@ TYPED_TEST(TraitsTest, access_list_state_view_excludes_rejected_frame)
     TrieDb tdb{db};
     vm::VM vm;
 
-    commit_sequential(tdb, sd({}), Code{}, BlockHeader{.number = 0});
+    commit_sequential(tdb, StateDeltas({}), Code{}, BlockHeader{.number = 0});
 
     BlockState bs(tdb, vm);
     State s(bs, Incarnation{0, 0});
@@ -662,7 +679,7 @@ TYPED_TEST(TraitsTest, access_list_records_rejected_frame_storage)
     TrieDb tdb{db};
     vm::VM vm;
 
-    commit_sequential(tdb, sd({}), Code{}, BlockHeader{.number = 0});
+    commit_sequential(tdb, StateDeltas({}), Code{}, BlockHeader{.number = 0});
 
     BlockState bs(tdb, vm);
     State s(bs, Incarnation{0, 0});
@@ -699,7 +716,7 @@ TYPED_TEST(TraitsTest, access_list_records_rejected_frame_regular_account)
     TrieDb tdb{db};
     vm::VM vm;
 
-    commit_sequential(tdb, sd({}), Code{}, BlockHeader{.number = 0});
+    commit_sequential(tdb, StateDeltas({}), Code{}, BlockHeader{.number = 0});
 
     BlockState bs(tdb, vm);
     State s(bs, Incarnation{0, 0});
@@ -736,7 +753,8 @@ TYPED_TEST(TraitsTest, access_list_write)
     TrieDb tdb{db};
     vm::VM vm;
 
-    commit_sequential(tdb, sd(state_deltas), Code{}, BlockHeader{.number = 0});
+    commit_sequential(
+        tdb, StateDeltas(state_deltas), Code{}, BlockHeader{.number = 0});
 
     BlockState bs(tdb, vm);
     State s(bs, Incarnation{0, 0});
@@ -782,7 +800,7 @@ TYPED_TEST(TraitsTest, access_list_regular_account)
     TrieDb tdb{db};
     vm::VM vm;
 
-    commit_sequential(tdb, sd({}), Code{}, BlockHeader{.number = 0});
+    commit_sequential(tdb, StateDeltas({}), Code{}, BlockHeader{.number = 0});
 
     BlockState bs(tdb, vm);
 
@@ -851,7 +869,7 @@ TYPED_TEST(TraitsTest, access_list_sender)
     TrieDb tdb{db};
     vm::VM vm;
 
-    commit_sequential(tdb, sd({}), Code{}, BlockHeader{.number = 0});
+    commit_sequential(tdb, StateDeltas({}), Code{}, BlockHeader{.number = 0});
 
     BlockState bs(tdb, vm);
 
@@ -909,7 +927,7 @@ TYPED_TEST(TraitsTest, access_list_beneficiary)
     TrieDb tdb{db};
     vm::VM vm;
 
-    commit_sequential(tdb, sd({}), Code{}, BlockHeader{.number = 0});
+    commit_sequential(tdb, StateDeltas({}), Code{}, BlockHeader{.number = 0});
 
     BlockState bs(tdb, vm);
 
@@ -967,7 +985,7 @@ TYPED_TEST(TraitsTest, access_list_recipient)
     TrieDb tdb{db};
     vm::VM vm;
 
-    commit_sequential(tdb, sd({}), Code{}, BlockHeader{.number = 0});
+    commit_sequential(tdb, StateDeltas({}), Code{}, BlockHeader{.number = 0});
 
     BlockState bs(tdb, vm);
 
@@ -1025,7 +1043,7 @@ TYPED_TEST(TraitsTest, access_list_authorities)
     TrieDb tdb{db};
     vm::VM vm;
 
-    commit_sequential(tdb, sd({}), Code{}, BlockHeader{.number = 0});
+    commit_sequential(tdb, StateDeltas({}), Code{}, BlockHeader{.number = 0});
 
     BlockState bs(tdb, vm);
 
@@ -1096,7 +1114,7 @@ TYPED_TEST(TraitsTest, access_list_precompiles)
     TrieDb tdb{db};
     vm::VM vm;
 
-    commit_sequential(tdb, sd({}), Code{}, BlockHeader{.number = 0});
+    commit_sequential(tdb, StateDeltas({}), Code{}, BlockHeader{.number = 0});
 
     BlockState bs(tdb, vm);
 
@@ -1153,7 +1171,7 @@ TEST(PrestateTracer, prestate_access_storage)
     // Block 0
     commit_sequential(
         tdb,
-        sd(
+        StateDeltas(
             {{ADDR_A,
               StateDelta{
                   .account = {std::nullopt, a},
@@ -1224,7 +1242,9 @@ TEST(PrestateTracer, prestate_retain_beneficiary_set_storage)
     // Block 0
     commit_sequential(
         tdb,
-        sd({{ADDR_A, StateDelta{.account = {std::nullopt, a}, .storage = {}}}}),
+        StateDeltas(
+            {{ADDR_A,
+              StateDelta{.account = {std::nullopt, a}, .storage = {}}}}),
         {},
         BlockHeader{.number = 0});
 
@@ -1292,7 +1312,7 @@ TEST(PrestateTracer, prestate_retain_beneficiary_modified_storage)
     // Block 0
     commit_sequential(
         tdb,
-        sd(
+        StateDeltas(
             {{ADDR_A,
               StateDelta{
                   .account = {std::nullopt, a},
@@ -1369,7 +1389,9 @@ TEST(PrestateTracer, prestate_retain_beneficiary_modified_balance)
     // Block 0
     commit_sequential(
         tdb,
-        sd({{ADDR_A, StateDelta{.account = {std::nullopt, a}, .storage = {}}}}),
+        StateDeltas(
+            {{ADDR_A,
+              StateDelta{.account = {std::nullopt, a}, .storage = {}}}}),
         {},
         BlockHeader{.number = 0});
 
@@ -1439,7 +1461,9 @@ TEST(PrestateTracer, prestate_retain_beneficiary_modified_nonce)
     // Block 0
     commit_sequential(
         tdb,
-        sd({{ADDR_A, StateDelta{.account = {std::nullopt, a}, .storage = {}}}}),
+        StateDeltas(
+            {{ADDR_A,
+              StateDelta{.account = {std::nullopt, a}, .storage = {}}}}),
         {},
         BlockHeader{.number = 0});
 
@@ -1505,7 +1529,9 @@ TEST(PrestateTracer, prestate_retain_beneficiary_modified_code_hash)
     // Block 0
     commit_sequential(
         tdb,
-        sd({{ADDR_A, StateDelta{.account = {std::nullopt, a}, .storage = {}}}}),
+        StateDeltas(
+            {{ADDR_A,
+              StateDelta{.account = {std::nullopt, a}, .storage = {}}}}),
         Code{{A_CODE_HASH, A_ICODE}},
         BlockHeader{.number = 0});
 
@@ -1574,7 +1600,7 @@ TEST(PrestateTracer, prestate_retain_beneficiary_access_storage)
     // Block 0
     commit_sequential(
         tdb,
-        sd(
+        StateDeltas(
             {{ADDR_A,
               StateDelta{
                   .account = {std::nullopt, a},
@@ -1645,7 +1671,9 @@ TEST(PrestateTracer, prestate_omit_beneficiary)
     // Block 0
     commit_sequential(
         tdb,
-        sd({{ADDR_A, StateDelta{.account = {std::nullopt, a}, .storage = {}}}}),
+        StateDeltas(
+            {{ADDR_A,
+              StateDelta{.account = {std::nullopt, a}, .storage = {}}}}),
         {},
         BlockHeader{.number = 0});
 
@@ -1697,7 +1725,7 @@ TEST(PrestateTracer, prestate_empty_block_no_reward)
     Block const block{header, {}, {}};
 
     // Block 0
-    commit_sequential(tdb, sd({}), {}, header);
+    commit_sequential(tdb, StateDeltas({}), {}, header);
 
     BlockState bs(tdb, vm);
     State s(bs, Incarnation{0, 0});
@@ -1776,11 +1804,11 @@ TYPED_TEST(TraitsTest, code_tracer_records_extcodesize)
 
     commit_sequential(
         tdb,
-        sd(
-            {{ADDR_A,
-              StateDelta{
-                  .account =
-                      {std::nullopt, Account{.code_hash = A_CODE_HASH}}}}}),
+        StateDeltas{
+            {ADDR_A,
+             StateDelta{
+                 .account =
+                     {std::nullopt, Account{.code_hash = A_CODE_HASH}}}}},
         Code{{A_CODE_HASH, A_ICODE}},
         BlockHeader{.number = 0});
 
@@ -1825,11 +1853,11 @@ TYPED_TEST(TraitsTest, code_tracer_records_extcodecopy)
 
     commit_sequential(
         tdb,
-        sd(
-            {{ADDR_A,
-              StateDelta{
-                  .account =
-                      {std::nullopt, Account{.code_hash = A_CODE_HASH}}}}}),
+        StateDeltas{
+            {ADDR_A,
+             StateDelta{
+                 .account =
+                     {std::nullopt, Account{.code_hash = A_CODE_HASH}}}}},
         Code{{A_CODE_HASH, A_ICODE}},
         BlockHeader{.number = 0});
 
@@ -1880,14 +1908,15 @@ TYPED_TEST(TraitsTest, code_tracer_records_called_contract_code)
 
     commit_sequential(
         tdb,
-        sd({{ADDR_A,
+        StateDeltas{
+            {ADDR_A,
              StateDelta{
                  .account =
                      {std::nullopt, Account{.balance = 10'000'000'000}}}},
             {ADDR_B,
              StateDelta{
                  .account =
-                     {std::nullopt, Account{.code_hash = B_CODE_HASH}}}}}),
+                     {std::nullopt, Account{.code_hash = B_CODE_HASH}}}}},
         Code{{B_CODE_HASH, B_ICODE}},
         BlockHeader{.number = 0});
 
@@ -1951,7 +1980,8 @@ TYPED_TEST(TraitsTest, code_tracer_records_system_contract_code)
 
         commit_sequential(
             tdb,
-            sd({{WITHDRAWAL_REQUEST_ADDRESS,
+            StateDeltas{
+                {WITHDRAWAL_REQUEST_ADDRESS,
                  StateDelta{
                      .account =
                          {std::nullopt,
@@ -1960,7 +1990,7 @@ TYPED_TEST(TraitsTest, code_tracer_records_system_contract_code)
                  StateDelta{
                      .account =
                          {std::nullopt,
-                          Account{.code_hash = SYSTEM_STUB_CODE_HASH}}}}}),
+                          Account{.code_hash = SYSTEM_STUB_CODE_HASH}}}}},
             Code{{SYSTEM_STUB_CODE_HASH, SYSTEM_STUB_ICODE}},
             BlockHeader{.number = 0});
 
@@ -2011,14 +2041,14 @@ TYPED_TEST(TraitsTest, code_tracer_records_sender_code_in_validate)
         // but the read site still records --- which is the property under test.
         commit_sequential(
             tdb,
-            sd(
-                {{ADDR_A,
-                  StateDelta{
-                      .account =
-                          {std::nullopt,
-                           Account{
-                               .balance = 100'000'000'000'000'000,
-                               .code_hash = C_CODE_HASH}}}}}),
+            StateDeltas{
+                {ADDR_A,
+                 StateDelta{
+                     .account =
+                         {std::nullopt,
+                          Account{
+                              .balance = 100'000'000'000'000'000,
+                              .code_hash = C_CODE_HASH}}}}},
             Code{{C_CODE_HASH, C_ICODE}},
             BlockHeader{.number = 0});
 
@@ -2064,7 +2094,8 @@ TYPED_TEST(EvmTraitsTest, code_tracer_records_authorization_code)
 
         commit_sequential(
             tdb,
-            sd({{ADDR_A,
+            StateDeltas{
+                {ADDR_A,
                  StateDelta{
                      .account =
                          {std::nullopt,
@@ -2074,7 +2105,7 @@ TYPED_TEST(EvmTraitsTest, code_tracer_records_authorization_code)
                 {ADDR_B,
                  StateDelta{
                      .account =
-                         {std::nullopt, Account{.code_hash = B_CODE_HASH}}}}}),
+                         {std::nullopt, Account{.code_hash = B_CODE_HASH}}}}},
             Code{{B_CODE_HASH, B_ICODE}},
             BlockHeader{.number = 0});
 
@@ -2157,7 +2188,8 @@ TYPED_TEST(MonadTraitsTest, code_tracer_records_reserve_balance_code)
 
     commit_sequential(
         tdb,
-        sd({{SENDER,
+        StateDeltas{
+            {SENDER,
              StateDelta{
                  .account =
                      {std::nullopt,
@@ -2168,8 +2200,7 @@ TYPED_TEST(MonadTraitsTest, code_tracer_records_reserve_balance_code)
              StateDelta{
                  .account =
                      {std::nullopt,
-                      Account{
-                          .balance = 100'000, .code_hash = B_CODE_HASH}}}}}),
+                      Account{.balance = 100'000, .code_hash = B_CODE_HASH}}}}},
         Code{{A_CODE_HASH, A_ICODE}, {B_CODE_HASH, B_ICODE}},
         BlockHeader{.number = 0});
 
@@ -2223,4 +2254,341 @@ TYPED_TEST(MonadTraitsTest, code_tracer_records_reserve_balance_code)
     EXPECT_EQ(
         byte_string_view(it_b->second->code(), it_b->second->size()),
         byte_string_view(B_ICODE->code(), B_ICODE->size()));
+}
+
+// Under MIP-8 (mip_8_active), eth_createAccessList deduplicates storage keys
+// to one minimum-slot representative per page.
+
+TYPED_TEST(MonadTraitsTest, access_list_page_dedup_same_page)
+{
+    if constexpr (!TestFixture::Trait::mip_8_active()) {
+        GTEST_SKIP() << "page-gas dedup only active when mip_8_active";
+    }
+
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
+    TrieDb tdb{db};
+    vm::VM vm;
+
+    commit_sequential(tdb, StateDeltas({}), Code{}, BlockHeader{.number = 0});
+
+    BlockState bs(tdb, vm);
+    State s(bs, Incarnation{0, 0});
+
+    s.create_account_no_rollback(addr1);
+    s.create_account_no_rollback(addr2);
+    s.create_account_no_rollback(addr3);
+    s.create_account_no_rollback(addr4);
+
+    // key4 (0x...00) and page0_slot1 (0x...01) are on the same page (both <
+    // 128)
+    s.access_storage<typename TestFixture::Trait>(addr4, key4);
+    s.access_storage<typename TestFixture::Trait>(addr4, page0_slot1);
+
+    nlohmann::json storage;
+    auto const authorities = std::vector<std::optional<Address>>{};
+    auto const to = std::optional<Address>{addr3};
+    AccessListTracer tracer{storage, addr1, addr2, to, authorities};
+    tracer.encode<typename TestFixture::Trait>(s);
+
+    auto const json_str = R"([
+        {
+            "address": "0xc8ba32cab1757528daf49033e3673fae77dcf05d",
+            "storageKeys": [
+                "0x0000000000000000000000000000000000000000000000000000000000000000"
+            ]
+        }
+    ])";
+
+    EXPECT_EQ(storage, nlohmann::json::parse(json_str));
+}
+
+TYPED_TEST(MonadTraitsTest, access_list_page_dedup_same_page_three_slots)
+{
+    if constexpr (!TestFixture::Trait::mip_8_active()) {
+        GTEST_SKIP() << "page-gas dedup only active when mip_8_active";
+    }
+
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
+    TrieDb tdb{db};
+    vm::VM vm;
+
+    commit_sequential(tdb, StateDeltas({}), Code{}, BlockHeader{.number = 0});
+
+    BlockState bs(tdb, vm);
+    State s(bs, Incarnation{0, 0});
+
+    s.create_account_no_rollback(addr1);
+    s.create_account_no_rollback(addr2);
+    s.create_account_no_rollback(addr3);
+    s.create_account_no_rollback(addr4);
+
+    // Slots 0, 1, 2 are all on page 0; only slot 0 should survive.
+    constexpr auto page0_slot2 =
+        0x0000000000000000000000000000000000000000000000000000000000000002_bytes32;
+    s.access_storage<typename TestFixture::Trait>(addr4, key4);
+    s.access_storage<typename TestFixture::Trait>(addr4, page0_slot1);
+    s.access_storage<typename TestFixture::Trait>(addr4, page0_slot2);
+
+    nlohmann::json storage;
+    auto const authorities = std::vector<std::optional<Address>>{};
+    auto const to = std::optional<Address>{addr3};
+    AccessListTracer tracer{storage, addr1, addr2, to, authorities};
+    tracer.encode<typename TestFixture::Trait>(s);
+
+    auto const json_str = R"([
+        {
+            "address": "0xc8ba32cab1757528daf49033e3673fae77dcf05d",
+            "storageKeys": [
+                "0x0000000000000000000000000000000000000000000000000000000000000000"
+            ]
+        }
+    ])";
+
+    EXPECT_EQ(storage, nlohmann::json::parse(json_str));
+}
+
+TYPED_TEST(MonadTraitsTest, access_list_mip8_passthrough_two_addresses)
+{
+    if constexpr (!TestFixture::Trait::mip_8_active()) {
+        GTEST_SKIP() << "page-gas dedup only active when mip_8_active";
+    }
+
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
+    TrieDb tdb{db};
+    vm::VM vm;
+
+    commit_sequential(tdb, StateDeltas({}), Code{}, BlockHeader{.number = 0});
+
+    BlockState bs(tdb, vm);
+    State s(bs, Incarnation{0, 0});
+
+    s.create_account_no_rollback(addr1);
+    s.create_account_no_rollback(addr2);
+    s.create_account_no_rollback(addr3);
+    s.create_account_no_rollback(addr4);
+    s.create_account_no_rollback(addr5);
+
+    // Two addresses each with one slot in page-gas mode; both must appear in
+    // the output unchanged (no dedup occurs because each address sees only one
+    // slot).
+    s.access_storage<typename TestFixture::Trait>(addr4, key4);
+    s.access_storage<typename TestFixture::Trait>(addr5, page1_slot0);
+
+    nlohmann::json storage;
+    auto const authorities = std::vector<std::optional<Address>>{};
+    auto const to = std::optional<Address>{addr3};
+    AccessListTracer tracer{storage, addr1, addr2, to, authorities};
+    tracer.encode<typename TestFixture::Trait>(s);
+
+    // Sort outer array by address for deterministic comparison
+    std::sort(storage.begin(), storage.end(), [](auto const &a, auto const &b) {
+        return a["address"] < b["address"];
+    });
+
+    auto const json_str = R"([
+        {
+            "address": "0xc8ba32cab1757528daf49033e3673fae77dcf05d",
+            "storageKeys": [
+                "0x0000000000000000000000000000000000000000000000000000000000000000"
+            ]
+        },
+        {
+            "address": "0xe02ad958162c9acb9c3eb90f67b02db21b10d3e0",
+            "storageKeys": [
+                "0x0000000000000000000000000000000000000000000000000000000000000080"
+            ]
+        }
+    ])";
+
+    EXPECT_EQ(storage, nlohmann::json::parse(json_str));
+}
+
+TYPED_TEST(MonadTraitsTest, access_list_page_dedup_one_addr_two_pages)
+{
+    if constexpr (!TestFixture::Trait::mip_8_active()) {
+        GTEST_SKIP() << "page-gas dedup only active when mip_8_active";
+    }
+
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
+    TrieDb tdb{db};
+    vm::VM vm;
+
+    commit_sequential(tdb, StateDeltas({}), Code{}, BlockHeader{.number = 0});
+
+    BlockState bs(tdb, vm);
+    State s(bs, Incarnation{0, 0});
+
+    s.create_account_no_rollback(addr1);
+    s.create_account_no_rollback(addr2);
+    s.create_account_no_rollback(addr3);
+    s.create_account_no_rollback(addr4);
+
+    // key4 (0x...00, page 0) and page1_slot0 (0x...80 = 128, page 1) are on
+    // different pages under the same address — both representatives must
+    // survive
+    s.access_storage<typename TestFixture::Trait>(addr4, key4);
+    s.access_storage<typename TestFixture::Trait>(addr4, page1_slot0);
+
+    nlohmann::json storage;
+    auto const authorities = std::vector<std::optional<Address>>{};
+    auto const to = std::optional<Address>{addr3};
+    AccessListTracer tracer{storage, addr1, addr2, to, authorities};
+    tracer.encode<typename TestFixture::Trait>(s);
+
+    ASSERT_EQ(storage.size(), 1U);
+    EXPECT_EQ(
+        storage[0]["address"], "0xc8ba32cab1757528daf49033e3673fae77dcf05d");
+    auto two_page_keys = storage[0]["storageKeys"];
+    std::sort(two_page_keys.begin(), two_page_keys.end());
+    ASSERT_EQ(two_page_keys.size(), 2U);
+    EXPECT_EQ(
+        two_page_keys[0],
+        "0x0000000000000000000000000000000000000000000000000000000000000000");
+    EXPECT_EQ(
+        two_page_keys[1],
+        "0x0000000000000000000000000000000000000000000000000000000000000080");
+}
+
+TYPED_TEST(MonadTraitsTest, access_list_page_dedup_old_revision)
+{
+    if constexpr (TestFixture::Trait::mip_8_active()) {
+        GTEST_SKIP()
+            << "old-revision behaviour only tested before mip_8_active";
+    }
+
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
+    TrieDb tdb{db};
+    vm::VM vm;
+
+    commit_sequential(tdb, StateDeltas({}), Code{}, BlockHeader{.number = 0});
+
+    BlockState bs(tdb, vm);
+    State s(bs, Incarnation{0, 0});
+
+    s.create_account_no_rollback(addr1);
+    s.create_account_no_rollback(addr2);
+    s.create_account_no_rollback(addr3);
+    s.create_account_no_rollback(addr4);
+
+    // Same page, but old revisions return all accessed slots unchanged
+    s.access_storage<typename TestFixture::Trait>(addr4, key4);
+    s.access_storage<typename TestFixture::Trait>(addr4, page0_slot1);
+
+    nlohmann::json storage;
+    auto const authorities = std::vector<std::optional<Address>>{};
+    auto const to = std::optional<Address>{addr3};
+    AccessListTracer tracer{storage, addr1, addr2, to, authorities};
+    tracer.encode<typename TestFixture::Trait>(s);
+
+    ASSERT_EQ(storage.size(), 1U);
+    EXPECT_EQ(
+        storage[0]["address"], "0xc8ba32cab1757528daf49033e3673fae77dcf05d");
+    auto old_keys = storage[0]["storageKeys"];
+    std::sort(old_keys.begin(), old_keys.end());
+    ASSERT_EQ(old_keys.size(), 2U);
+    EXPECT_EQ(
+        old_keys[0],
+        "0x0000000000000000000000000000000000000000000000000000000000000000");
+    EXPECT_EQ(
+        old_keys[1],
+        "0x0000000000000000000000000000000000000000000000000000000000000001");
+}
+
+TYPED_TEST(MonadTraitsTest, access_list_page_dedup_page_boundary)
+{
+    if constexpr (!TestFixture::Trait::mip_8_active()) {
+        GTEST_SKIP() << "page-gas dedup only active when mip_8_active";
+    }
+
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
+    TrieDb tdb{db};
+    vm::VM vm;
+
+    commit_sequential(tdb, StateDeltas({}), Code{}, BlockHeader{.number = 0});
+
+    BlockState bs(tdb, vm);
+    State s(bs, Incarnation{0, 0});
+
+    s.create_account_no_rollback(addr1);
+    s.create_account_no_rollback(addr2);
+    s.create_account_no_rollback(addr3);
+    s.create_account_no_rollback(addr4);
+
+    // 0x7f (127) is the last slot on page 0; 0x80 (128) is the first slot on
+    // page 1. Both must survive deduplication since they are on different
+    // pages.
+    constexpr auto page0_last =
+        0x000000000000000000000000000000000000000000000000000000000000007f_bytes32;
+    s.access_storage<typename TestFixture::Trait>(addr4, page0_last);
+    s.access_storage<typename TestFixture::Trait>(addr4, page1_slot0);
+
+    nlohmann::json storage;
+    auto const authorities = std::vector<std::optional<Address>>{};
+    auto const to = std::optional<Address>{addr3};
+    AccessListTracer tracer{storage, addr1, addr2, to, authorities};
+    tracer.encode<typename TestFixture::Trait>(s);
+
+    ASSERT_EQ(storage.size(), 1U);
+    EXPECT_EQ(
+        storage[0]["address"], "0xc8ba32cab1757528daf49033e3673fae77dcf05d");
+    auto boundary_keys = storage[0]["storageKeys"];
+    std::sort(boundary_keys.begin(), boundary_keys.end());
+    ASSERT_EQ(boundary_keys.size(), 2U);
+    EXPECT_EQ(
+        boundary_keys[0],
+        "0x000000000000000000000000000000000000000000000000000000000000007f");
+    EXPECT_EQ(
+        boundary_keys[1],
+        "0x0000000000000000000000000000000000000000000000000000000000000080");
+}
+
+TYPED_TEST(MonadTraitsTest, access_list_page_dedup_multi_byte_page_boundary)
+{
+    if constexpr (!TestFixture::Trait::mip_8_active()) {
+        GTEST_SKIP() << "page-gas dedup only active when mip_8_active";
+    }
+
+    mpt::Db db{std::make_unique<InMemoryMachine>()};
+    TrieDb tdb{db};
+    vm::VM vm;
+
+    commit_sequential(tdb, StateDeltas({}), Code{}, BlockHeader{.number = 0});
+
+    BlockState bs(tdb, vm);
+    State s(bs, Incarnation{0, 0});
+
+    s.create_account_no_rollback(addr1);
+    s.create_account_no_rollback(addr2);
+    s.create_account_no_rollback(addr3);
+    s.create_account_no_rollback(addr4);
+
+    // 0x00ff is the last slot on page 1; 0x0100 is the first slot on page 2.
+    // key.bytes[30] == 0x01 for slot 0x0100, so the carry term
+    // (key.bytes[i-1] << 1) is non-zero — exercising cross-byte shifting.
+    // Both slots must survive deduplication since they are on different pages.
+    constexpr auto page1_last =
+        0x00000000000000000000000000000000000000000000000000000000000000ff_bytes32;
+    constexpr auto page2_first =
+        0x0000000000000000000000000000000000000000000000000000000000000100_bytes32;
+    s.access_storage<typename TestFixture::Trait>(addr4, page1_last);
+    s.access_storage<typename TestFixture::Trait>(addr4, page2_first);
+
+    nlohmann::json storage;
+    auto const authorities = std::vector<std::optional<Address>>{};
+    auto const to = std::optional<Address>{addr3};
+    AccessListTracer tracer{storage, addr1, addr2, to, authorities};
+    tracer.encode<typename TestFixture::Trait>(s);
+
+    ASSERT_EQ(storage.size(), 1U);
+    EXPECT_EQ(
+        storage[0]["address"], "0xc8ba32cab1757528daf49033e3673fae77dcf05d");
+    auto boundary_keys = storage[0]["storageKeys"];
+    std::sort(boundary_keys.begin(), boundary_keys.end());
+    ASSERT_EQ(boundary_keys.size(), 2U);
+    EXPECT_EQ(
+        boundary_keys[0],
+        "0x00000000000000000000000000000000000000000000000000000000000000ff");
+    EXPECT_EQ(
+        boundary_keys[1],
+        "0x0000000000000000000000000000000000000000000000000000000000000100");
 }

@@ -23,6 +23,7 @@
 #include <evmc/evmc.h>
 
 #include <concepts>
+#include <cstdint>
 #include <limits>
 #include <utility>
 
@@ -32,6 +33,18 @@ namespace monad
     {
         inline constexpr monad_eth_revision EARLIEST_SUPPORTED_EVM_FORK =
             MONAD_ETH_ISTANBUL;
+
+        // The latest EVM fork whose execution semantics are implemented. Later
+        // forks may exist in the monad_eth_revision enum (so the dispatch
+        // infrastructure — explicit instantiations, switch cases, opcode and
+        // storage tables — is in place) but are not yet wired up behaviorally.
+        // Such forks are excluded from the typed-revision test matrices and
+        // must not be run through evmone (see to_evmc_revision()).
+        // TODO(amsterdam): bump to MONAD_ETH_AMSTERDAM once Amsterdam support
+        // lands.
+        inline constexpr monad_eth_revision LATEST_SUPPORTED_EVM_FORK =
+            MONAD_ETH_OSAKA;
+
         inline constexpr uint64_t EARLIEST_SUPPORTED_ETH_BLOCK_NUMBER = 9069000;
 
         inline constexpr size_t MAX_CODE_SIZE_EIP170 = 24 * 1024; // 0x6000
@@ -41,6 +54,16 @@ namespace monad
         inline constexpr size_t MAX_CODE_SIZE_MONAD_TWO = 128 * 1024;
         inline constexpr size_t MAX_INITCODE_SIZE_MONAD_FOUR =
             2 * MAX_CODE_SIZE_MONAD_TWO;
+    }
+
+    namespace detail
+    {
+        // Mirrors LLVM's AnalysisKey: a Traits specialization carries one
+        // static member of this type, and the address of that member is its
+        // opaque unique id (see the id() contract on the Traits concept).
+        struct alignas(8) TraitsKey
+        {
+        };
     }
 
     template <typename T>
@@ -59,6 +82,8 @@ namespace monad
         { T::eip_7951_active() } -> std::same_as<bool>;
         { T::mip_3_active() } -> std::same_as<bool>;
         { T::mip_8_active() } -> std::same_as<bool>;
+        { T::mip_11_active() } -> std::same_as<bool>;
+        { T::mip_12_active() } -> std::same_as<bool>;
         { T::can_create_inside_delegated() } -> std::same_as<bool>;
 
         // Constants
@@ -125,12 +150,22 @@ namespace monad
             return Rev >= MONAD_ETH_OSAKA;
         }
 
+        static consteval bool mip_3_active() noexcept
+        {
+            return false;
+        }
+
         static consteval bool mip_8_active() noexcept
         {
             return false;
         }
 
-        static consteval bool mip_3_active() noexcept
+        static consteval bool mip_12_active() noexcept
+        {
+            return false;
+        }
+
+        static consteval bool mip_11_active() noexcept
         {
             return false;
         }
@@ -172,11 +207,25 @@ namespace monad
             std::unreachable();
         }
 
-        static consteval uint64_t id() noexcept
+        static uint64_t id() noexcept
         {
-            return static_cast<uint64_t>(Rev);
+            static_assert(sizeof(uintptr_t) <= sizeof(uint64_t));
+            return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&key));
         }
+
+        static detail::TraitsKey key;
     };
+
+    template <monad_eth_revision Rev>
+    detail::TraitsKey EvmTraits<Rev>::key;
+
+    // Runtime sibling to MonadTraits::mip_8_active(), for code holding a
+    // monad_revision value rather than a trait type. Single source of the
+    // mip-8 (page-encoding) activation cutoff.
+    constexpr bool mip_8_active(monad_revision const rev) noexcept
+    {
+        return rev >= MONAD_NEXT;
+    }
 
     template <monad_revision Rev>
     struct MonadTraits
@@ -253,12 +302,22 @@ namespace monad
             return false;
         }
 
+        static consteval bool mip_11_active() noexcept
+        {
+            return false;
+        }
+
         static consteval bool can_create_inside_delegated() noexcept
         {
             return false;
         }
 
         static consteval bool mip_8_active() noexcept
+        {
+            return ::monad::mip_8_active(Rev);
+        }
+
+        static consteval bool mip_12_active() noexcept
         {
             return Rev >= MONAD_NEXT;
         }
@@ -272,11 +331,6 @@ namespace monad
             }
 
             return 0;
-        }
-
-        static consteval int64_t base_sload_cost() noexcept
-        {
-            return 100;
         }
 
         static consteval int64_t base_sstore_cost() noexcept
@@ -336,16 +390,22 @@ namespace monad
             std::unreachable();
         }
 
-        static consteval uint64_t id() noexcept
+        static uint64_t id() noexcept
         {
-            return static_cast<uint64_t>(Rev);
+            static_assert(sizeof(uintptr_t) <= sizeof(uint64_t));
+            return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&key));
         }
+
+        static detail::TraitsKey key;
 
         // Temporary workaround that should be considered equivalent to calling
         // evm_rev(); remove when the refactoring to use feature flags is
         // complete.
         using evm_base = EvmTraits<MonadTraits::evm_rev()>;
     };
+
+    template <monad_revision Rev>
+    detail::TraitsKey MonadTraits<Rev>::key;
 
     template <typename T>
     inline constexpr bool is_evm_trait_v = is_specialization_of_v<EvmTraits, T>;

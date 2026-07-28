@@ -200,6 +200,15 @@ Carve-outs where the parameter stays non-const:
 - Typedefs that hide pointers, notably `va_list` — adding `const` breaks `va_arg`/`va_copy` on implementations where `va_list` is an array type (see `category/core/format_err.c:33`).
 - Lambda parameters.
 
+### Comment hygiene after rebase, squash, or rename/removal
+
+Stale comments are invisible to the author (you read your intent, not the text) and to diff-scoped reviewers and PR bots (they can't grep the whole tree or read unchanged files). After squashing history, rebasing onto a new base, or renaming/removing any function, type, or field, run two sweeps before finalizing:
+
+1. **Temporal-language sweep.** Grep changed comments (extended regex) for the temporal markers: `grep -nE 'Previously|Originally|No longer|The old|Now uses|Used to|previous (commit|version|approach)|initially was'`. Every hit must describe a *durable* contrast (e.g. this-branch-vs-`main` behavior) — not an intermediate state of your own branch, which doesn't exist in the final history and is meaningless to a future reader. Reword or delete.
+2. **Dead-identifier sweep.** For every function/type/field named in a changed comment, confirm it still exists: `grep -rnw 'identifier' category/ test/`. Renames and removals leave stale references that the temporal-word grep won't catch. A comment naming a planned-but-unwired caller (`used by propose_block`) is the same defect — verify the caller actually exists and calls the code, or drop the claim.
+
+Apply both sweeps proactively whenever history is rewritten or a symbol changes name — not only when asked.
+
 ## Adding Tests
 
 Tests use Google Test. CMake helper functions are defined in root `CMakeLists.txt`:
@@ -224,6 +233,5 @@ Test data paths are available via generated header `test/test_resource_data.h`:
 ## Known Pitfalls
 
 - **GCC + ASAN breaks the VM interpreter** — GCC's ASAN implementation is incompatible with the must-tail calling convention used by the interpreter. Use Clang for ASAN builds when working on VM code.
-- **`third_party/evmone` is not a submodule** — it's gitignored and must be manually cloned from `category-labs/evmone` (branch `v0.18.0-category`). Only needed for `MONAD_COMPILER_TESTING`, `MONAD_COMPILER_BENCHMARKS`, lint, and fuzz builds.
-- **Submodules in worktrees** — Fresh clones and git worktrees need `git submodule update --init --recursive` before configuring.
+- **Submodules in worktrees** — Fresh clones and git worktrees need `git submodule update --init --recursive` before configuring. `third_party/evmone` (only needed for `MONAD_COMPILER_TESTING`, `MONAD_COMPILER_BENCHMARKS`, lint, and fuzz builds) is a normal submodule and comes along with that.
 - **Always use toolchain files** — Passing bare `-march=haswell` via `CFLAGS`/`CXXFLAGS` misses assembly sources (e.g., `keccak_impl.S`). Use `-DCMAKE_TOOLCHAIN_FILE=...` instead.

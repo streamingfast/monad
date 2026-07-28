@@ -23,6 +23,7 @@
 #include <chrono>
 #include <mutex>
 #include <string>
+#include <utility>
 
 #include <unordered_set>
 
@@ -84,7 +85,9 @@ namespace monad::vm::utils
             if (!hmap_.insert(acc, {key, HashMapValue{value, weight}})) {
                 ListNode *const node = &*acc;
                 delta_weight -= node->second.cache_weight_;
-                node->second.value_ = value;
+                using std::swap;
+                Value tmp = value;
+                swap(node->second.value_, tmp);
                 node->second.cache_weight_ = weight;
                 try_update_lru(node);
                 acc.release();
@@ -99,6 +102,14 @@ namespace monad::vm::utils
             return is_new_key;
         }
 
+        // Not thread-safe with other cache operations.
+        void clear()
+        {
+            hmap_.clear();
+            lru_.clear();
+            weight_.store(0, std::memory_order_release);
+        }
+
         /// Like insert, but does not overwrite an existing value in the cache.
         /// Instead if a value already exists under `key` then it will
         /// overwrite the `value` argument with the existing value.
@@ -107,6 +118,24 @@ namespace monad::vm::utils
             ConstAccessor acc;
             if (!hmap_.insert(acc, {key, HashMapValue{value, weight}})) {
                 value = acc->second.value_;
+                try_update_lru(&*acc);
+                return false;
+            }
+            ListNode const *const node = &*acc;
+            acc.release();
+            lru_.push_front(node);
+            adjust_by_delta_weight(weight);
+            return true;
+        }
+
+        /// Like try_insert, but takes `value` by const reference and never
+        /// mutates it or overwrites an existing entry. Returns true iff a new
+        /// entry was inserted.
+        bool try_insert_no_overwrite(
+            Key const &key, Value const &value, uint32_t const weight)
+        {
+            ConstAccessor acc;
+            if (!hmap_.insert(acc, {key, HashMapValue{value, weight}})) {
                 try_update_lru(&*acc);
                 return false;
             }
@@ -234,6 +263,12 @@ namespace monad::vm::utils
         public:
             explicit LruList(int64_t const lru_update_period)
                 : lru_update_period_{lru_update_period}
+            {
+                clear();
+            }
+
+            // Not thread-safe with other LruList operations.
+            void clear()
             {
                 base_.second.next_ = &base_;
                 base_.second.prev_ = &base_;

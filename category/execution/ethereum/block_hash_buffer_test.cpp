@@ -18,6 +18,7 @@
 #include <category/core/bytes.hpp>
 #include <category/core/keccak.hpp>
 #include <category/execution/ethereum/block_hash_buffer.hpp>
+#include <category/execution/ethereum/block_hash_buffer/util.hpp>
 #include <category/execution/ethereum/core/block.hpp>
 #include <category/execution/ethereum/core/rlp/block_rlp.hpp>
 #include <category/execution/ethereum/db/trie_db.hpp>
@@ -217,7 +218,7 @@ TEST(BlockHashBufferTest, init_from_db)
 
     BlockHashBufferFinalized expected;
     for (uint64_t i = 0; i < 256; ++i) {
-        commit_sequential(tdb, sd({}), {}, BlockHeader{.number = i});
+        commit_sequential(tdb, StateDeltas({}), {}, BlockHeader{.number = i});
         expected.set(
             i,
             to_bytes(

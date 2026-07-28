@@ -88,6 +88,7 @@ Result<byte_string> system_call(
         .blob_hashes_count = 0,
         .initcodes = nullptr,
         .initcodes_count = 0,
+        .block_round = header.slot_number.value_or(0),
     };
 
     auto msg_memory = state.vm().message_memory_ref();
@@ -243,11 +244,9 @@ bytes32_t compute_requests_hash(std::span<BlockRequest const> const requests)
         inner_hashes.insert(inner_hashes.end(), std::begin(inner.bytes), std::end(inner.bytes));
     }
 
-    static constexpr uint8_t EMPTY_SHA256_INPUT = 0;
     bytes32_t outer_hash;
-    uint8_t const *outer_input =
-        inner_hashes.empty() ? &EMPTY_SHA256_INPUT : inner_hashes.data();
-    monad_sha256(outer_hash.bytes, outer_input, inner_hashes.size(), true);
+    monad_sha256(
+        outer_hash.bytes, inner_hashes.data(), inner_hashes.size(), true);
     return outer_hash;
 }
 

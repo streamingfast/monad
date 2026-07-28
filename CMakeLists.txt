@@ -80,6 +80,7 @@ add_subdirectory(third_party/asmjit)
 
 # BLAKE3
 add_subdirectory(third_party/BLAKE3/c)
+set_target_properties(blake3 PROPERTIES C_VISIBILITY_PRESET default)
 
 # blst
 set(DOWNLOAD_BLST OFF)

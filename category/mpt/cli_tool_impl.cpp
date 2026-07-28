@@ -120,6 +120,8 @@ state_machine_kind_name(MONAD_MPT_NAMESPACE::state_machine_kind const kind)
     switch (kind) {
     case MONAD_MPT_NAMESPACE::state_machine_kind::ethereum:
         return "ethereum";
+    case MONAD_MPT_NAMESPACE::state_machine_kind::monad:
+        return "monad";
     }
     return "unknown";
 }
@@ -420,6 +422,7 @@ struct impl_t
     bool activate_secondary = false;
     bool deactivate_secondary = false;
     bool promote_secondary = false;
+    bool repair_database = false;
     MONAD_MPT_NAMESPACE::state_machine_kind state_machine =
         MONAD_MPT_NAMESPACE::state_machine_kind::ethereum;
     std::optional<uint64_t> rewind_database_to;
@@ -1262,10 +1265,7 @@ public:
                 throw std::runtime_error("libarchive failed");
             }
 
-            uint32_t additional_cnv_chunks_to_archive = 0;
-            auto map_chunk_into_memory = [this,
-                                          &additional_cnv_chunks_to_archive](
-                                             chunk_info_archive_t &i) {
+            auto map_chunk_into_memory = [this](chunk_info_archive_t &i) {
                 auto [fd2, offset] = i.chunk_ptr->read_fd();
                 i.uncompressed_storage = ::mmap(
                     nullptr,
@@ -1293,20 +1293,6 @@ public:
                                 monad::mpt::detail::db_metadata::chunk_info_t);
                     i.uncompressed =
                         i.uncompressed.subspan(0, db_metadata_size);
-                    auto const *m = monad::start_lifetime_as<
-                        monad::mpt::detail::db_metadata>(i.uncompressed.data());
-                    // The archive loop below walks contiguous cnv chunk
-                    // ids [0, additional_cnv_chunks_to_archive]; that
-                    // assumption breaks once activate_secondary_header
-                    // has split chunks between root_offsets and
-                    // secondary_timeline. Deactivate before archiving.
-                    MONAD_ASSERT_PRINTF(
-                        m->secondary_timeline_active_ == 0,
-                        "archive of a pool with an active secondary "
-                        "timeline is not supported; run monad-mpt "
-                        "--deactivate-secondary first");
-                    additional_cnv_chunks_to_archive =
-                        m->root_offsets.cnv_chunks_len();
                 }
                 i.compression_thread =
                     std::async(std::launch::async, [i = &i, this] {
@@ -1314,19 +1300,63 @@ public:
                     });
             };
 
-            std::vector<chunk_info_archive_t *> tocompress;
-            tocompress.reserve(
-                pool->chunks(pool->cnv) + fast.size() + slow.size());
+            // The non-primary ring's cnv_chunks[] is garbage unless
+            // secondary_timeline_active_ is set.
             std::vector<chunk_info_archive_t> cnv_infos;
             cnv_infos.reserve(pool->chunks(pool->cnv));
-            for (uint32_t n = 0; n <= additional_cnv_chunks_to_archive; n++) {
-                cnv_infos.emplace_back(
-                    std::addressof(pool->chunk(pool->cnv, n)), -1);
-                tocompress.push_back(&cnv_infos.back());
-                if (n == 0) {
-                    // Need to determine additional_cnv_chunks_to_archive
-                    map_chunk_into_memory(cnv_infos.back());
+            cnv_infos.emplace_back(
+                std::addressof(pool->chunk(pool->cnv, 0)), -1);
+            map_chunk_into_memory(cnv_infos.back());
+
+            std::vector<uint32_t> cnv_chunk_ids;
+            cnv_chunk_ids.reserve(pool->chunks(pool->cnv));
+            cnv_chunk_ids.push_back(0);
+            {
+                auto const *m =
+                    monad::start_lifetime_as<monad::mpt::detail::db_metadata>(
+                        cnv_infos.back().uncompressed.data());
+                auto const &primary_ring = (m->primary_ring_idx == 0)
+                                               ? m->root_offsets
+                                               : m->secondary_timeline;
+                auto const &secondary_ring = (m->primary_ring_idx == 0)
+                                                 ? m->secondary_timeline
+                                                 : m->root_offsets;
+                auto add_ring = [&cnv_chunk_ids, this](auto const &ring) {
+                    MONAD_ASSERT(ring.cnv_chunks_len() <= ring.SIZE_ - 1);
+                    for (uint32_t k = 0; k < ring.cnv_chunks_len(); k++) {
+                        uint32_t const id = ring.cnv_chunk_id(k);
+                        // Sentinel slots remain in cnv_chunks[] after a
+                        // crash mid-activate_secondary_header until
+                        // replay_pending_shrink_grow_ repairs them on the
+                        // next writable open. --archive does not run
+                        // replay; skip them to match the runtime readers.
+                        if (id == monad::mpt::detail::db_metadata::NULL_CHUNK) {
+                            continue;
+                        }
+                        MONAD_ASSERT(id < pool->chunks(pool->cnv));
+                        if (std::find(
+                                cnv_chunk_ids.begin(),
+                                cnv_chunk_ids.end(),
+                                id) == cnv_chunk_ids.end()) {
+                            cnv_chunk_ids.push_back(id);
+                        }
+                    }
+                };
+                add_ring(primary_ring);
+                if (m->secondary_timeline_active_ != 0) {
+                    add_ring(secondary_ring);
                 }
+            }
+
+            std::vector<chunk_info_archive_t *> tocompress;
+            tocompress.reserve(
+                cnv_chunk_ids.size() + fast.size() + slow.size());
+            tocompress.push_back(&cnv_infos.back());
+            for (size_t k = 1; k < cnv_chunk_ids.size(); k++) {
+                cnv_infos.emplace_back(
+                    std::addressof(pool->chunk(pool->cnv, cnv_chunk_ids[k])),
+                    -1);
+                tocompress.push_back(&cnv_infos.back());
             }
             if (debug_printing) {
                 std::cerr << "Fast list:";
@@ -1538,6 +1568,15 @@ opened.
                 "the new primary. Per-ring metadata (kind, auto_expire) "
                 "travels with the physical data; the daemon picks up the new "
                 "primary kind on next open.");
+            cli_ops_group->add_flag(
+                "--repair",
+                impl.repair_database,
+                "repair a database migrated by a buggy earlier build: the "
+                "MONAD007->MONAD008 migration zero-filled the inactive "
+                "secondary ring's cnv_chunks[] instead of using the empty "
+                "sentinel, which would make a later --activate-secondary wipe "
+                "the metadata. Normalises it so activation is safe. Run with "
+                "the daemon stopped.");
             cli_ops_group->add_option(
                 "--reset-history-length",
                 impl.reset_history_length,
@@ -1618,7 +1657,9 @@ opened.
                         std::string,
                         MONAD_MPT_NAMESPACE::state_machine_kind>{
                         {"ethereum",
-                         MONAD_MPT_NAMESPACE::state_machine_kind::ethereum}},
+                         MONAD_MPT_NAMESPACE::state_machine_kind::ethereum},
+                        {"monad",
+                         MONAD_MPT_NAMESPACE::state_machine_kind::monad}},
                     CLI::ignore_case));
             cli.add_option(
                 "--compression-level",
@@ -1641,7 +1682,7 @@ opened.
 
             auto mode =
                 MONAD_ASYNC_NAMESPACE::storage_pool::mode::open_existing;
-            impl.flags.chunk_capacity = impl.chunk_capacity & 31;
+            impl.flags.set_chunk_capacity(impl.chunk_capacity);
             if (impl.create_chunk_increasing) {
                 impl.flags.interleave_chunks_evenly = true;
             }
@@ -1703,7 +1744,7 @@ opened.
             }
             else if (
                 impl.activate_secondary || impl.deactivate_secondary ||
-                impl.promote_secondary) {
+                impl.promote_secondary || impl.repair_database) {
                 impl.flags.open_read_only = false;
                 impl.flags.open_read_only_allow_dirty = false;
             }
@@ -1725,7 +1766,7 @@ opened.
         bool const needs_write_ring =
             impl.rewind_database_to || impl.reset_history_length ||
             impl.activate_secondary || impl.deactivate_secondary ||
-            impl.promote_secondary;
+            impl.promote_secondary || impl.repair_database;
         auto wr_ring(
             needs_write_ring
                 ? std::optional<monad::io::Ring>(monad::io::RingConfig{4})
@@ -1755,7 +1796,8 @@ opened.
         if (aux.metadata_ctx().is_new_pool()) {
             aux.metadata_ctx().set_state_machine_kind(
                 MONAD_MPT_NAMESPACE::timeline_id::primary, impl.state_machine);
-            cout << "Stamped state-machine kind on primary timeline.\n";
+            cout << "Stamped state-machine kind on primary timeline to "
+                 << state_machine_kind_name(impl.state_machine) << ".\n";
         }
 
         // Secondary timeline lifecycle. These execute against the open
@@ -1769,6 +1811,22 @@ opened.
                 cerr << "Secondary timeline already active; nothing to do.\n";
                 return 1;
             }
+            // Refuse to activate a pool whose secondary ring is still in the
+            // pre-fix MONAD007->MONAD008 migration artifact state (zero-filled
+            // cnv_chunks[] aliasing cnv chunk 0). Bail out BEFORE
+            // activate_secondary_timeline stamps its pending-op intent log:
+            // otherwise the activate body would trip the cnv-chunk-0 guard and
+            // that abort would replay on every subsequent open, bricking the
+            // pool (unopenable even by --repair). Direct the operator to
+            // --repair, which is safe and idempotent.
+            if (aux.metadata_ctx().secondary_ring_needs_repair()) {
+                cerr << "Secondary ring is corrupt: cnv_chunks[] were "
+                        "zero-filled by a pre-fix MONAD007->MONAD008 migration "
+                        "and would alias cnv chunk 0 (the db_metadata chunk). "
+                        "Run 'monad-mpt --repair' before "
+                        "--activate-secondary.\n";
+                return 1;
+            }
             // Order matters: stamp the kind first, then flip the active bit.
             // open_secondary_timeline gates on the active bit, so flipping it
             // first and crashing before the stamp would expose a secondary
@@ -1779,8 +1837,9 @@ opened.
                 MONAD_MPT_NAMESPACE::timeline_id::secondary,
                 impl.state_machine);
             aux.activate_secondary_timeline();
-            cout << "Activated secondary timeline; stamped state-machine "
-                    "kind.\n";
+            cout << "Activated secondary timeline; stamped state-machine kind "
+                    "to "
+                 << state_machine_kind_name(impl.state_machine) << ".\n";
         }
         else if (impl.deactivate_secondary) {
             if (!aux.metadata_ctx().timeline_active(
@@ -1802,6 +1861,30 @@ opened.
             aux.promote_secondary_to_primary();
             cout << "Promoted secondary timeline to primary "
                     "(primary_ring_idx flipped).\n";
+        }
+        else if (impl.repair_database) {
+            // --repair only applies to an inactive secondary. An active one is
+            // a precondition violation, not an idempotent no-op, so signal it
+            // like the other secondary-lifecycle ops (stderr + non-zero) so
+            // scripts can detect the refusal. "Nothing to do on a well-formed
+            // inactive ring" below stays a success (exit 0).
+            if (aux.metadata_ctx().timeline_active(
+                    MONAD_MPT_NAMESPACE::timeline_id::secondary)) {
+                cerr
+                    << "Secondary timeline is active; --repair only applies to "
+                       "an inactive secondary. Nothing to repair.\n";
+                return 1;
+            }
+            if (aux.metadata_ctx().repair_inactive_secondary_ring()) {
+                cout << "Repaired secondary ring: reset a zero-filled "
+                        "cnv_chunks[] (left by a buggy MONAD007->MONAD008 "
+                        "migration, which would alias cnv chunk 0 and wipe the "
+                        "metadata on --activate-secondary) to the empty "
+                        "sentinel. Activation is now safe.\n";
+            }
+            else {
+                cout << "No repair needed; secondary ring is well-formed.\n";
+            }
         }
 
         {

@@ -28,6 +28,7 @@
 #include <category/mpt/find_request_sender.hpp>
 #include <category/mpt/nibbles_view.hpp>
 #include <category/mpt/node.hpp>
+#include <category/mpt/state_machine_kind.hpp>
 #include <category/mpt/traverse.hpp>
 #include <category/mpt/trie.hpp>
 #include <category/mpt/update.hpp>
@@ -60,6 +61,8 @@ struct AsyncIOContext
     explicit AsyncIOContext(OnDiskDbConfig const &options);
 };
 
+// Hardcode it to open the primary timeline. All timelines are always in sync
+// and store the canonical state.
 class RODb
 {
     struct Impl;
@@ -83,6 +86,8 @@ public:
     bool traverse(
         NodeCursor const &, TraverseMachine &, uint64_t block_id,
         size_t concurrency_limit = 4096);
+
+    state_machine_kind state_machine_type() const;
 };
 
 // A Db is bound to one timeline. The constructors below produce a primary
@@ -113,7 +118,9 @@ public:
     // and owns the SM internally. Caller must have registered the relevant
     // kinds at process start (e.g. monad::register_ethereum_state_machines()).
     explicit Db(OnDiskDbConfig const &);
-    explicit Db(AsyncIOContext &); // on-disk RO blocking
+    explicit Db(
+        AsyncIOContext &,
+        timeline_id tid = timeline_id::primary); // on-disk RO blocking
 
     Db(Db const &) = delete;
     Db(Db &&) noexcept;
@@ -175,11 +182,13 @@ public:
         uint64_t const block_id, ChildrenVisitRange children_of)
     {
         MONAD_ASSERT(cursor.is_valid());
-        // traverse validates versions against the primary timeline only;
-        // secondary-timeline traverse is not yet supported.
-        MONAD_ASSERT(tid() == timeline_id::primary);
         return preorder_traverse_blocking(
-            aux(), *cursor.node, machine, block_id, std::move(children_of));
+            aux(),
+            *cursor.node,
+            machine,
+            block_id,
+            tid(),
+            std::move(children_of));
     }
 
     uint64_t get_latest_version() const;
@@ -237,6 +246,12 @@ public:
     // and in-memory Dbs; secondary for Dbs returned by the activate /
     // open_secondary_timeline factories).
     timeline_id tid() const;
+
+    // Returns the state_machine_kind stamped on this Db's bound timeline
+    // in db_metadata. On-disk Dbs read it from the metadata superblock;
+    // in-memory Dbs return the kind() of the StateMachine they were
+    // constructed with.
+    state_machine_kind state_machine_type() const;
 
 private:
     friend struct test::DbAccessor;
@@ -331,7 +346,8 @@ namespace detail
 inline detail::TraverseSender make_traverse_sender(
     AsyncContext *const context, Node::SharedPtr traverse_root,
     std::unique_ptr<TraverseMachine> machine, uint64_t const block_id,
-    size_t const concurrency_limit = 4096)
+    size_t const concurrency_limit = 4096,
+    timeline_id const tid = timeline_id::primary)
 {
     MONAD_ASSERT(context);
     return {
@@ -339,6 +355,7 @@ inline detail::TraverseSender make_traverse_sender(
         std::move(traverse_root),
         std::move(machine),
         block_id,
+        tid,
         concurrency_limit};
 }
 

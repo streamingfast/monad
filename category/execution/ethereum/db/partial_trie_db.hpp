@@ -140,9 +140,8 @@ using CodeIndex = ankerl::unordered_dense::map<bytes32_t, vm::SharedIntercode>;
 
 /// A sparse Ethereum account + storage MPT that implements the Db interface.
 ///
-/// Built from a Reth witness bundle; serves as a drop-in replacement for
-/// TrieDb during zkVM STF proving. The trie IS the pre-state — there are no
-/// separate account or storage vectors.
+/// Built from an execution witness bundle; serves as a drop-in replacement
+/// for TrieDb during zkVM STF proving.
 class PartialTrieDb final : public Db
 {
     AccountTrie root_;
@@ -159,6 +158,12 @@ class PartialTrieDb final : public Db
 public:
     PartialTrieDb() = delete;
 
+    // TODO: update impl to make it work with page-encoded storage
+    bool is_page_encoded() const override
+    {
+        return false;
+    }
+
     static Result<PartialTrieDb> from_witness(
         bytes32_t const &pre_state_root, byte_string_view encoded_nodes,
         byte_string_view encoded_codes);
@@ -167,6 +172,9 @@ public:
 
     bytes32_t
     read_storage(Address const &, Incarnation, bytes32_t const &key) override;
+
+    storage_page_t read_storage_page(
+        Address const &, Incarnation, bytes32_t const &page_key) override;
 
     vm::SharedIntercode read_code(bytes32_t const &code_hash) override;
 
@@ -185,8 +193,7 @@ public:
 
     void commit(
         bytes32_t const &block_id, CommitBuilder &, BlockHeader const &,
-        std::unique_ptr<StateDeltas>,
-        std::function<void(BlockHeader &)>) override;
+        StateDeltas const &, std::function<void(BlockHeader &)>) override;
 
     // No-op overrides for operations that are irrelevant in the witness
     // context.

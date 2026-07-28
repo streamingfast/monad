@@ -34,6 +34,9 @@ using namespace monad::literals;
 // staking contract address
 inline constexpr Address STAKING_CA{0x1000};
 
+inline constexpr Address PRIORITY_FEE_DIST_ADDRESS{
+    0xfee5fee5fee5fee5fee5fee5fee5fee5fee5fee5_address};
+
 // 1e18 constant
 inline constexpr uint256_t MON{1000000000000000000_u256};
 
@@ -99,6 +102,17 @@ namespace limits
         // slots.
         return 50;
     };
+
+    template <Traits traits>
+    constexpr uint256_t maximum_block_reward()
+    {
+        if constexpr (traits::mip_12_active()) {
+            return 18 * MON;
+        }
+        else {
+            return 25 * MON;
+        }
+    }
 
     constexpr uint64_t withdrawal_delay()
     {

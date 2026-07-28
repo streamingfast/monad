@@ -251,6 +251,57 @@ TEST_F(LruWeightCacheTest, reread_evict)
     ASSERT_FALSE(weight_cache_find(base_key).has_value());
 }
 
+TEST_F(LruWeightCacheTest, clear)
+{
+    uint32_t total_weight = 0;
+    for (size_t i = 0; i < 3; ++i) {
+        Value const v = default_values(elems[i]);
+        weight_cache_.insert(elems[i], v, v);
+        total_weight += v;
+    }
+    ASSERT_EQ(weight_cache_.size(), 3u);
+    ASSERT_EQ(weight_cache_.approx_weight(), total_weight);
+
+    weight_cache_.clear();
+    ASSERT_EQ(weight_cache_.size(), 0u);
+    ASSERT_EQ(weight_cache_.approx_weight(), 0u);
+    for (size_t i = 0; i < 3; ++i) {
+        ASSERT_FALSE(weight_cache_find(elems[i]).has_value());
+    }
+}
+
+TEST(LruWeightCacheOverwrite, overwrite_with_smaller_value_does_not_undercount)
+{
+    // A value whose footprint tracks its buffer capacity, mirroring
+    // storage_page_t::byte_size().
+    struct HeapBuffer
+    {
+        std::vector<uint8_t> buf;
+
+        uint32_t footprint() const
+        {
+            return static_cast<uint32_t>(sizeof(HeapBuffer) + buf.capacity());
+        }
+    };
+
+    LruWeightCache<uint32_t, HeapBuffer> cache{uint32_t{1} << 20};
+    uint32_t const key = 7;
+
+    HeapBuffer big;
+    big.buf.resize(4096);
+    cache.insert(key, big, big.footprint());
+
+    // Overwrite with a smaller value. Plain copy-assignment would keep the
+    // large buffer while charging only the small weight, so the cache's
+    // accounted weight would undercount the memory the entry actually holds.
+    HeapBuffer const small;
+    cache.insert(key, small, small.footprint());
+
+    LruWeightCache<uint32_t, HeapBuffer>::ConstAccessor acc;
+    ASSERT_TRUE(cache.find(acc, key));
+    EXPECT_EQ(cache.approx_weight(), acc->second.value_.footprint());
+}
+
 TEST_F(LruWeightCacheTest, is_consistent)
 {
     for (uint32_t i = 0; i < 20; ++i) {

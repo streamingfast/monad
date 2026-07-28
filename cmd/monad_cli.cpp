@@ -786,6 +786,24 @@ int interactive_impl(Db &db)
     return 0;
 }
 
+// Resolve a --version spec to a concrete block version. The spec is either a
+// decimal block number or the literal "latest_finalized". Returns nullopt on a
+// malformed spec.
+std::optional<uint64_t> resolve_snapshot_version(
+    std::string const &spec, uint64_t const latest_finalized)
+{
+    if (spec == "latest_finalized") {
+        return latest_finalized;
+    }
+    uint64_t value;
+    auto const [ptr, ec] =
+        std::from_chars(spec.data(), spec.data() + spec.size(), value);
+    if (ec != std::errc{} || ptr != spec.data() + spec.size()) {
+        return std::nullopt;
+    }
+    return value;
+}
+
 MONAD_ANONYMOUS_NAMESPACE_END
 
 int main(int const argc, char *argv[])
@@ -796,8 +814,9 @@ int main(int const argc, char *argv[])
     bool interactive = false;
     std::optional<std::filesystem::path> dump_binary_snapshot;
     std::optional<std::filesystem::path> load_binary_snapshot;
-    uint64_t version;
+    std::string version;
     unsigned dump_concurrency_limit = 2048;
+    bool use_secondary = false;
     uint64_t total_shards = 1;
     uint64_t shard_number = 0;
 
@@ -824,7 +843,14 @@ int main(int const argc, char *argv[])
         "--it,--interactive", interactive, "set to run in interactive mode");
     auto *const cli_group =
         mode_group->add_option_group("cli", "options for non-interactive mode");
-    cli_group->add_option("--version", version)->required();
+    cli_group
+        ->add_option(
+            "--version",
+            version,
+            "Block version to operate on: a block number, or "
+            "\"latest_finalized\" to use the database's latest finalized "
+            "version")
+        ->required();
     auto *const dump_binary_snapshot_option = cli_group->add_option(
         "--dump-binary-snapshot,--dump_binary_snapshot",
         dump_binary_snapshot,
@@ -856,6 +882,14 @@ int main(int const argc, char *argv[])
             "Load a binary snapshot to db")
         ->check(CLI::ExistingDirectory)
         ->excludes(dump_binary_snapshot_option);
+    cli.add_flag(
+        "--secondary",
+        use_secondary,
+        "Operate on the secondary timeline instead of the primary: --it opens "
+        "it read-only, --dump-binary-snapshot dumps from it, and "
+        "--load-binary-snapshot loads into it. The secondary must already be "
+        "active with its state_machine_kind stamped (via monad-mpt "
+        "--activate-secondary --state-machine).");
     mode_group->require_option(0, 1);
     try {
         cli.parse(argc, argv);
@@ -871,12 +905,15 @@ int main(int const argc, char *argv[])
     LOG_INFO("running with commit '{}'", GIT_COMMIT_HASH);
     flush_logger();
 
+    uint64_t resolved_version = 0;
     {
         fmt::println("Opening read only database {}.", dbname_paths);
         ReadOnlyOnDiskDbConfig const ro_config{
             .sq_thread_cpu = sq_thread_cpu, .dbname_paths = dbname_paths};
         AsyncIOContext io_ctx{ro_config};
-        Db ro_db{io_ctx};
+        Db ro_db{
+            io_ctx,
+            use_secondary ? timeline_id::secondary : timeline_id::primary};
         fmt::println(
             "db summary: earliest_block_id={} latest_block_id={} "
             "latest_finalized_block_id={} last_verified_block_id={} "
@@ -888,6 +925,25 @@ int main(int const argc, char *argv[])
             ro_db.get_history_length());
         if (interactive) {
             return interactive_impl(ro_db);
+        }
+        if (dump_binary_snapshot.has_value() ||
+            load_binary_snapshot.has_value()) {
+            auto const v = resolve_snapshot_version(
+                version, ro_db.get_latest_finalized_version());
+            if (!v.has_value()) {
+                LOG_ERROR(
+                    "invalid --version \"{}\": expected a block number or "
+                    "\"latest_finalized\"",
+                    version);
+                return 1;
+            }
+            if (*v == INVALID_BLOCK_NUM) {
+                LOG_ERROR(
+                    "no finalized version available to snapshot (the database "
+                    "has no finalized blocks)");
+                return 1;
+            }
+            resolved_version = *v;
         }
     }
     if (dump_binary_snapshot.has_value()) {
@@ -901,7 +957,7 @@ int main(int const argc, char *argv[])
 
         auto *const context =
             monad_db_snapshot_filesystem_write_user_context_create(
-                dump_binary_snapshot.value().c_str(), version);
+                dump_binary_snapshot.value().c_str(), resolved_version);
         std::vector<char const *> c_dbname_paths;
         for (auto const &path : dbname_paths) {
             c_dbname_paths.emplace_back(path.c_str());
@@ -911,17 +967,20 @@ int main(int const argc, char *argv[])
             c_dbname_paths.data(),
             c_dbname_paths.size(),
             sq_thread_cpu.value_or(std::numeric_limits<unsigned>::max()),
-            version,
+            resolved_version,
             monad_db_snapshot_write_filesystem,
             context,
             dump_concurrency_limit,
             total_shards,
-            shard_number);
+            shard_number,
+            use_secondary);
         LOG_INFO(
-            "snapshot dump success={} version={} directory={} elapsed={}",
+            "snapshot dump success={} version={} directory={} "
+            "dump_from_secondary={} elapsed={}",
             success,
-            version,
+            resolved_version,
             dump_binary_snapshot.value(),
+            use_secondary,
             std::chrono::steady_clock::now() - begin);
         monad_db_snapshot_filesystem_write_user_context_destroy(context);
         return success == false;
@@ -937,11 +996,14 @@ int main(int const argc, char *argv[])
             c_dbname_paths.size(),
             sq_thread_cpu.value_or(std::numeric_limits<unsigned>::max()),
             load_binary_snapshot.value().c_str(),
-            version);
+            resolved_version,
+            use_secondary);
         LOG_INFO(
-            "snapshot version={} load_binary_snapshot={} elapsed={}",
-            version,
+            "snapshot version={} load_binary_snapshot={} load_to_secondary={} "
+            "elapsed={}",
+            resolved_version,
             load_binary_snapshot.value(),
+            use_secondary,
             std::chrono::steady_clock::now() - begin);
     }
     return 0;

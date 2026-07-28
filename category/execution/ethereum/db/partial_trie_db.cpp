@@ -697,10 +697,11 @@ Result<PartialTrieDb> PartialTrieDb::from_witness(
     {
         while (!encoded_nodes.empty()) {
             BOOST_OUTCOME_TRY(
-                auto payload, rlp::parse_string_metadata(encoded_nodes));
-            bytes32_t key = to_bytes(keccak256(payload));
+                auto const node_bytes,
+                rlp::parse_list_metadata_raw(encoded_nodes));
+            bytes32_t const key = to_bytes(keccak256(node_bytes));
             node_index.emplace(
-                key, byte_string{payload.data(), payload.size()});
+                key, byte_string{node_bytes.data(), node_bytes.size()});
         }
     }
 
@@ -759,6 +760,12 @@ bytes32_t PartialTrieDb::read_storage(
     return !val_result ? bytes32_t{} : val_result->value;
 }
 
+storage_page_t PartialTrieDb::read_storage_page(
+    Address const &, Incarnation, bytes32_t const &)
+{
+    MONAD_ABORT("PartialTrieDb read_storage_page is currently not supported");
+}
+
 vm::SharedIntercode PartialTrieDb::read_code(bytes32_t const &code_hash)
 {
     auto it = codes_.find(code_hash);
@@ -814,15 +821,13 @@ void PartialTrieDb::set_block_and_prefix(
 
 void PartialTrieDb::commit(
     bytes32_t const &, CommitBuilder &, BlockHeader const &header,
-    std::unique_ptr<StateDeltas> deltas,
+    StateDeltas const &deltas,
     std::function<void(BlockHeader &)> populate_header_fn)
 {
-    MONAD_ASSERT(deltas);
-
     block_number_ = header.number;
 
     // Pass 1: inserts and updates (accounts that exist in post-state)
-    for (auto const &[addr, delta] : *deltas) {
+    for (auto const &[addr, delta] : deltas) {
         auto const &new_account = delta.account.second;
         if (!new_account) {
             continue;
@@ -864,7 +869,7 @@ void PartialTrieDb::commit(
     }
 
     // Pass 2: deletions (accounts removed in post-state)
-    for (auto const &[addr, delta] : *deltas) {
+    for (auto const &[addr, delta] : deltas) {
         if (delta.account.second) {
             continue;
         }

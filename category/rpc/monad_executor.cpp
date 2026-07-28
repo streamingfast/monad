@@ -35,8 +35,6 @@
 #include <category/execution/ethereum/block_hash_buffer.hpp>
 #include <category/execution/ethereum/chain/chain.hpp>
 #include <category/execution/ethereum/chain/chain_config.h>
-#include <category/execution/ethereum/chain/ethereum_mainnet.hpp>
-#include <category/execution/ethereum/chain/hive_net.hpp>
 #include <category/execution/ethereum/core/block.hpp>
 #include <category/execution/ethereum/core/rlp/address_rlp.hpp>
 #include <category/execution/ethereum/core/rlp/block_rlp.hpp>
@@ -48,6 +46,7 @@
 #include <category/execution/ethereum/db/util.hpp>
 #include <category/execution/ethereum/evmc_host.hpp>
 #include <category/execution/ethereum/execute_block.hpp>
+#include <category/execution/ethereum/execute_block_header.hpp>
 #include <category/execution/ethereum/execute_transaction.hpp>
 #include <category/execution/ethereum/rlp/decode.hpp>
 #include <category/execution/ethereum/state2/block_state.hpp>
@@ -62,10 +61,8 @@
 #include <category/execution/ethereum/validate_block.hpp>
 #include <category/execution/ethereum/validate_transaction.hpp>
 #include <category/execution/ethereum/validate_transaction_error.hpp>
+#include <category/execution/monad/chain/chain_factory.hpp>
 #include <category/execution/monad/chain/monad_chain.hpp>
-#include <category/execution/monad/chain/monad_devnet.hpp>
-#include <category/execution/monad/chain/monad_mainnet.hpp>
-#include <category/execution/monad/chain/monad_testnet.hpp>
 #include <category/execution/monad/reserve_balance.hpp>
 #include <category/mpt/db.hpp>
 #include <category/mpt/ondisk_db_config.hpp>
@@ -381,6 +378,16 @@ namespace
         std::span<std::vector<std::optional<Address>> const> const
             authorities_view{authorities.data(), transactions_size};
 
+        // TODO(EXE-60): this re-execution path (and the sibling eth_call /
+        // eth_simulate paths in this file) receives a BlockHeader whose
+        // slot_number is unset (it is in-memory only, not RLP-encoded), so
+        // once SLOTNUM (EIP-7843) is wired the round read via
+        // evmc_tx_context.block_round would be 0. On this historical-trace
+        // path that diverges from how the block actually executed; the
+        // eth_call/eth_simulate paths run against synthetic headers where a 0
+        // round may be acceptable. Repopulate slot_number from the persisted
+        // MonadConsensusBlockHeader::block_round where a real round exists, per
+        // EXE-60.
         // Execute block header
         execute_block_header<traits>(block_state, header);
         BlockMetrics metrics{};
@@ -1377,22 +1384,7 @@ struct monad_executor
                         transaction.gas_limit = MONAD_ETH_CALL_LOW_GAS_LIMIT;
                     }
 
-                    auto const chain =
-                        [chain_config] -> std::unique_ptr<Chain> {
-                        switch (chain_config) {
-                        case CHAIN_CONFIG_ETHEREUM_MAINNET:
-                            return std::make_unique<EthereumMainnet>();
-                        case CHAIN_CONFIG_MONAD_DEVNET:
-                            return std::make_unique<MonadDevnet>();
-                        case CHAIN_CONFIG_MONAD_TESTNET:
-                            return std::make_unique<MonadTestnet>();
-                        case CHAIN_CONFIG_MONAD_MAINNET:
-                            return std::make_unique<MonadMainnet>();
-                        case CHAIN_CONFIG_HIVE_NET:
-                            return std::make_unique<HiveNet>();
-                        }
-                        MONAD_ASSERT(false);
-                    }();
+                    auto const chain = make_chain(chain_config);
 
                     LazyBlockHash block_hash_buffer{db, block_number};
                     TrieRODb tdb{db};
@@ -1674,22 +1666,7 @@ struct monad_executor
                         1, std::memory_order_relaxed);
                 };
                 try {
-                    auto const chain =
-                        [chain_config] -> std::unique_ptr<Chain> {
-                        switch (chain_config) {
-                        case CHAIN_CONFIG_ETHEREUM_MAINNET:
-                            return std::make_unique<EthereumMainnet>();
-                        case CHAIN_CONFIG_MONAD_DEVNET:
-                            return std::make_unique<MonadDevnet>();
-                        case CHAIN_CONFIG_MONAD_TESTNET:
-                            return std::make_unique<MonadTestnet>();
-                        case CHAIN_CONFIG_MONAD_MAINNET:
-                            return std::make_unique<MonadMainnet>();
-                        case CHAIN_CONFIG_HIVE_NET:
-                            return std::make_unique<HiveNet>();
-                        }
-                        MONAD_ASSERT(false);
-                    }();
+                    auto const chain = make_chain(chain_config);
 
                     // Load transactions, senders, and authorities for
                     // `block_number`.
@@ -1941,22 +1918,7 @@ struct monad_executor
                             }
                         }
 
-                        auto const chain =
-                            [chain_config] -> std::unique_ptr<Chain> {
-                            switch (chain_config) {
-                            case CHAIN_CONFIG_ETHEREUM_MAINNET:
-                                return std::make_unique<EthereumMainnet>();
-                            case CHAIN_CONFIG_MONAD_DEVNET:
-                                return std::make_unique<MonadDevnet>();
-                            case CHAIN_CONFIG_MONAD_TESTNET:
-                                return std::make_unique<MonadTestnet>();
-                            case CHAIN_CONFIG_MONAD_MAINNET:
-                                return std::make_unique<MonadMainnet>();
-                            case CHAIN_CONFIG_HIVE_NET:
-                                return std::make_unique<HiveNet>();
-                            }
-                            MONAD_ASSERT(false);
-                        }();
+                        auto const chain = make_chain(chain_config);
 
                         if (chain_config == CHAIN_CONFIG_ETHEREUM_MAINNET ||
                             chain_config == CHAIN_CONFIG_HIVE_NET) {

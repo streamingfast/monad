@@ -37,15 +37,19 @@
 #include <category/execution/ethereum/db/trie_db.hpp>
 #include <category/execution/ethereum/db/util.hpp>
 #include <category/execution/ethereum/rlp/encode2.hpp>
+#include <category/execution/ethereum/state2/proposal_post_state.hpp>
 #include <category/execution/ethereum/state2/state_deltas.hpp>
 #include <category/execution/ethereum/trace/call_tracer.hpp>
 #include <category/execution/ethereum/trace/rlp/call_frame_rlp.hpp>
 #include <category/execution/ethereum/types/incarnation.hpp>
 #include <category/execution/ethereum/validate_block.hpp>
+#include <category/execution/monad/db/page_commit_builder.hpp>
+#include <category/execution/monad/db/storage_page.hpp>
 #include <category/mpt/db.hpp>
 #include <category/mpt/nibbles_view.hpp>
 #include <category/mpt/nibbles_view_fmt.hpp> // NOLINT
 #include <category/mpt/node.hpp>
+#include <category/mpt/state_machine_kind.hpp>
 #include <category/mpt/traverse.hpp>
 #include <category/mpt/update.hpp>
 #include <category/mpt/util.hpp>
@@ -80,6 +84,7 @@ TrieDb::TrieDb(mpt::Db &db, bool const enable_multiblock_cache)
     , prefix_{finalized_nibbles}
     , curr_root_{db.load_root_for_version(block_number_)}
     , cache_{enable_multiblock_cache ? std::make_unique<DbCache>() : nullptr}
+    , page_encoded_{db_.state_machine_type() == mpt::state_machine_kind::monad}
 {
 }
 
@@ -99,7 +104,9 @@ Node::SharedPtr const &TrieDb::get_root() const
 std::optional<Account> TrieDb::read_account(Address const &addr)
 {
     std::optional<Account> result;
-    if (cache_ && cache_->try_read_account(addr, result)) {
+    auto const status = cache_ ? cache_->try_read_account(addr, result)
+                               : CacheReadStatus::MissTruncated;
+    if (status == CacheReadStatus::Hit) {
         return result;
     }
     auto const res = db_.find(
@@ -109,20 +116,32 @@ std::optional<Account> TrieDb::read_account(Address const &addr)
             STATE_NIBBLE,
             NibblesView{keccak256({addr.bytes, sizeof(addr.bytes)})}),
         block_number_);
+    // result stays nullopt if absent at the finalized baseline.
     if (res.has_error()) {
         stats_account_no_value();
-        return std::nullopt;
     }
-    stats_account_value();
-    auto encoded_account = res.value().node->value();
-    return decode_account_db_ignore_address(encoded_account).value();
+    else {
+        stats_account_value();
+        auto encoded_account = res.value().node->value();
+        result = decode_account_db_ignore_address(encoded_account).value();
+    }
+    if (cache_ && status == CacheReadStatus::MissResolved) {
+        cache_->insert_account(addr, result);
+    }
+    return result;
 }
 
 bytes32_t TrieDb::read_storage(
     Address const &addr, Incarnation const incarnation, bytes32_t const &key)
 {
+    bytes32_t const lookup_key = storage_lookup_key(key);
+    uint8_t const lookup_offset = page_encoded_ ? compute_slot_offset(key) : 0;
     bytes32_t result{};
-    if (cache_ && cache_->try_read_storage(addr, incarnation, key, result)) {
+    auto const status =
+        cache_ ? cache_->try_read_storage(
+                     addr, incarnation, lookup_key, lookup_offset, result)
+               : CacheReadStatus::MissTruncated;
+    if (status == CacheReadStatus::Hit) {
         return result;
     }
     auto const res = db_.find(
@@ -131,17 +150,78 @@ bytes32_t TrieDb::read_storage(
             prefix_,
             STATE_NIBBLE,
             NibblesView{keccak256({addr.bytes, sizeof(addr.bytes)})},
-            NibblesView{keccak256({key.bytes, sizeof(key.bytes)})}),
+            NibblesView{
+                keccak256({lookup_key.bytes, sizeof(lookup_key.bytes)})}),
         block_number_);
+
+    // Decode the leaf into a page (empty if absent): a full page for page
+    // encoding, a single-slot page for slot encoding. Read-through caches it on
+    // a resolved miss.
+    storage_page_t page;
     if (res.has_error()) {
         stats_storage_no_value();
-        return {};
     }
-    stats_storage_value();
-    auto encoded_storage = res.value().node->value();
-    auto const storage = decode_storage_db_ignore_key(encoded_storage);
-    MONAD_ASSERT(!storage.has_error());
-    return to_bytes(storage.value());
+    else {
+        stats_storage_value();
+        auto encoded_storage = res.value().node->value();
+        auto const value = decode_storage_db_ignore_key(encoded_storage);
+        MONAD_ASSERT(!value.has_error());
+        if (page_encoded_) {
+            auto const decoded = decode_storage_page(value.value());
+            MONAD_ASSERT(!decoded.has_error());
+            page = decoded.value();
+        }
+        else {
+            page.set(0, to_bytes(value.value()));
+        }
+    }
+    if (cache_ && status == CacheReadStatus::MissResolved) {
+        cache_->insert_storage_page(addr, incarnation, lookup_key, page);
+    }
+    return page[lookup_offset];
+}
+
+storage_page_t TrieDb::read_storage_page(
+    Address const &addr, Incarnation const incarnation,
+    bytes32_t const &page_key)
+{
+    if (!page_encoded_) {
+        MONAD_ABORT("read_storage_page is only valid on a page-encoded TrieDb");
+    }
+    else {
+        storage_page_t result;
+        auto const status = cache_ ? cache_->try_read_storage_page(
+                                         addr, incarnation, page_key, result)
+                                   : CacheReadStatus::MissTruncated;
+        if (status == CacheReadStatus::Hit) {
+            return result;
+        }
+        auto const res = db_.find(
+            curr_root_,
+            concat(
+                prefix_,
+                STATE_NIBBLE,
+                NibblesView{keccak256({addr.bytes, sizeof(addr.bytes)})},
+                NibblesView{
+                    keccak256({page_key.bytes, sizeof(page_key.bytes)})}),
+            block_number_);
+        if (res.has_error()) {
+            stats_storage_no_value();
+        }
+        else {
+            stats_storage_value();
+            auto encoded_storage = res.value().node->value();
+            auto const value = decode_storage_db_ignore_key(encoded_storage);
+            MONAD_ASSERT(!value.has_error());
+            auto const decoded = decode_storage_page(value.value());
+            MONAD_ASSERT(!decoded.has_error());
+            result = decoded.value();
+        }
+        if (cache_ && status == CacheReadStatus::MissResolved) {
+            cache_->insert_storage_page(addr, incarnation, page_key, result);
+        }
+        return result;
+    }
 }
 
 vm::SharedIntercode TrieDb::read_code(bytes32_t const &code_hash)
@@ -162,12 +242,21 @@ vm::SharedIntercode TrieDb::read_code(bytes32_t const &code_hash)
 
 void TrieDb::commit(
     bytes32_t const &block_id, CommitBuilder &builder,
-    BlockHeader const &header, std::unique_ptr<StateDeltas> state_deltas,
+    BlockHeader const &header, StateDeltas const & /*state_deltas*/,
     std::function<void(BlockHeader &)> const populate_header_fn)
 {
+    // The builder must be a PageCommitBuilder iff this db is page-encoded;
+    // PageCommitBuilder is the only builder that produces page-keyed updates.
+    MONAD_ASSERT_PRINTF(
+        (dynamic_cast<PageCommitBuilder const *>(&builder) != nullptr) ==
+            is_page_encoded(),
+        "encoding mismatch at block %lu: TrieDb::is_page_encoded=%d but commit "
+        "builder is of wrong type",
+        header.number,
+        is_page_encoded());
+
     auto const block_number = header.number;
     MONAD_ASSERT(block_number <= std::numeric_limits<int64_t>::max());
-    MONAD_ASSERT(state_deltas);
 
     MONAD_ASSERT(block_id != bytes32_t{});
     if (db_.is_on_disk() && block_id != proposal_block_id_) {
@@ -205,7 +294,7 @@ void TrieDb::commit(
 
     if (cache_) {
         cache_->update_proposal_state(
-            std::move(state_deltas), header.number, block_id);
+            builder.take_proposal_post_state(), header.number, block_id);
     }
 }
 
@@ -238,14 +327,16 @@ void TrieDb::set_block_and_prefix(
 // also changes internal state to the finalized state
 void TrieDb::finalize(uint64_t const block_number, bytes32_t const &block_id)
 {
-    // no re-finalization
     auto const latest_finalized = db_.get_latest_finalized_version();
     MONAD_ASSERT_PRINTF(
         latest_finalized == INVALID_BLOCK_NUM ||
+            block_number == latest_finalized ||
             block_number == latest_finalized + 1,
-        "block_number %lu is not the next finalized block after %lu",
+        "Finalized version must advance by at most one block. block to "
+        "finalize %lu must equal latest_finalized %lu or latest_finalized + 1",
         block_number,
         latest_finalized);
+
     MONAD_ASSERT(block_id != bytes32_t{});
     if (db_.is_on_disk()) {
         auto const src_prefix = proposal_prefix(block_id);
@@ -266,11 +357,10 @@ void TrieDb::finalize(uint64_t const block_number, bytes32_t const &block_id)
 
 void TrieDb::update_verified_block(uint64_t const block_number)
 {
-    // no re-verification
     auto const latest_verified = db_.get_latest_verified_version();
     MONAD_ASSERT_PRINTF(
-        latest_verified == INVALID_BLOCK_NUM || block_number > latest_verified,
-        "block_number %lu must be greater than last_verified %lu",
+        latest_verified == INVALID_BLOCK_NUM || block_number >= latest_verified,
+        "block_number %lu must be gte last_verified %lu",
         block_number,
         latest_verified);
     db_.update_verified_version(block_number);
@@ -445,28 +535,61 @@ nlohmann::json TrieDb::to_json(size_t const concurrency_limit)
             MONAD_ASSERT(node.has_value());
 
             auto encoded_storage = node.value();
-
-            auto const storage = decode_storage_db(encoded_storage);
+            auto raw_res = decode_storage_db_raw(encoded_storage);
+            MONAD_ASSERT(raw_res.has_value());
 
             auto const acct_key = fmt::format(
                 "{}", NibblesView{path}.substr(0, KECCAK256_SIZE * 2));
 
-            auto const key = fmt::format(
-                "{}",
-                NibblesView{path}.substr(
-                    KECCAK256_SIZE * 2, KECCAK256_SIZE * 2));
+            if (db.is_page_encoded()) {
+                // Page-encoded leaf: first element of the RLP list is the
+                // page_key (compact), second is the encoded page bytes.
+                // Fan out one JSON entry per populated slot, keyed by
+                // keccak256(slot_key) so the output matches a slot dump.
+                bytes32_t const page_key = to_bytes(raw_res.value().first);
+                auto const page = decode_storage_page(raw_res.value().second);
+                MONAD_ASSERT(page.has_value());
+                for (uint8_t off = 0; off < storage_page_t::SLOTS; ++off) {
+                    auto const &slot_value = page.value()[off];
+                    if (slot_value == bytes32_t{}) {
+                        continue;
+                    }
+                    bytes32_t const slot_key = compute_slot_key(page_key, off);
+                    auto const hashed_slot_key = to_bytes(
+                        keccak256({slot_key.bytes, sizeof(slot_key.bytes)}));
+                    auto const key = fmt::format("{}", hashed_slot_key);
+                    auto storage_data_json = nlohmann::json::object();
+                    storage_data_json["slot"] = fmt::format(
+                        "0x{:02x}",
+                        fmt::join(
+                            std::as_bytes(std::span(slot_key.bytes)), ""));
+                    storage_data_json["value"] = fmt::format(
+                        "0x{:02x}",
+                        fmt::join(
+                            std::as_bytes(std::span(slot_value.bytes)), ""));
+                    json[acct_key]["storage"][key] = storage_data_json;
+                }
+            }
+            else {
+                // Slot-encoded leaf: trie path under the account is
+                // keccak256(slot_key); the leaf carries (slot_key,
+                // slot_value).
+                bytes32_t const slot_key = to_bytes(raw_res.value().first);
+                bytes32_t const slot_value = to_bytes(raw_res.value().second);
+                auto const key = fmt::format(
+                    "{}",
+                    NibblesView{path}.substr(
+                        KECCAK256_SIZE * 2, KECCAK256_SIZE * 2));
 
-            auto storage_data_json = nlohmann::json::object();
-            storage_data_json["slot"] = fmt::format(
-                "0x{:02x}",
-                fmt::join(
-                    std::as_bytes(std::span(storage.value().first.bytes)), ""));
-            storage_data_json["value"] = fmt::format(
-                "0x{:02x}",
-                fmt::join(
-                    std::as_bytes(std::span(storage.value().second.bytes)),
-                    ""));
-            json[acct_key]["storage"][key] = storage_data_json;
+                auto storage_data_json = nlohmann::json::object();
+                storage_data_json["slot"] = fmt::format(
+                    "0x{:02x}",
+                    fmt::join(std::as_bytes(std::span(slot_key.bytes)), ""));
+                storage_data_json["value"] = fmt::format(
+                    "0x{:02x}",
+                    fmt::join(std::as_bytes(std::span(slot_value.bytes)), ""));
+                json[acct_key]["storage"][key] = storage_data_json;
+            }
         }
 
         virtual std::unique_ptr<TraverseMachine> clone() const override

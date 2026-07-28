@@ -98,6 +98,8 @@ struct Db::Impl
     virtual void
     move_trie_version_fiber_blocking(uint64_t src, uint64_t dest) = 0;
     virtual timeline_id tid() const = 0;
+
+    virtual mpt::state_machine_kind state_machine_type() const = 0;
 };
 
 AsyncIOContext::AsyncIOContext(ReadOnlyOnDiskDbConfig const &options)
@@ -128,6 +130,7 @@ AsyncIOContext::AsyncIOContext(OnDiskDbConfig const &options)
     : pool{[&] -> async::storage_pool {
         async::storage_pool::creation_flags pool_options;
         pool_options.num_cnv_chunks = options.root_offsets_chunk_count + 1;
+        pool_options.set_chunk_capacity(options.chunk_capacity);
         auto const len = options.file_size_db * 1024 * 1024 * 1024 + 24576;
         if (options.dbname_paths.empty()) {
             return async::storage_pool{
@@ -239,7 +242,7 @@ public:
         size_t const concurrency_limit) override
     {
         return preorder_traverse_ondisk(
-            aux(), std::move(node), machine, version, concurrency_limit);
+            aux(), std::move(node), machine, version, tid_, concurrency_limit);
     }
 
     virtual Node::SharedPtr
@@ -257,6 +260,11 @@ public:
     virtual timeline_id tid() const override
     {
         return tid_;
+    }
+
+    virtual mpt::state_machine_kind state_machine_type() const override
+    {
+        return aux_.metadata_ctx().get_state_machine_kind(tid_);
     }
 };
 
@@ -338,6 +346,12 @@ public:
     {
         return timeline_id::primary;
     }
+
+    virtual mpt::state_machine_kind state_machine_type() const override
+    {
+        MONAD_ASSERT(machine_);
+        return machine_->kind();
+    }
 };
 
 class OnDiskDbServiceThread
@@ -382,6 +396,7 @@ public:
         std::reference_wrapper<TraverseMachine> machine;
         uint64_t version;
         size_t concurrency_limit;
+        timeline_id tid{timeline_id::primary};
     };
 
     struct MoveSubtrieRequest
@@ -487,12 +502,13 @@ private:
                              req != nullptr) {
                         // verify version is valid
                         if (aux.metadata_ctx().version_is_valid_ondisk(
-                                req->version)) {
+                                req->version, req->tid)) {
                             req->promise.set_value(preorder_traverse_ondisk(
                                 aux,
                                 std::move(req->root),
                                 req->machine,
                                 req->version,
+                                req->tid,
                                 req->concurrency_limit));
                         }
                         else {
@@ -562,12 +578,13 @@ private:
                              req != nullptr) {
                         // verify version is valid
                         if (aux.metadata_ctx().version_is_valid_ondisk(
-                                req->version)) {
+                                req->version, req->tid)) {
                             req->promise.set_value(preorder_traverse_ondisk(
                                 aux,
                                 std::move(req->root),
                                 req->machine,
                                 req->version,
+                                req->tid,
                                 req->concurrency_limit));
                         }
                         else {
@@ -863,7 +880,8 @@ public:
             .root = std::move(node),
             .machine = machine,
             .version = version,
-            .concurrency_limit = concurrency_limit});
+            .concurrency_limit = concurrency_limit,
+            .tid = tid_});
         return fut.get();
     }
 
@@ -916,6 +934,12 @@ public:
     virtual timeline_id tid() const override
     {
         return tid_;
+    }
+
+    virtual mpt::state_machine_kind state_machine_type() const override
+    {
+        return worker_thread_->aux().metadata_ctx().get_state_machine_kind(
+            tid_);
     }
 };
 
@@ -999,6 +1023,13 @@ uint64_t RODb::get_earliest_version() const
     return impl_->aux().metadata_ctx().db_history_min_valid_version();
 }
 
+state_machine_kind RODb::state_machine_type() const
+{
+    MONAD_ASSERT(impl_);
+    return impl_->aux().metadata_ctx().get_state_machine_kind(
+        timeline_id::primary);
+}
+
 DbError find_result_to_db_error(find_result const result) noexcept
 {
     switch (result) {
@@ -1063,9 +1094,17 @@ Db::Db(std::unique_ptr<StateMachine> machine)
 }
 
 Db::Db(std::unique_ptr<StateMachine> machine, OnDiskDbConfig const &config)
-    : impl_{std::make_unique<RWOnDisk>(
-          std::make_shared<OnDiskDbServiceThread>(config), std::move(machine),
-          timeline_id::primary, config.compaction)}
+    : impl_{[&] {
+        auto const machine_kind = machine->kind();
+        auto impl = std::make_unique<RWOnDisk>(
+            std::make_shared<OnDiskDbServiceThread>(config),
+            std::move(machine),
+            timeline_id::primary,
+            config.compaction);
+        impl->aux().metadata_ctx().set_state_machine_kind(
+            timeline_id::primary, machine_kind);
+        return impl;
+    }()}
 {
     MONAD_ASSERT(impl_->aux().is_on_disk());
 }
@@ -1084,8 +1123,8 @@ Db::Db(OnDiskDbConfig const &config)
     MONAD_ASSERT(impl_->aux().is_on_disk());
 }
 
-Db::Db(AsyncIOContext &io_ctx)
-    : impl_{std::make_unique<ROOnDiskBlocking>(io_ctx, timeline_id::primary)}
+Db::Db(AsyncIOContext &io_ctx, timeline_id const tid)
+    : impl_{std::make_unique<ROOnDiskBlocking>(io_ctx, tid)}
 {
 }
 
@@ -1171,9 +1210,6 @@ bool Db::traverse(
 {
     MONAD_ASSERT(impl_);
     MONAD_ASSERT(cursor.is_valid());
-    // traverse validates versions against the primary timeline only;
-    // secondary-timeline traverse is not yet supported.
-    MONAD_ASSERT(impl_->tid() == timeline_id::primary);
     return impl_->traverse_fiber_blocking(
         cursor.node, machine, block_id, concurrency_limit);
 }
@@ -1183,9 +1219,8 @@ bool Db::traverse_blocking(
 {
     MONAD_ASSERT(impl_);
     MONAD_ASSERT(cursor.is_valid());
-    MONAD_ASSERT(impl_->tid() == timeline_id::primary);
     return preorder_traverse_blocking(
-        impl_->aux(), *cursor.node, machine, block_id);
+        impl_->aux(), *cursor.node, machine, block_id, impl_->tid());
 }
 
 void Db::update_finalized_version(uint64_t const version)
@@ -1323,6 +1358,12 @@ UpdateAux &Db::aux()
     return impl_->aux();
 }
 
+mpt::state_machine_kind Db::state_machine_type() const
+{
+    MONAD_ASSERT(impl_);
+    return impl_->state_machine_type();
+}
+
 Db Db::activate_secondary_timeline(
     std::unique_ptr<StateMachine> secondary_machine)
 {
@@ -1332,7 +1373,12 @@ Db Db::activate_secondary_timeline(
     auto *const rw = static_cast<RWOnDisk *>(impl_.get());
     MONAD_ASSERT(rw->tid() == timeline_id::primary);
     MONAD_ASSERT(rw->worker_thread_use_count() == 1);
+    MONAD_ASSERT(
+        !rw->aux().metadata_ctx().timeline_active(timeline_id::secondary),
+        "secondary timeline already active, cannot activate again");
     rw->aux().activate_secondary_timeline();
+    rw->aux().metadata_ctx().set_state_machine_kind(
+        timeline_id::secondary, secondary_machine->kind());
     return Db{rw->spawn_sibling(
         std::move(secondary_machine), timeline_id::secondary)};
 }
@@ -1349,6 +1395,8 @@ Db::open_secondary_timeline(std::unique_ptr<StateMachine> secondary_machine)
     if (!rw->aux().metadata_ctx().timeline_active(timeline_id::secondary)) {
         return std::nullopt;
     }
+    rw->aux().metadata_ctx().set_state_machine_kind(
+        timeline_id::secondary, secondary_machine->kind());
     return Db{rw->spawn_sibling(
         std::move(secondary_machine), timeline_id::secondary)};
 }
@@ -1365,7 +1413,7 @@ std::optional<Db> Db::open_secondary_timeline()
     }
     auto const kind =
         rw->aux().metadata_ctx().get_state_machine_kind(timeline_id::secondary);
-    auto machine = create_state_machine(kind);
+    auto machine = create_state_machine(kind); // will assert if undefined
     return Db{rw->spawn_sibling(std::move(machine), timeline_id::secondary)};
 }
 
