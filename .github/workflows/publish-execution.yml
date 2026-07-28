@@ -7,9 +7,9 @@ on:
       - feature/add-sys-calls
       - release/0.x
     tags:
-      # Firehose release tags, e.g. v0.15.2-fh (and respins like v0.15.2-fh-1).
-      # Downstream (sf-operator) pins the image by short commit SHA, which the
-      # `type=sha` tag below emits on every run, branch or tag alike.
+      # Firehose release tags: v0.15.2-fh3.0 (full protocol), older v*-fh,
+      # and respins like v0.15.2-fh3.0-1. Downstream (sf-operator) pins the
+      # image by short commit SHA, which type=sha emits on every run.
       - 'v*-fh*'
   workflow_dispatch:
 
