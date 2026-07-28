@@ -5,10 +5,24 @@ on:
     branches:
       - main
       - feature/add-sys-calls
+      - release/0.x
+    tags:
+      # Firehose release tags, e.g. v0.15.2-fh (and respins like v0.15.2-fh-1).
+      # Downstream (sf-operator) pins the image by short commit SHA, which the
+      # `type=sha` tag below emits on every run, branch or tag alike.
+      - 'v*-fh*'
+  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: streamingfast/monad-execution
+
+# Pushing a release branch and its -fh tag together fires two runs for the same
+# commit, which would race to push the identical type=sha image tag. Serialize
+# per commit instead of cancelling: the second run then reuses the build cache.
+concurrency:
+  group: publish-execution-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
   build-and-push:
@@ -39,6 +53,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=ref,event=branch
+            type=ref,event=tag
             type=sha,prefix=
           flavor: |
             latest=false
