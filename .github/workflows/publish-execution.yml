@@ -111,5 +111,5 @@ jobs:
           ulimit: "memlock=-1:-1"
           provenance: false
           sbom: false
-          cache-from: type=gha,scope=execution-${{ github.ref_name }}
-          cache-to: type=gha,scope=execution-${{ github.ref_name }},mode=max
+          cache-from: type=gha,scope=execution
+          cache-to: type=gha,scope=execution,mode=max
