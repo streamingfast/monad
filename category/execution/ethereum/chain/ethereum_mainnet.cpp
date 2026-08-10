@@ -34,9 +34,11 @@
 #include <cstdint>
 #include <optional>
 
+using BOOST_OUTCOME_V2_NAMESPACE::success;
+
 MONAD_NAMESPACE_BEGIN
 
-using BOOST_OUTCOME_V2_NAMESPACE::success;
+using namespace eth_forks;
 
 uint256_t EthereumMainnet::get_chain_id() const
 {
@@ -46,28 +48,42 @@ uint256_t EthereumMainnet::get_chain_id() const
 monad_eth_revision EthereumMainnet::get_revision(
     uint64_t const block_number, uint64_t const timestamp) const
 {
-    if (MONAD_LIKELY(timestamp >= 1746612311)) {
+    if (MONAD_LIKELY(timestamp >= OSAKA_ACTIVATION_TIMESTAMP)) {
+        return MONAD_ETH_OSAKA;
+    }
+    else if (timestamp >= PRAGUE_ACTIVATION_TIMESTAMP) {
         return MONAD_ETH_PRAGUE;
     }
-    else if (timestamp >= 1710338135) {
+    else if (timestamp >= CANCUN_ACTIVATION_TIMESTAMP) {
         return MONAD_ETH_CANCUN;
     }
-    else if (timestamp >= 1681338455) {
+    else if (timestamp >= SHANGHAI_ACTIVATION_TIMESTAMP) {
         return MONAD_ETH_SHANGHAI;
     }
-    else if (block_number >= 15537394) {
+    else if (block_number >= PARIS_ACTIVATION_BLOCK_NUMBER) {
         return MONAD_ETH_PARIS;
     }
-    else if (block_number >= 12965000) {
+    else if (block_number >= LONDON_ACTIVATION_BLOCK_NUMBER) {
         return MONAD_ETH_LONDON;
     }
-    else if (block_number >= 12244000) {
+    else if (block_number >= BERLIN_ACTIVATION_BLOCK_NUMBER) {
         return MONAD_ETH_BERLIN;
     }
-    else if (block_number >= 9069000) {
-        return MONAD_ETH_ISTANBUL;
-    }
     MONAD_ASSERT(false, "unsupported fork");
+}
+
+BlobSchedule EthereumMainnet::get_blob_schedule(uint64_t const timestamp) const
+{
+    if (timestamp >= BPO1_ACTIVATION_TIMESTAMP) {
+        if (MONAD_LIKELY(timestamp >= BPO2_ACTIVATION_TIMESTAMP)) {
+            return BPO2_BLOB_SCHEDULE;
+        }
+        return BPO1_BLOB_SCHEDULE;
+    }
+    if (timestamp >= PRAGUE_ACTIVATION_TIMESTAMP) {
+        return PRAGUE_BLOB_SCHEDULE;
+    }
+    return CANCUN_BLOB_SCHEDULE;
 }
 
 GenesisState EthereumMainnet::get_genesis_state() const

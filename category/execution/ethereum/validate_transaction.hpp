@@ -16,10 +16,10 @@
 #pragma once
 
 #include <category/core/address.hpp>
+#include <category/core/checked_math.hpp>
 #include <category/core/config.hpp>
 #include <category/core/int.hpp>
 #include <category/core/result.hpp>
-#include <category/execution/ethereum/core/contract/checked_math.hpp>
 #include <category/execution/ethereum/core/transaction.hpp>
 #include <category/execution/ethereum/state3/state.hpp>
 #include <category/execution/ethereum/trace/state_tracer.hpp>
@@ -46,7 +46,8 @@ MONAD_NAMESPACE_BEGIN
 template <Traits traits>
 Result<void> static_validate_transaction(
     Transaction const &, std::optional<uint256_t> const &base_fee_per_gas,
-    std::optional<uint64_t> const &excess_blob_gas, uint256_t const &chain_id);
+    std::optional<uint64_t> const &excess_blob_gas, uint256_t const &chain_id,
+    BlobSchedule const &blob_schedule);
 
 template <Traits traits>
 Result<void> validate_transaction(

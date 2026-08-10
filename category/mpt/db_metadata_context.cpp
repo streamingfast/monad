@@ -511,21 +511,21 @@ size_t DbMetadataContext::map_bytes_per_chunk_() const noexcept
 
 uint64_t DbMetadataContext::get_latest_finalized_version() const noexcept
 {
-    return start_lifetime_as<std::atomic_uint64_t const>(
+    return start_lifetime_as<std::atomic_uint64_t>(
                &copies_[0].main->latest_finalized_version)
         ->load(std::memory_order_acquire);
 }
 
 uint64_t DbMetadataContext::get_latest_verified_version() const noexcept
 {
-    return start_lifetime_as<std::atomic_uint64_t const>(
+    return start_lifetime_as<std::atomic_uint64_t>(
                &copies_[0].main->latest_verified_version)
         ->load(std::memory_order_acquire);
 }
 
 uint64_t DbMetadataContext::get_latest_voted_version() const noexcept
 {
-    return start_lifetime_as<std::atomic_uint64_t const>(
+    return start_lifetime_as<std::atomic_uint64_t>(
                &copies_[0].main->latest_voted_version)
         ->load(std::memory_order_acquire);
 }
@@ -537,7 +537,7 @@ bytes32_t DbMetadataContext::get_latest_voted_block_id() const noexcept
 
 uint64_t DbMetadataContext::get_latest_proposed_version() const noexcept
 {
-    return start_lifetime_as<std::atomic_uint64_t const>(
+    return start_lifetime_as<std::atomic_uint64_t>(
                &copies_[0].main->latest_proposed_version)
         ->load(std::memory_order_acquire);
 }
@@ -558,7 +558,7 @@ int64_t DbMetadataContext::get_auto_expire_version_metadata(
     auto const *const slot =
         (ring_idx == 0) ? &m->root_offsets_state.auto_expire_version_
                         : &m->secondary_timeline_state.auto_expire_version_;
-    return start_lifetime_as<std::atomic_int64_t const>(slot)->load(
+    return start_lifetime_as<std::atomic_int64_t>(slot)->load(
         std::memory_order_acquire);
 }
 
@@ -641,7 +641,7 @@ DbMetadataContext::get_state_machine_kind(timeline_id const tid) const noexcept
     auto const *const slot =
         (ring_idx == 0) ? &m->root_offsets_state.state_machine_kind_
                         : &m->secondary_timeline_state.state_machine_kind_;
-    auto const raw = start_lifetime_as<std::atomic_uint8_t const>(slot)->load(
+    auto const raw = start_lifetime_as<std::atomic_uint8_t>(slot)->load(
         std::memory_order_acquire);
     return static_cast<state_machine_kind>(raw);
 }
@@ -769,7 +769,7 @@ uint64_t DbMetadataContext::version_history_max_possible() const noexcept
 
 uint64_t DbMetadataContext::version_history_length() const noexcept
 {
-    return start_lifetime_as<std::atomic_uint64_t const>(
+    return start_lifetime_as<std::atomic_uint64_t>(
                &copies_[0].main->history_length)
         ->load(std::memory_order_relaxed);
 }
@@ -797,7 +797,7 @@ bool DbMetadataContext::timeline_active(timeline_id const tid) const noexcept
     if (tid == timeline_id::primary) {
         return true;
     }
-    return start_lifetime_as<std::atomic<uint8_t> const>(
+    return start_lifetime_as<std::atomic<uint8_t>>(
                &copies_[0].main->secondary_timeline_active_)
                ->load(std::memory_order_acquire) != 0;
 }
@@ -999,6 +999,11 @@ void DbMetadataContext::replay_pending_shrink_grow_()
         do_deactivate_secondary_body_(op_param);
     }
     else if (op_kind == detail::db_metadata::PENDING_OP_PROMOTE) {
+        MONAD_ASSERT_PRINTF(
+            op_param == 0 || op_param == 1,
+            "corrupt db_metadata: pending promote op_param=%u out of range "
+            "(must be 0 or 1)",
+            op_param);
         LOG_INFO(
             "Replaying in-flight promote_secondary_to_primary_header (target "
             "primary_ring_idx = {}) after unclean shutdown",
@@ -1200,10 +1205,10 @@ void DbMetadataContext::do_activate_secondary_body_(uint32_t const new_chunks)
         //    capacity excludes older versions (idempotent: std::max is a
         //    fixed point under repeated application).
         uint64_t const nv =
-            start_lifetime_as<std::atomic_uint64_t const>(pver_nv)->load(
+            start_lifetime_as<std::atomic_uint64_t>(pver_nv)->load(
                 std::memory_order_acquire);
         uint64_t const cur_lb =
-            start_lifetime_as<std::atomic_uint64_t const>(pver_lb)->load(
+            start_lifetime_as<std::atomic_uint64_t>(pver_lb)->load(
                 std::memory_order_acquire);
         uint64_t const new_lb =
             std::max(cur_lb, (nv >= new_cap) ? (nv - new_cap) : uint64_t{0});
@@ -1483,10 +1488,10 @@ void DbMetadataContext::do_deactivate_secondary_body_(
                 0xff,
                 tail_bytes);
             uint64_t const nv =
-                start_lifetime_as<std::atomic_uint64_t const>(pver_nv)->load(
+                start_lifetime_as<std::atomic_uint64_t>(pver_nv)->load(
                     std::memory_order_acquire);
             uint64_t const lb =
-                start_lifetime_as<std::atomic_uint64_t const>(pver_lb)->load(
+                start_lifetime_as<std::atomic_uint64_t>(pver_lb)->load(
                     std::memory_order_acquire);
             if (nv != lb) {
                 for (uint64_t v = lb; v < nv; v++) {
@@ -1568,6 +1573,10 @@ void DbMetadataContext::deactivate_secondary_header()
 void DbMetadataContext::do_promote_secondary_to_primary_body_(
     uint8_t const target_ring_idx)
 {
+    MONAD_ASSERT_PRINTF(
+        target_ring_idx == 0 || target_ring_idx == 1,
+        "promote target primary_ring_idx=%u must be 0 or 1",
+        static_cast<unsigned>(target_ring_idx));
     for (auto const &copy : copies_) {
         auto *const m = copy.main;
         auto const g = m->hold_dirty();
@@ -1673,16 +1682,15 @@ void DbMetadataContext::init_new_pool(
 
 #if MONAD_MPT_INITIALIZE_POOL_WITH_REVERSE_ORDER_CHUNKS
     std::reverse(chunks.begin(), chunks.end());
-    LOG_INFO_CFORMAT(
-        "Initialize db pool with %zu chunks in reverse order.", chunk_count);
+    LOG_INFO(
+        "Initialize db pool with {} chunks in reverse order.", chunk_count);
 #elif MONAD_MPT_INITIALIZE_POOL_WITH_RANDOM_SHUFFLED_CHUNKS
-    LOG_INFO_CFORMAT(
-        "Initialize db pool with %zu chunks in random order.", chunk_count);
+    LOG_INFO("Initialize db pool with {} chunks in random order.", chunk_count);
     small_prng rand;
     random_shuffle(chunks.begin(), chunks.end(), rand);
 #else
-    LOG_INFO_CFORMAT(
-        "Initialize db pool with %zu chunks in increasing order.", chunk_count);
+    LOG_INFO(
+        "Initialize db pool with {} chunks in increasing order.", chunk_count);
 #endif
     auto append_with_insertion_count_override = [&](chunk_list list,
                                                     uint32_t id) {
@@ -1705,11 +1713,11 @@ void DbMetadataContext::init_new_pool(
     // root offset is the front of fast list
     chunk_offset_t const fast_offset(chunks.front(), 0);
     append_with_insertion_count_override(chunk_list::fast, fast_offset.id);
-    LOG_DEBUG_CFORMAT("Append one chunk to fast list, id: %d", fast_offset.id);
+    LOG_DEBUG("Append one chunk to fast list, id: {}", fast_offset.id);
     // init the first slow chunk and slow_offset
     chunk_offset_t const slow_offset(chunks[1], 0);
     append_with_insertion_count_override(chunk_list::slow, slow_offset.id);
-    LOG_DEBUG_CFORMAT("Append one chunk to slow list, id: %d", slow_offset.id);
+    LOG_DEBUG("Append one chunk to slow list, id: {}", slow_offset.id);
     std::span const chunks_after_second(chunks.data() + 2, chunks.size() - 2);
     // insert the rest of the chunks to free list
     for (uint32_t const i : chunks_after_second) {
@@ -1790,9 +1798,9 @@ void DbMetadataContext::append(chunk_list const list, uint32_t const idx)
         auto const insertion_count =
             static_cast<uint32_t>(main(0)->at(idx)->insertion_count());
         if (insertion_count >= virtual_chunk_offset_t::MAX_COUNT * 9 / 10) {
-            LOG_WARNING_CFORMAT(
+            LOG_WARNING(
                 "Virtual offset space is running out "
-                "(insertion count: %u / %u). "
+                "(insertion count: {} / {}). "
                 "Please perform a database reset.",
                 insertion_count,
                 (uint32_t)virtual_chunk_offset_t::MAX_COUNT);

@@ -82,10 +82,15 @@ TYPED_TEST(TraitsTest, irrevocable_gas_and_refund_new_contract)
 
     Transaction const tx{
         .sc =
-            {.r =
-                 0x5fd883bb01a10915ebc06621b925bd6d624cb6768976b73c0d468b31f657d15b_u256,
-             .s =
-                 0x121d855c539a23aadf6f06ac21165db1ad5efd261842e82a719c9863ca4ac04c_u256},
+            {
+                .signature =
+                    {
+                        .r =
+                            0x5fd883bb01a10915ebc06621b925bd6d624cb6768976b73c0d468b31f657d15b_u256,
+                        .s =
+                            0x121d855c539a23aadf6f06ac21165db1ad5efd261842e82a719c9863ca4ac04c_u256,
+                    },
+            },
         .nonce = 25,
         .max_fee_per_gas = max_fee_per_gas,
         .gas_limit = gas_limit,
@@ -189,10 +194,15 @@ TYPED_TEST(TraitsTest, TopLevelCreate)
 
     Transaction const tx{
         .sc =
-            {.r =
-                 0x5fd883bb01a10915ebc06621b925bd6d624cb6768976b73c0d468b31f657d15b_u256,
-             .s =
-                 0x121d855c539a23aadf6f06ac21165db1ad5efd261842e82a719c9863ca4ac04c_u256},
+            {
+                .signature =
+                    {
+                        .r =
+                            0x5fd883bb01a10915ebc06621b925bd6d624cb6768976b73c0d468b31f657d15b_u256,
+                        .s =
+                            0x121d855c539a23aadf6f06ac21165db1ad5efd261842e82a719c9863ca4ac04c_u256,
+                    },
+            },
         .nonce = 25,
         .max_fee_per_gas = 100'000'000'000,
         .gas_limit = 68'491'176,
@@ -248,7 +258,7 @@ TYPED_TEST(TraitsTest, TopLevelCreate)
 
 TYPED_TEST(TraitsTest, refunds_delete)
 {
-    static_assert(TestFixture::Trait::evm_rev() >= MONAD_ETH_ISTANBUL);
+    static_assert(TestFixture::Trait::evm_rev() >= MONAD_ETH_BERLIN);
 
     static constexpr auto from{
         0xf8636377b7a998b51a3cf2bd711b870b3ab0ad56_address};
@@ -270,15 +280,8 @@ TYPED_TEST(TraitsTest, refunds_delete)
             }
         }
 
-        if constexpr (TestFixture::Trait::evm_rev() == MONAD_ETH_ISTANBUL) {
-            // Gas decreased due to calldata cost reduction in EIP-2028
-            // where gas per non-zero byte was reduced from 68 to 16
-            return 41'040;
-        }
-        else {
-            // Gas increased due to storage repricing in Berlin
-            return 43'140;
-        }
+        // Gas increased due to storage repricing in Berlin
+        return 43'140;
     }();
 
     static constexpr auto gas_charged_tx2 = [] {
@@ -343,10 +346,15 @@ TYPED_TEST(TraitsTest, refunds_delete)
     {
         Transaction const set_tx{
             .sc =
-                {.r =
-                     0x5fd883bb01a10915ebc06621b925bd6d624cb6768976b73c0d468b31f657d15b_u256,
-                 .s =
-                     0x121d855c539a23aadf6f06ac21165db1ad5efd261842e82a719c9863ca4ac04c_u256},
+                {
+                    .signature =
+                        {
+                            .r =
+                                0x5fd883bb01a10915ebc06621b925bd6d624cb6768976b73c0d468b31f657d15b_u256,
+                            .s =
+                                0x121d855c539a23aadf6f06ac21165db1ad5efd261842e82a719c9863ca4ac04c_u256,
+                        },
+                },
             .nonce = 25,
             .max_fee_per_gas = max_fee_per_gas,
             .gas_limit = gas_limit_tx1,
@@ -402,10 +410,15 @@ TYPED_TEST(TraitsTest, refunds_delete)
     {
         Transaction const zero_tx{
             .sc =
-                {.r =
-                     0x5fd883bb01a10915ebc06621b925bd6d624cb6768976b73c0d468b31f657d15b_u256,
-                 .s =
-                     0x121d855c539a23aadf6f06ac21165db1ad5efd261842e82a719c9863ca4ac04c_u256},
+                {
+                    .signature =
+                        {
+                            .r =
+                                0x5fd883bb01a10915ebc06621b925bd6d624cb6768976b73c0d468b31f657d15b_u256,
+                            .s =
+                                0x121d855c539a23aadf6f06ac21165db1ad5efd261842e82a719c9863ca4ac04c_u256,
+                        },
+                },
             .nonce = 26,
             .max_fee_per_gas = max_fee_per_gas,
             .gas_limit = gas_limit_tx2,
@@ -461,7 +474,7 @@ TYPED_TEST(TraitsTest, refunds_delete)
 
 TYPED_TEST(TraitsTest, refunds_delete_then_set)
 {
-    static_assert(TestFixture::Trait::evm_rev() >= MONAD_ETH_ISTANBUL);
+    static_assert(TestFixture::Trait::evm_rev() >= MONAD_ETH_BERLIN);
 
     static constexpr auto from{
         0xf8636377b7a998b51a3cf2bd711b870b3ab0ad56_address};
@@ -506,10 +519,15 @@ TYPED_TEST(TraitsTest, refunds_delete_then_set)
 
         Transaction const set_tx{
             .sc =
-                {.r =
-                     0x5fd883bb01a10915ebc06621b925bd6d624cb6768976b73c0d468b31f657d15b_u256,
-                 .s =
-                     0x121d855c539a23aadf6f06ac21165db1ad5efd261842e82a719c9863ca4ac04c_u256},
+                {
+                    .signature =
+                        {
+                            .r =
+                                0x5fd883bb01a10915ebc06621b925bd6d624cb6768976b73c0d468b31f657d15b_u256,
+                            .s =
+                                0x121d855c539a23aadf6f06ac21165db1ad5efd261842e82a719c9863ca4ac04c_u256,
+                        },
+                },
             .nonce = 25,
             .max_fee_per_gas = max_fee_per_gas,
             .gas_limit = gas_limit_tx,
@@ -563,19 +581,10 @@ TYPED_TEST(TraitsTest, refunds_delete_then_set)
                     }
                 }
 
-                if constexpr (
-                    TestFixture::Trait::evm_rev() == MONAD_ETH_ISTANBUL) {
-                    return 26'812;
-                }
-
                 return 26'112;
             }();
 
             static constexpr auto storage_refund_evm_uncapped = [] {
-                if constexpr (
-                    TestFixture::Trait::evm_rev() == MONAD_ETH_ISTANBUL) {
-                    return 4200;
-                }
                 return 2800;
             }();
             static constexpr auto storage_refund = [=] {

@@ -51,8 +51,6 @@ add_library(
   "ethereum/core/contract/abi_encode.hpp"
   "ethereum/core/contract/abi_signatures.hpp"
   "ethereum/core/contract/big_endian.hpp"
-  "ethereum/core/contract/checked_math.cpp"
-  "ethereum/core/contract/checked_math.hpp"
   "ethereum/core/contract/events.hpp"
   "ethereum/core/contract/storage_array.hpp"
   "ethereum/core/contract/storage_variable.hpp"
@@ -301,6 +299,19 @@ add_library(
   # monad/state2
   "monad/state2/proposal_state.hpp")
 
+add_library(
+  monad_execution_runloop OBJECT
+  runloop/file_io.hpp
+  runloop/file_io.cpp
+  runloop/runloop_ethereum.cpp
+  runloop/runloop_ethereum.hpp
+  runloop/runloop_interface_monad.cpp
+  runloop/runloop_interface_monad.h
+  runloop/runloop_monad.cpp
+  runloop/runloop_monad.hpp
+  runloop/runloop_monad_ethblocks.cpp
+  runloop/runloop_monad_ethblocks.hpp)
+
 target_include_directories(
   monad_execution_ethereum
   PUBLIC ${CATEGORY_MAIN_DIR}
@@ -322,6 +333,10 @@ target_compile_definitions(
 target_compile_definitions(
   monad_execution_native PUBLIC MONAD_CXX_CTYPES_USE_EVMC_HPP
                                 MONAD_CXX_CTYPES_USE_MONAD_INTS)
+
+target_compile_definitions(
+  monad_execution_runloop PUBLIC MONAD_CXX_CTYPES_USE_EVMC_HPP
+                                 MONAD_CXX_CTYPES_USE_INTX)
 
 target_link_libraries(
   monad_execution_ethereum
@@ -358,20 +373,26 @@ target_link_libraries(
   PUBLIC quill::quill)
 monad_compile_options(monad_execution_native)
 
+target_link_libraries(
+    monad_execution_runloop
+    PUBLIC monad_execution_native)
+monad_compile_options(monad_execution_runloop)
+
 # ##############################################################################
 # unit tests
 # ##############################################################################
+if(NOT CMAKE_CROSSCOMPILING)
+  monad_add_test_folder("ethereum")
+  monad_add_test_folder("monad")
 
-monad_add_test_folder("ethereum")
-monad_add_test_folder("monad")
-
-add_executable(
-    monad_staking_contract_fuzzer
-    "monad/staking/fuzzer/staking_contract_fuzzer.cpp")
-target_include_directories(
-    monad_staking_contract_fuzzer
-    PRIVATE "${CMAKE_BINARY_DIR}/test")
-target_link_libraries(
-    monad_staking_contract_fuzzer
-    PRIVATE monad_execution)
-monad_compile_options(monad_staking_contract_fuzzer)
+  add_executable(
+      monad_staking_contract_fuzzer
+      "monad/staking/fuzzer/staking_contract_fuzzer.cpp")
+  target_include_directories(
+      monad_staking_contract_fuzzer
+      PRIVATE "${CMAKE_BINARY_DIR}/test")
+  target_link_libraries(
+      monad_staking_contract_fuzzer
+      PRIVATE monad_execution)
+  monad_compile_options(monad_staking_contract_fuzzer)
+endif()

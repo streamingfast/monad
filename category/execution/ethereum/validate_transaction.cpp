@@ -20,9 +20,9 @@
 #include <category/core/int.hpp>
 #include <category/core/likely.h>
 #include <category/core/result.hpp>
-#include <category/execution/ethereum/core/contract/checked_math.hpp>
 #include <category/execution/ethereum/core/transaction.hpp>
 #include <category/execution/ethereum/state3/state.hpp>
+#include <category/execution/ethereum/transaction_gas.hpp>
 #include <category/execution/ethereum/validate_transaction.hpp>
 #include <category/vm/evm/delegation.hpp>
 #include <category/vm/evm/explicit_traits.hpp>
@@ -46,9 +46,10 @@ using BOOST_OUTCOME_V2_NAMESPACE::success;
 template <Traits traits>
 Result<void> static_validate_transaction(
     Transaction const &tx, std::optional<uint256_t> const &base_fee_per_gas,
-    std::optional<uint64_t> const &excess_blob_gas, uint256_t const &chain_id)
+    std::optional<uint64_t> const &excess_blob_gas, uint256_t const &chain_id,
+    BlobSchedule const &blob_schedule)
 {
-    static_assert(traits::evm_rev() >= MONAD_ETH_SPURIOUS_DRAGON);
+    static_assert(traits::evm_rev() >= MONAD_ETH_BERLIN);
 
     // EIP-155
     if (MONAD_LIKELY(tx.sc.chain_id.has_value())) {
@@ -65,14 +66,8 @@ Result<void> static_validate_transaction(
     }
 
     // TODO: remove the below logic once we fully migrate over to traits
-    // EIP-2930 & EIP-2718
-    if constexpr (traits::evm_rev() < MONAD_ETH_BERLIN) {
-        if (MONAD_UNLIKELY(tx.type != TransactionType::legacy)) {
-            return TransactionError::TypeNotSupported;
-        }
-    }
     // EIP-1559
-    else if constexpr (traits::evm_rev() < MONAD_ETH_LONDON) {
+    if constexpr (traits::evm_rev() < MONAD_ETH_LONDON) {
         if (MONAD_UNLIKELY(
                 tx.type != TransactionType::legacy &&
                 tx.type != TransactionType::eip2930)) {
@@ -159,13 +154,12 @@ Result<void> static_validate_transaction(
     }
 
     // EIP-1559: check gas_limit * max_fee_per_gas doesn't overflow uint256
-    if (MONAD_UNLIKELY(
-            !checked_mul(uint256_t{tx.gas_limit}, tx.max_fee_per_gas))) {
+    if (MONAD_UNLIKELY(!max_gas_cost(tx.gas_limit, tx.max_fee_per_gas))) {
         return TransactionError::GasLimitOverflow;
     }
 
     // EIP-2
-    if (MONAD_UNLIKELY(!tx.sc.is_valid())) {
+    if (MONAD_UNLIKELY(!tx.sc.signature.is_valid())) {
         return TransactionError::InvalidSignature;
     }
 
@@ -184,8 +178,8 @@ Result<void> static_validate_transaction(
 
             if (MONAD_UNLIKELY(
                     tx.max_fee_per_blob_gas <
-                    get_base_fee_per_blob_gas<traits>(
-                        excess_blob_gas.value_or(0)))) {
+                    get_base_fee_per_blob_gas(
+                        excess_blob_gas.value_or(0), blob_schedule))) {
                 return TransactionError::GasLimitOverflow;
             }
         }

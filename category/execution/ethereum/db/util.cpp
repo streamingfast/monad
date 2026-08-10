@@ -55,6 +55,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <quill/std/Chrono.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
@@ -347,12 +349,8 @@ namespace
         static byte_string process(Node const &node)
         {
             MONAD_ASSERT(node.has_value());
-            auto encoded_storage = node.value();
-            auto const storage = decode_storage_db_ignore_key(encoded_storage);
-            MONAD_ASSERT(!storage.has_error());
-            auto const page = decode_storage_page(storage.value());
-            MONAD_ASSERT(page.has_value());
-            auto const commitment = page_commit(page.value());
+            auto const page = decode_storage_leaf_to_page(node.value(), true);
+            auto const commitment = page_commit(page);
             return rlp::encode_string2(
                 {commitment.bytes, sizeof(commitment.bytes)});
         }
@@ -760,6 +758,29 @@ Result<byte_string_view> decode_storage_db_ignore_key(byte_string_view &enc)
         return rlp::DecodeError::InputTooLong;
     }
     return res.second;
+}
+
+storage_page_t
+decode_storage_leaf_to_page(byte_string_view encoded, bool const page_encoded)
+{
+    auto const value = decode_storage_db_ignore_key(encoded);
+    MONAD_ASSERT(!value.has_error());
+    if (!page_encoded) {
+        return storage_page_t{to_bytes(value.value())};
+    }
+    auto const page = decode_storage_page(value.value());
+    MONAD_ASSERT(!page.has_error());
+    return page.value();
+}
+
+Result<DecodedStoragePage> decode_storage_page_leaf(byte_string_view leaf)
+{
+    BOOST_OUTCOME_TRY(auto const raw, decode_storage_db_raw(leaf));
+    if (!leaf.empty()) {
+        return rlp::DecodeError::InputTooLong;
+    }
+    BOOST_OUTCOME_TRY(auto page, decode_storage_page(raw.second));
+    return DecodedStoragePage{to_bytes(raw.first), std::move(page)};
 }
 
 byte_string AccountLeafProcessor::process(mpt::Node const &node)

@@ -211,14 +211,15 @@ namespace
         // any account). Solving this issue by setting chain_id and signature to
         // complied values
         enriched_txn.sc.chain_id = chain.get_chain_id();
-        enriched_txn.sc.r = 1;
-        enriched_txn.sc.s = 1;
+        enriched_txn.sc.signature.r = 1;
+        enriched_txn.sc.signature.s = 1;
 
         BOOST_OUTCOME_TRY(static_validate_transaction<traits>(
             enriched_txn,
             header.base_fee_per_gas,
             header.excess_blob_gas,
-            chain.get_chain_id()));
+            chain.get_chain_id(),
+            chain.get_blob_schedule(header.timestamp)));
 
         tdb.set_block_and_prefix(block_number, block_id);
         BlockState block_state{tdb, vm};
@@ -275,7 +276,11 @@ namespace
         }();
 
         auto const tx_context = get_tx_context<traits>(
-            enriched_txn, sender, header, chain.get_chain_id());
+            enriched_txn,
+            sender,
+            header,
+            chain.get_chain_id(),
+            chain.get_blob_schedule(header.timestamp));
 
         EvmcHost<traits> host{
             call_tracer,
@@ -961,8 +966,8 @@ namespace
                     Transaction &tx = calls[block_idx][tx_idx];
 
                     tx.sc.chain_id = chain.get_chain_id();
-                    tx.sc.r = 1;
-                    tx.sc.s = 1;
+                    tx.sc.signature.r = 1;
+                    tx.sc.signature.s = 1;
 
                     // Update tx.nonce to match the expected nonce in the
                     // current block state.

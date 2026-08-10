@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Category Labs, Inc.
+// Copyright (C) 2025-26 Category Labs, Inc.
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -15,36 +15,41 @@
 
 #pragma once
 
+#include <category/core/bytes.hpp>
 #include <category/core/config.hpp>
-#include <category/core/result.hpp>
-#include <category/vm/vm.hpp>
+#include <category/vm/code.hpp>
+#include <category/vm/evm/traits.hpp>
 
-#include <cstdint>
-#include <filesystem>
-#include <utility>
-
-#include <signal.h>
+#include <variant>
 
 MONAD_NAMESPACE_BEGIN
 
-struct MonadChain;
-struct Db;
-class BlockHashBufferFinalized;
+class State;
 
-namespace mpt
+namespace trace
 {
-    class Db;
-}
+    using StateTracer = std::monostate;
 
-namespace fiber
-{
-    class PriorityPool;
-}
+    [[gnu::always_inline]] inline bool is_code_tracer(StateTracer const &)
+    {
+        return false;
+    }
 
-Result<std::pair<uint64_t, uint64_t>> runloop_monad(
-    MonadChain const &, std::filesystem::path const &, mpt::Db &, Db &,
-    vm::VM &, BlockHashBufferFinalized &, fiber::PriorityPool &, uint64_t &,
-    uint64_t, sig_atomic_t const volatile &, bool enable_tracing,
-    Db *secondary_db);
+    [[gnu::always_inline]] inline void
+    on_read_code(StateTracer &, bytes32_t const &, vm::SharedIntercode const &)
+    {
+    }
+
+    [[gnu::always_inline]] inline void on_frame_reject(StateTracer &, State &)
+    {
+    }
+
+    [[gnu::always_inline]] inline void reset(StateTracer &) {}
+
+    template <Traits>
+    [[gnu::always_inline]] inline void run_tracer(StateTracer &, State &)
+    {
+    }
+}
 
 MONAD_NAMESPACE_END

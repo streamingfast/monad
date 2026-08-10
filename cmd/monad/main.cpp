@@ -14,9 +14,6 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "event.hpp"
-#include "runloop_ethereum.hpp"
-#include "runloop_monad.hpp"
-#include "runloop_monad_ethblocks.hpp"
 
 #include <category/core/assert.h>
 #include <category/core/basic_formatter.hpp>
@@ -46,6 +43,9 @@
 #include <category/execution/monad/chain/chain_factory.hpp>
 #include <category/execution/monad/chain/monad_chain.hpp>
 #include <category/execution/monad/db/state_machine_init.hpp>
+#include <category/execution/runloop/runloop_ethereum.hpp>
+#include <category/execution/runloop/runloop_monad.hpp>
+#include <category/execution/runloop/runloop_monad_ethblocks.hpp>
 #include <category/mpt/ondisk_db_config.hpp>
 #include <category/statesync/statesync_server_network.hpp>
 #include <category/statesync/statesync_thread.hpp>
@@ -57,6 +57,8 @@
 #include <boost/outcome/try.hpp>
 
 #include <nlohmann/json.hpp>
+
+#include <quill/std/FilesystemPath.h>
 
 #include <algorithm>
 #include <chrono>
@@ -468,24 +470,25 @@ try {
                     block_db_timeout);
             }
             else {
-#if 0
-                // TODO: Enable this check when we announce the migration; 
-                // remove once dual-db is deprecated.
-                // Live monad must be dual db mode: slot-encoded primary + 
-                // page-encoded secondary.
-                if (chain_config == CHAIN_CONFIG_MONAD_TESTNET ||
-                    chain_config == CHAIN_CONFIG_MONAD_MAINNET) {
+                // TODO: Remove this check once dual-db is deprecated.
+                // Live monad requires a page-encoded timeline, either as
+                // primary (Phase C) or secondary (Phase A/B dual-db).
+                // TODO: Enable assertion for mainnet when dual-db is enabled
+                if (chain_config == CHAIN_CONFIG_MONAD_TESTNET) {
+                    bool const primary_is_page = db.is_page_encoded();
+                    bool const secondary_active = raw_db.timeline_active(
+                        monad::mpt::timeline_id::secondary);
                     MONAD_ASSERT_PRINTF(
-                        raw_db.timeline_active(
-                            monad::mpt::timeline_id::secondary),
-                        "live monad requires a page-encoded secondary during "
-                        "the migration release, but secondary timeline is not "
-                        "active on %s",
+                        primary_is_page || secondary_active,
+                        "live monad requires a page-encoded timeline "
+                        "(as primary or secondary) on %s; "
+                        "primary_is_page=%d secondary_active=%d",
                         chain_config == CHAIN_CONFIG_MONAD_TESTNET
                             ? "monad_testnet"
-                            : "monad_mainnet"); // TODO: remove at release2
+                            : "monad_mainnet", // TODO: remove at release2
+                        primary_is_page,
+                        secondary_active);
                 }
-#endif
                 std::optional<mpt::Db> secondary_db;
                 std::optional<TrieDb> secondary_triedb;
                 if (raw_db.timeline_active(

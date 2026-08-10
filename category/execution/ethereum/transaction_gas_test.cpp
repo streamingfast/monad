@@ -37,7 +37,7 @@ namespace
 
 TYPED_TEST(TraitsTest, intrinsic_gas)
 {
-    static_assert(TestFixture::Trait::evm_rev() >= MONAD_ETH_ISTANBUL);
+    static_assert(TestFixture::Trait::evm_rev() >= MONAD_ETH_BERLIN);
 
     auto non_zero_since =
         []<monad_eth_revision r>(rev<r>, uint64_t val) consteval {
@@ -116,10 +116,8 @@ TYPED_TEST(TraitsTest, intrinsic_gas)
     }
 
     // EIP-2930
-    static constexpr auto cost_per_access_list_address =
-        non_zero_since(rev<MONAD_ETH_BERLIN>{}, 2'400);
-    static constexpr auto cost_per_access_list_key =
-        non_zero_since(rev<MONAD_ETH_BERLIN>{}, 1'900);
+    static constexpr auto cost_per_access_list_address = 2'400;
+    static constexpr auto cost_per_access_list_key = 1'900;
 
     {
         Transaction t{};
@@ -188,16 +186,15 @@ TYPED_TEST(TraitsTest, txn_award)
 
 TYPED_TEST(TraitsTest, blob_schedule)
 {
+    constexpr auto blob_schedule =
+        default_blob_schedule<typename TestFixture::Trait>();
+
     if constexpr (TestFixture::Trait::eip_7691_active()) {
-        EXPECT_EQ(max_blobs_per_block<typename TestFixture::Trait>(), 9);
-        EXPECT_EQ(
-            blob_base_fee_update_fraction<typename TestFixture::Trait>(),
-            5'007'716);
+        EXPECT_EQ(blob_schedule.max_blobs_per_block, 9);
+        EXPECT_EQ(blob_schedule.blob_base_fee_update_fraction, 5'007'716);
     }
     else {
-        EXPECT_EQ(max_blobs_per_block<typename TestFixture::Trait>(), 6);
-        EXPECT_EQ(
-            blob_base_fee_update_fraction<typename TestFixture::Trait>(),
-            3'338'477);
+        EXPECT_EQ(blob_schedule.max_blobs_per_block, 6);
+        EXPECT_EQ(blob_schedule.blob_base_fee_update_fraction, 3'338'477);
     }
 }

@@ -65,14 +65,18 @@ TYPED_TEST(TraitsTest, validate_enough_gas)
     static_assert(TestFixture::Trait::evm_rev() >= MONAD_ETH_HOMESTEAD);
 
     static Transaction const t{
-        .sc = {.r = r, .s = s},
+        .sc = {.signature = {.r = r, .s = s}},
         .max_fee_per_gas = 29'443'849'433,
         .gas_limit = 27'500, // no .to, under the creation amount
         .value = 1};
 
     auto const result =
         static_validate_transaction<typename TestFixture::Trait>(
-            t, 0, std::nullopt, 1);
+            t,
+            0,
+            std::nullopt,
+            1,
+            default_blob_schedule<typename TestFixture::Trait>());
 
     ASSERT_TRUE(result.has_error());
     EXPECT_EQ(result.error(), TransactionError::IntrinsicGasGreaterThanLimit);
@@ -84,14 +88,18 @@ TYPED_TEST(TraitsTest, validate_floor_gas)
 
     static constexpr auto gas_limit = 300'000;
     Transaction const t{
-        .sc = {.r = r, .s = s},
+        .sc = {.signature = {.r = r, .s = s}},
         .gas_limit = gas_limit,
         .data = evmc::bytes(10000, 0x01),
     };
 
     auto const result =
         static_validate_transaction<typename TestFixture::Trait>(
-            t, 0, std::nullopt, 1);
+            t,
+            0,
+            std::nullopt,
+            1,
+            default_blob_schedule<typename TestFixture::Trait>());
 
     if constexpr (TestFixture::Trait::evm_rev() >= MONAD_ETH_PRAGUE) {
         // Floor gas only introduced since Prague
@@ -200,7 +208,7 @@ TYPED_TEST(InMemoryStateTraitsTest, successful_validation)
     this->state.add_to_balance(sender, 56'939'568'773'815'811);
     this->state.set_nonce(sender, 25);
     Transaction const tx{
-        .sc = {.r = r, .s = s},
+        .sc = {.signature = {.r = r, .s = s}},
         .nonce = 25,
         .max_fee_per_gas = 29'443'849'433,
         .gas_limit = 27'500,
@@ -209,7 +217,11 @@ TYPED_TEST(InMemoryStateTraitsTest, successful_validation)
 
     auto const result1 =
         static_validate_transaction<typename TestFixture::Trait>(
-            tx, 0, std::nullopt, 1);
+            tx,
+            0,
+            std::nullopt,
+            1,
+            default_blob_schedule<typename TestFixture::Trait>());
     EXPECT_TRUE(result1.has_value());
 
     trace::StateTracer noop_state_tracer = std::monostate{};
@@ -224,7 +236,7 @@ TYPED_TEST(TraitsTest, invalid_signature)
     // A transaction that passes every earlier static check but carries a bad
     // r/s must be rejected with InvalidSignature (EIP-2).
     static Transaction const t{
-        .sc = {.r = 0, .s = s},
+        .sc = {.signature = {.r = 0, .s = s}},
         .nonce = 25,
         .max_fee_per_gas = 29'443'849'433,
         .gas_limit = 27'500,
@@ -233,7 +245,11 @@ TYPED_TEST(TraitsTest, invalid_signature)
 
     auto const result =
         static_validate_transaction<typename TestFixture::Trait>(
-            t, 0, std::nullopt, 1);
+            t,
+            0,
+            std::nullopt,
+            1,
+            default_blob_schedule<typename TestFixture::Trait>());
     ASSERT_TRUE(result.has_error());
     EXPECT_EQ(result.error(), TransactionError::InvalidSignature);
 }
@@ -250,7 +266,11 @@ TYPED_TEST(TraitsTest, max_fee_less_than_base)
 
     auto const result =
         static_validate_transaction<typename TestFixture::Trait>(
-            t, 37'000'000'000, std::nullopt, 1);
+            t,
+            37'000'000'000,
+            std::nullopt,
+            1,
+            default_blob_schedule<typename TestFixture::Trait>());
     ASSERT_TRUE(result.has_error());
     EXPECT_EQ(result.error(), TransactionError::MaxFeeLessThanBase);
 }
@@ -267,7 +287,11 @@ TYPED_TEST(TraitsTest, priority_fee_greater_than_max)
 
     auto const result =
         static_validate_transaction<typename TestFixture::Trait>(
-            t, 29'000'000'000, std::nullopt, 1);
+            t,
+            29'000'000'000,
+            std::nullopt,
+            1,
+            default_blob_schedule<typename TestFixture::Trait>());
     ASSERT_TRUE(result.has_error());
     EXPECT_EQ(result.error(), TransactionError::PriorityFeeGreaterThanMax);
 }
@@ -301,7 +325,7 @@ TYPED_TEST(TraitsTest, init_code_exceed_limit)
     // exceed EIP-3860 limit
 
     static Transaction const t{
-        .sc = {.r = r, .s = s},
+        .sc = {.signature = {.r = r, .s = s}},
         .max_fee_per_gas = 0,
         .gas_limit = 20'000'000,
         .value = 0,
@@ -309,7 +333,11 @@ TYPED_TEST(TraitsTest, init_code_exceed_limit)
 
     auto const result =
         static_validate_transaction<typename TestFixture::Trait>(
-            t, 0, std::nullopt, 1);
+            t,
+            0,
+            std::nullopt,
+            1,
+            default_blob_schedule<typename TestFixture::Trait>());
     // init codesize validation since EIP-3860
     if constexpr (TestFixture::Trait::evm_rev() >= MONAD_ETH_SHANGHAI) {
         ASSERT_TRUE(result.has_error());

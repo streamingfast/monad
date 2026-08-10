@@ -35,8 +35,6 @@ function(monad_compile_options target)
   target_compile_options(${target} PRIVATE
     $<$<AND:$<CXX_COMPILER_ID:GNU>,$<NOT:$<CONFIG:Release>>>:-gsplit-dwarf>)
 
-  target_compile_definitions(${target} PUBLIC QUILL_ROOT_LOGGER_ONLY)
-
   if(MONAD_COMPILER_TESTING)
     target_compile_definitions(${target} PUBLIC "MONAD_COMPILER_TESTING=1")
     target_compile_definitions(${target} PUBLIC "MONAD_CORE_FORCE_DEBUG_ASSERT=1")

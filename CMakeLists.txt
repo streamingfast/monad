@@ -166,16 +166,8 @@ add_subdirectory("third_party/nlohmann_json" SYSTEM)
 
 # quill
 add_subdirectory("third_party/quill")
-# TODO
-target_compile_options(
-  quill
-  PUBLIC
-    $<$<AND:$<CXX_COMPILER_ID:GNU>,$<CONFIG:Release>>:-Wno-stringop-overflow>)
-target_compile_options(
-  quill PUBLIC $<$<CXX_COMPILER_ID:GNU>:-Wno-tautological-compare>)
-# quill's own sources use the deprecated std::wstring_convert. PRIVATE so it
-# does not disable warnings in our code that includes quill headers.
-target_compile_options(quill PRIVATE -Wno-deprecated-declarations)
+# hide warnings from quill
+include_directories(SYSTEM ${CMAKE_CURRENT_SOURCE_DIR}/third_party/quill/include)
 
 # silkpre
 set(OPTIONAL_BUILD_TESTS OFF)
@@ -193,7 +185,7 @@ target_compile_options(
   ff
   PRIVATE -Wno-unused-parameter -Wno-unused-const-variable -Wno-uninitialized)
 
-# silkpre_vendor (vendored sha256 + rmd160)
+# silkpre_vendor (vendored sha256, rmd160, blake2f)
 add_subdirectory("third_party/silkpre_vendor")
 
 # tbb
@@ -315,6 +307,7 @@ target_link_libraries(
          monad_trie
          monad_execution_ethereum
          monad_execution_native
+         monad_execution_runloop
          monad_rpc
          monad_statesync
          monad-vm
