@@ -454,7 +454,21 @@ try {
                 chain_rlp_path);
         case CHAIN_CONFIG_MONAD_DEVNET:
         case CHAIN_CONFIG_MONAD_TESTNET:
-        case CHAIN_CONFIG_MONAD_MAINNET:
+        case CHAIN_CONFIG_MONAD_MAINNET: {
+            std::optional<mpt::Db> secondary_db;
+            std::optional<TrieDb> secondary_triedb;
+            if (raw_db.timeline_active(monad::mpt::timeline_id::secondary)) {
+                secondary_db = raw_db.open_secondary_timeline();
+                MONAD_ASSERT(secondary_db.has_value());
+                secondary_triedb.emplace(*secondary_db);
+                MONAD_ASSERT(
+                    secondary_triedb->is_page_encoded(),
+                    "secondary timeline must be page-encoded");
+                MONAD_ASSERT(
+                    !db.is_page_encoded(),
+                    "primary must be slot-encoded when the secondary "
+                    "timeline is active");
+            }
             if (as_eth_blocks) {
                 return runloop_monad_ethblocks(
                     dynamic_cast<MonadChain const &>(*chain),
@@ -467,17 +481,18 @@ try {
                     end_block_num,
                     stop,
                     trace_calls,
-                    block_db_timeout);
+                    block_db_timeout,
+                    secondary_triedb.has_value() ? &*secondary_triedb
+                                                 : nullptr);
             }
             else {
                 // TODO: Remove this check once dual-db is deprecated.
                 // Live monad requires a page-encoded timeline, either as
                 // primary (Phase C) or secondary (Phase A/B dual-db).
-                // TODO: Enable assertion for mainnet when dual-db is enabled
-                if (chain_config == CHAIN_CONFIG_MONAD_TESTNET) {
+                if (chain_config == CHAIN_CONFIG_MONAD_TESTNET ||
+                    chain_config == CHAIN_CONFIG_MONAD_MAINNET) {
                     bool const primary_is_page = db.is_page_encoded();
-                    bool const secondary_active = raw_db.timeline_active(
-                        monad::mpt::timeline_id::secondary);
+                    bool const secondary_active = secondary_triedb.has_value();
                     MONAD_ASSERT_PRINTF(
                         primary_is_page || secondary_active,
                         "live monad requires a page-encoded timeline "
@@ -488,17 +503,6 @@ try {
                             : "monad_mainnet", // TODO: remove at release2
                         primary_is_page,
                         secondary_active);
-                }
-                std::optional<mpt::Db> secondary_db;
-                std::optional<TrieDb> secondary_triedb;
-                if (raw_db.timeline_active(
-                        monad::mpt::timeline_id::secondary)) {
-                    secondary_db = raw_db.open_secondary_timeline();
-                    MONAD_ASSERT(secondary_db.has_value());
-                    secondary_triedb.emplace(*secondary_db);
-                    MONAD_ASSERT(
-                        secondary_triedb->is_page_encoded(),
-                        "secondary timeline must be page-encoded");
                 }
                 return runloop_monad(
                     dynamic_cast<MonadChain const &>(*chain),
@@ -515,6 +519,7 @@ try {
                     secondary_triedb.has_value() ? &*secondary_triedb
                                                  : nullptr);
             }
+        }
         }
         MONAD_ABORT_PRINTF("Unsupported chain");
     }();
