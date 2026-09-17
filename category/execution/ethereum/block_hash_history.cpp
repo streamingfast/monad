@@ -81,7 +81,9 @@ void deploy_block_hash_history_contract(State &state)
 EXPLICIT_TRAITS(deploy_block_hash_history_contract);
 
 template <Traits traits>
-void set_block_hash_history(State &state, BlockHeader const &header)
+void set_block_hash_history(
+    ExecutionEventRecorder *const recorder, State &state,
+    BlockHeader const &header)
 {
     if constexpr (traits::evm_rev() < MONAD_ETH_PRAGUE) {
         return;
@@ -104,9 +106,9 @@ void set_block_hash_history(State &state, BlockHeader const &header)
         constexpr auto SYSTEM_ADDRESS{
             0xfffffffffffffffffffffffffffffffffffffffe_address};
 
-        if (ExecutionEventRecorder *const exec_recorder = g_exec_event_recorder.get()) {
+        if (ExecutionEventRecorder *const exec_recorder = recorder) {
             bytes32_t const &input_data = header.parent_hash;
-            ReservedExecEvent const start_event =
+            ReservedEvent const start_event =
                 exec_recorder->reserve_block_event<monad_exec_block_system_call_start>(
                     MONAD_EXEC_BLOCK_SYSTEM_CALL_START,
                     as_bytes(std::span{&input_data, 1}));
@@ -125,10 +127,11 @@ void set_block_hash_history(State &state, BlockHeader const &header)
         state.set_storage(BLOCK_HISTORY_ADDRESS, key, header.parent_hash);
 
         uint32_t const num_account_accesses =
-            record_system_call_account_accesses(state, MONAD_ACCT_ACCESS_BLOCK_PROLOGUE);
+            record_system_call_account_accesses(
+                recorder, state, MONAD_ACCT_ACCESS_BLOCK_PROLOGUE);
 
-        if (ExecutionEventRecorder *const exec_recorder = g_exec_event_recorder.get()) {
-            ReservedExecEvent const end_event =
+        if (ExecutionEventRecorder *const exec_recorder = recorder) {
+            ReservedEvent const end_event =
                 exec_recorder->reserve_block_event<monad_exec_block_system_call_end>(
                     MONAD_EXEC_BLOCK_SYSTEM_CALL_END);
             *end_event.payload = monad_exec_block_system_call_end{

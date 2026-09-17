@@ -40,7 +40,9 @@ MONAD_ANONYMOUS_NAMESPACE_BEGIN
 using namespace monad::literals;
 
 // EIP-4788
-void set_beacon_root(State &state, BlockHeader const &header)
+void set_beacon_root(
+    ExecutionEventRecorder *const recorder, State &state,
+    BlockHeader const &header)
 {
     constexpr auto BEACON_ROOTS_ADDRESS{
         0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02_address};
@@ -49,11 +51,10 @@ void set_beacon_root(State &state, BlockHeader const &header)
         0xfffffffffffffffffffffffffffffffffffffffe_address};
 
     if (state.account_exists(BEACON_ROOTS_ADDRESS)) {
-        if (ExecutionEventRecorder *const exec_recorder =
-                g_exec_event_recorder.get()) {
+        if (ExecutionEventRecorder *const exec_recorder = recorder) {
             bytes32_t const &input_data =
                 header.parent_beacon_block_root.value();
-            ReservedExecEvent const start_event =
+            ReservedEvent const start_event =
                 exec_recorder
                     ->reserve_block_event<monad_exec_block_system_call_start>(
                         MONAD_EXEC_BLOCK_SYSTEM_CALL_START,
@@ -77,11 +78,10 @@ void set_beacon_root(State &state, BlockHeader const &header)
             BEACON_ROOTS_ADDRESS, k2, header.parent_beacon_block_root.value());
 
         uint32_t const num_account_accesses = record_system_call_account_accesses(
-            state, MONAD_ACCT_ACCESS_BLOCK_PROLOGUE);
+            recorder, state, MONAD_ACCT_ACCESS_BLOCK_PROLOGUE);
 
-        if (ExecutionEventRecorder *const exec_recorder =
-                g_exec_event_recorder.get()) {
-            ReservedExecEvent const end_event =
+        if (ExecutionEventRecorder *const exec_recorder = recorder) {
+            ReservedEvent const end_event =
                 exec_recorder
                     ->reserve_block_event<monad_exec_block_system_call_end>(
                         MONAD_EXEC_BLOCK_SYSTEM_CALL_END);
@@ -102,17 +102,17 @@ MONAD_NAMESPACE_BEGIN
 template <Traits traits>
 void execute_block_header(
     BlockState &block_state, BlockHeader const &header,
-    ExecutionEventRecorder *)
+    ExecutionEventRecorder *const exec_recorder)
 {
     static_assert(traits::evm_rev() >= MONAD_ETH_TANGERINE_WHISTLE);
 
     State state{block_state, Incarnation{header.number, 0}};
 
     deploy_block_hash_history_contract<traits>(state);
-    set_block_hash_history<traits>(state, header);
+    set_block_hash_history<traits>(exec_recorder, state, header);
 
     if constexpr (traits::evm_rev() >= MONAD_ETH_CANCUN) {
-        set_beacon_root(state, header);
+        set_beacon_root(exec_recorder, state, header);
     }
 
     // TODO: move to execute_monad_block eventually

@@ -54,7 +54,7 @@ TYPED_TEST(MonadBlockHashHistoryFixture, noop_before_fork)
 
     for (size_t i = 1; i <= 128; ++i) {
         set_block_hash_history<Trait>(
-            this->state,
+            nullptr, this->state,
             BlockHeader{.parent_hash = bytes32_t{i - 1}, .number = i});
     }
 

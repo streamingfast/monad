@@ -57,7 +57,7 @@ record_block_result(ExecutionEventRecorder *, Result<BlockExecOutput>);
 
 /// Emit ACCOUNT_ACCESS_LIST_HEADER + ACCOUNT_ACCESS + STORAGE_ACCESS events
 uint32_t record_system_call_account_accesses(
-    State const &state,
+    ExecutionEventRecorder *, State const &state,
     monad_exec_account_access_context access_context);
 
 MONAD_NAMESPACE_END

@@ -24,6 +24,7 @@
 
 MONAD_NAMESPACE_BEGIN
 
+class ExecutionEventRecorder;
 class State;
 struct BlockHeader;
 
@@ -36,7 +37,8 @@ template <Traits traits>
 void deploy_block_hash_history_contract(State &);
 
 template <Traits traits>
-void set_block_hash_history(State &, BlockHeader const &);
+void set_block_hash_history(
+    ExecutionEventRecorder *, State &, BlockHeader const &);
 
 bytes32_t get_block_hash_history(State &, uint64_t block_number);
 

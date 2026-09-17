@@ -193,7 +193,8 @@ namespace
                 BlockHeader const header{
                     .parent_hash = to_bytes(i - 1), .number = i};
                 set_block_hash_history<Trait>(
-                    state, header); // sets `number - 1 -> to_bytes(number - 1)`
+                    nullptr, state,
+                    header); // sets `number - 1 -> to_bytes(number - 1)`
             }
         }
 
@@ -205,7 +206,7 @@ namespace
                 BlockHeader const header{
                     .parent_hash = fixed_hash, .number = i};
                 set_block_hash_history<Trait>(
-                    state, header); // sets `number - 1 -> fixed_hash`
+                    nullptr, state, header); // sets `number - 1 -> fixed_hash`
             }
         }
     };
@@ -713,7 +714,7 @@ TYPED_TEST(
     // Identity mapping again
     for (uint64_t i = 0; i < 256; i++) {
         set_block_hash_history<typename TestFixture::Trait>(
-            this->state,
+            nullptr, this->state,
             BlockHeader{.parent_hash = to_bytes(i + 1), .number = i + 1});
         // i + 1, because set_block_hash_history sets i - 1.
     }

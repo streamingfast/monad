@@ -133,10 +133,9 @@ Result<BlockExecOutput> record_block_result(
 }
 
 uint32_t record_system_call_account_accesses(
-    State const &state,
+    ExecutionEventRecorder *const exec_recorder, State const &state,
     monad_exec_account_access_context access_context)
 {
-    ExecutionEventRecorder *const exec_recorder = g_exec_event_recorder.get();
     if (!exec_recorder) {
         return 0;
     }
@@ -149,7 +148,7 @@ uint32_t record_system_call_account_accesses(
         return 0;
     }
 
-    ReservedExecEvent const header_event =
+    ReservedEvent const header_event =
         exec_recorder->reserve_block_event<monad_exec_account_access_list_header>(
             MONAD_EXEC_ACCOUNT_ACCESS_LIST_HEADER);
     *header_event.payload = monad_exec_account_access_list_header{
@@ -165,7 +164,7 @@ uint32_t record_system_call_account_accesses(
         auto const &orig_account = (it != original.end()) ?
             get_account_for_trace(it->second) : std::optional<Account>{};
 
-        ReservedExecEvent const account_event =
+        ReservedEvent const account_event =
             exec_recorder->reserve_block_event<monad_exec_account_access>(
                 MONAD_EXEC_ACCOUNT_ACCESS);
         *account_event.payload = monad_exec_account_access{
@@ -197,7 +196,7 @@ uint32_t record_system_call_account_accesses(
                 }
             }
 
-            ReservedExecEvent const storage_event =
+            ReservedEvent const storage_event =
                 exec_recorder->reserve_block_event<monad_exec_storage_access>(
                     MONAD_EXEC_STORAGE_ACCESS);
             *storage_event.payload = monad_exec_storage_access{
