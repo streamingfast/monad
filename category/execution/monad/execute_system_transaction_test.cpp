@@ -103,7 +103,8 @@ TEST(SystemTransaction, prestate_trace_staking_epoch_change)
                 block_metrics,
                 promise,
                 noop_call_tracer,
-                prestate_tracer}();
+                prestate_tracer,
+                /*exec_recorder=*/nullptr}();
 
         EXPECT_TRUE(result.has_value());
 
@@ -138,7 +139,8 @@ TEST(SystemTransaction, prestate_trace_staking_epoch_change)
                 block_metrics,
                 promise,
                 noop_call_tracer,
-                prestate_tracer}();
+                prestate_tracer,
+                /*exec_recorder=*/nullptr}();
 
         EXPECT_TRUE(result.has_value());
 
@@ -146,7 +148,9 @@ TEST(SystemTransaction, prestate_trace_staking_epoch_change)
             "0x0000000000000000000000000000000000001000": {
                 "balance": "0x0",
                 "storage": {
-                    "0x0000000000000000000000000000000000000000000000000000000000000001": "0x0000000000000001000000000000000000000000000000000000000000000000"
+                    "0x0000000000000000000000000000000000000000000000000000000000000001": "0x0000000000000001000000000000000000000000000000000000000000000000",
+                    "0x0000000000000000000000000000000000000000000000000000000000000002": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                    "0x0300000000000000000000000000000000000000000000000000000000000000": "0x0000000000000000000000000000000000000000000000000000000000000000"
                 }
             },
             "0x6f49a8f621353f12378d0046e7d7e4b9b249dc9e": {
@@ -208,7 +212,8 @@ TEST(SystemTransaction, statediff_trace_staking_epoch_change)
                 block_metrics,
                 promise,
                 noop_call_tracer,
-                statediff_tracer}();
+                statediff_tracer,
+                /*exec_recorder=*/nullptr}();
 
         EXPECT_TRUE(result.has_value());
 
@@ -249,7 +254,8 @@ TEST(SystemTransaction, statediff_trace_staking_epoch_change)
                 block_metrics,
                 promise,
                 noop_call_tracer,
-                statediff_tracer}();
+                statediff_tracer,
+                /*exec_recorder=*/nullptr}();
 
         EXPECT_TRUE(result.has_value());
 
@@ -314,7 +320,8 @@ TEST(SystemTransaction, static_validate_system_transaction_failure)
             block_metrics,
             promise,
             noop_call_tracer,
-            noop_state_tracer}();
+            noop_state_tracer,
+            /*exec_recorder=*/nullptr}();
 
     EXPECT_TRUE(result.has_error());
     EXPECT_EQ(result.error(), SystemTransactionError::TypeNotLegacy);
@@ -353,7 +360,8 @@ TEST(SystemTransaction, static_validate_transaction_failure)
             block_metrics,
             promise,
             noop_call_tracer,
-            noop_state_tracer}();
+            noop_state_tracer,
+            /*exec_recorder=*/nullptr}();
 
     EXPECT_TRUE(result.has_error());
     EXPECT_EQ(result.error(), TransactionError::WrongChainId);

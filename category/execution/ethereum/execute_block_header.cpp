@@ -100,7 +100,9 @@ MONAD_ANONYMOUS_NAMESPACE_END
 MONAD_NAMESPACE_BEGIN
 
 template <Traits traits>
-void execute_block_header(BlockState &block_state, BlockHeader const &header)
+void execute_block_header(
+    BlockState &block_state, BlockHeader const &header,
+    ExecutionEventRecorder *)
 {
     static_assert(traits::evm_rev() >= MONAD_ETH_TANGERINE_WHISTLE);
 

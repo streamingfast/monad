@@ -32,6 +32,7 @@
 #include <category/core/result.hpp>
 #include <category/core/rlp/decode_error.hpp>
 #include <category/core/runtime/uint256.hpp>
+#include <category/core/seeded_fast_hash.hpp>
 #include <category/execution/ethereum/block_hash_buffer.hpp>
 #include <category/execution/ethereum/chain/chain.hpp>
 #include <category/execution/ethereum/chain/chain_config.h>
@@ -394,7 +395,8 @@ namespace
         // MonadConsensusBlockHeader::block_round where a real round exists, per
         // EXE-60.
         // Execute block header
-        execute_block_header<traits>(block_state, header);
+        execute_block_header<traits>(
+            block_state, header, /*exec_recorder=*/nullptr);
         BlockMetrics metrics{};
 
         std::vector<std::unique_ptr<trace::StateTracer>> state_tracers{};
@@ -459,7 +461,8 @@ namespace
                 metrics,
                 noop_call_tracers_view,
                 state_tracers_view,
-                chain_context));
+                chain_context,
+                /*exec_recorder=*/nullptr));
             return Result<nlohmann::json>{std::move(trace)};
         }
         else {
@@ -509,7 +512,8 @@ namespace
                 metrics,
                 noop_call_tracers_view,
                 state_tracers_view,
-                chain_context));
+                chain_context,
+                /*exec_recorder=*/nullptr));
 
             // Compose state traces
             return Result<nlohmann::json>{std::move(traces)};
@@ -866,6 +870,9 @@ namespace
                     // NOTE(dhil): Synthetic blocks carry forward the block
                     // beneficiary.
                     .beneficiary = header.beneficiary,
+                    // TODO(dhil): The simulation does not compute roots at this
+                    // time.
+                    .parent_beacon_block_root = bytes32_t{},
                 };
                 Block const synthetic_block{
                     .header = synthetic_header,
@@ -900,6 +907,7 @@ namespace
                         state_tracers,
                         system_call_state_tracer,
                         chain_context,
+                        /*exec_recorder=*/nullptr,
                         emit_native_transfer_logs));
 
                 // NOTE(dhil): Synthetic blocks are free, so we don't update
@@ -944,6 +952,9 @@ namespace
                     header.timestamp + DEFAULT_TIMESTAMP_INCREMENT),
                 .beneficiary = bo.fee_recipient.value_or(header.beneficiary),
                 .base_fee_per_gas = bo.base_fee_per_gas,
+                // TODO(dhil): The simulation does not compute roots at this
+                // time.
+                .parent_beacon_block_root = bytes32_t{},
             };
 
             // Construct state
@@ -1019,6 +1030,7 @@ namespace
                     state_tracers,
                     system_call_state_tracer,
                     chain_context,
+                    /*exec_recorder=*/nullptr,
                     emit_native_transfer_logs));
 
             // Receipts have cumulative gas_used (YP eq. 22), so
@@ -2018,6 +2030,9 @@ monad_executor *monad_executor_create(
     unsigned const tx_exec_num_fibers, uint64_t const node_lru_max_mem,
     char const *const dbpath)
 {
+    uint64_t const hash_seed = set_hash_seed();
+    LOG_INFO("rpc: hashtable seed: {}", hash_seed);
+
     MONAD_ASSERT(dbpath);
     std::string const triedb_path{dbpath};
 

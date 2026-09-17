@@ -69,6 +69,7 @@ jobs:
             CXX=${{ matrix.compiler.CXX }}
             CMAKE_BUILD_TYPE=${{ matrix.CMAKE_BUILD_TYPE }}
             TOOLCHAIN=gcc-avx2
+            UBUNTU_MIRROR=http://azure.archive.ubuntu.com/ubuntu/
           secrets: |
             actions_results_url=${{ env.ACTIONS_RESULTS_URL }}
             actions_runtime_token=${{ env.ACTIONS_RUNTIME_TOKEN }}

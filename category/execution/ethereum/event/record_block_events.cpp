@@ -32,19 +32,19 @@
 MONAD_NAMESPACE_BEGIN
 
 void record_block_start(
-    bytes32_t const &bft_block_id, uint256_t const &chain_id,
-    BlockHeader const &eth_block_header, bytes32_t const &eth_parent_hash,
-    uint64_t const block_round, uint64_t const epoch,
-    uint128_t const epoch_nano_timestamp, size_t const txn_count,
+    ExecutionEventRecorder *const exec_recorder, bytes32_t const &bft_block_id,
+    uint256_t const &chain_id, BlockHeader const &eth_block_header,
+    bytes32_t const &eth_parent_hash, uint64_t const block_round,
+    uint64_t const epoch, uint128_t const epoch_nano_timestamp,
+    size_t const txn_count,
     std::optional<monad_c_secp256k1_pubkey> const &opt_block_author,
     std::optional<monad_c_native_block_input> const &opt_monad_input)
 {
-    ExecutionEventRecorder *const exec_recorder = g_exec_event_recorder.get();
-    if (!exec_recorder) {
+    if (exec_recorder == nullptr) {
         return;
     }
 
-    ReservedExecEvent const block_start =
+    ReservedEvent const block_start =
         exec_recorder->reserve_block_start_event();
     *block_start.payload = monad_exec_block_start{
         .block_tag{
@@ -81,10 +81,10 @@ void record_block_start(
     exec_recorder->commit(block_start);
 }
 
-Result<BlockExecOutput> record_block_result(Result<BlockExecOutput> result)
+Result<BlockExecOutput> record_block_result(
+    ExecutionEventRecorder *const exec_recorder, Result<BlockExecOutput> result)
 {
-    ExecutionEventRecorder *const exec_recorder = g_exec_event_recorder.get();
-    if (!exec_recorder) {
+    if (exec_recorder == nullptr) {
         return result;
     }
 
@@ -97,14 +97,14 @@ Result<BlockExecOutput> record_block_result(Result<BlockExecOutput> result)
         auto const &error_domain = result.error().domain();
         auto const error_value = result.error().value();
         if (error_domain == block_err_domain) {
-            ReservedExecEvent const block_reject =
+            ReservedEvent const block_reject =
                 exec_recorder->reserve_block_event<monad_exec_block_reject>(
                     MONAD_EXEC_BLOCK_REJECT);
             *block_reject.payload = static_cast<uint32_t>(error_value);
             exec_recorder->commit(block_reject);
         }
         else {
-            ReservedExecEvent const evm_error =
+            ReservedEvent const evm_error =
                 exec_recorder->reserve_block_event<monad_exec_evm_error>(
                     MONAD_EXEC_EVM_ERROR);
             *evm_error.payload = monad_exec_evm_error{
@@ -114,7 +114,7 @@ Result<BlockExecOutput> record_block_result(Result<BlockExecOutput> result)
     }
     else {
         // Record the "block execution successful" event, BLOCK_END
-        ReservedExecEvent const block_end =
+        ReservedEvent const block_end =
             exec_recorder->reserve_block_event<monad_exec_block_end>(
                 MONAD_EXEC_BLOCK_END);
         BlockExecOutput const &exec_output = result.value();

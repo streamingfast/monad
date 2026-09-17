@@ -128,7 +128,8 @@ Result<void> process_monad_block(
     ankerl::unordered_dense::segmented_set<Address> const
         &parent_senders_and_authorities,
     ankerl::unordered_dense::segmented_set<Address>
-        &senders_and_authorities_out)
+        &senders_and_authorities_out,
+    ExecutionEventRecorder *const exec_recorder)
 {
     [[maybe_unused]] auto const block_start = std::chrono::system_clock::now();
     auto const block_begin = std::chrono::steady_clock::now();
@@ -139,6 +140,7 @@ Result<void> process_monad_block(
     // timestamp, the `monad_c_native_block_input` protocol extensions, etc.),
     // so there are a few std::nullopt values, and the timestamp is approximate
     record_block_start(
+        exec_recorder,
         block_id,
         chain.get_chain_id(),
         block.header,
@@ -228,7 +230,7 @@ Result<void> process_monad_block(
 
     BlockMetrics block_metrics;
     BlockState block_state(db, vm, secondary_db);
-    record_block_marker_event(MONAD_EXEC_BLOCK_PERF_EVM_ENTER);
+    record_block_marker_event(exec_recorder, MONAD_EXEC_BLOCK_PERF_EVM_ENTER);
     BOOST_OUTCOME_TRY(
         auto const receipts,
         execute_block<traits>(
@@ -243,8 +245,9 @@ Result<void> process_monad_block(
             call_tracers,
             state_tracers,
             system_call_state_tracer,
-            chain_context));
-    record_block_marker_event(MONAD_EXEC_BLOCK_PERF_EVM_EXIT);
+            chain_context,
+            exec_recorder));
+    record_block_marker_event(exec_recorder, MONAD_EXEC_BLOCK_PERF_EVM_EXIT);
 
     // Database commit of state changes (incl. Merkle root calculations)
     block_state.log_debug();
@@ -286,7 +289,7 @@ Result<void> process_monad_block(
         to_bytes(keccak256(rlp::encode_block_header(exec_output.eth_header)));
     block_hash_buffer.set(
         exec_output.eth_header.number, exec_output.eth_block_hash);
-    BOOST_OUTCOME_TRY(record_block_result(exec_output));
+    (void)record_block_result(exec_recorder, exec_output);
 
     LOG_INFO(
         "block={}, block_id={} state_root primary={}{}",
@@ -344,6 +347,7 @@ Result<std::pair<uint64_t, uint64_t>> runloop_monad_ethblocks(
     fiber::PriorityPool &priority_pool, uint64_t &finalized_block_num,
     uint64_t const end_block_num, sig_atomic_t const volatile &stop,
     bool const enable_tracing, std::chrono::seconds const block_db_timeout,
+    ExecutionEventRecorder *const exec_recorder,
     Db *const secondary_db)
 {
     uint64_t const batch_size =
@@ -466,11 +470,12 @@ Result<std::pair<uint64_t, uint64_t>> runloop_monad_ethblocks(
                 enable_tracing,
                 grandparent_senders_and_authorities,
                 parent_senders_and_authorities,
-                senders_and_authorities);
+                senders_and_authorities,
+                exec_recorder);
             MONAD_ABORT_PRINTF("unhandled rev switch case: %d", rev);
         }());
 
-        record_mock_consensus_events(block_id, block_num);
+        record_mock_consensus_events(exec_recorder, block_id, block_num);
         ntxs += block.transactions.size();
         batch_num_txs += block.transactions.size();
         total_gas += block.header.gas_used;

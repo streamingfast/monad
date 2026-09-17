@@ -16,11 +16,7 @@
 #pragma once
 
 #include <category/core/config.hpp>
-
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wpedantic"
-#include <komihash.h>
-#pragma GCC diagnostic pop
+#include <category/core/seeded_fast_hash.hpp>
 
 MONAD_NAMESPACE_BEGIN
 
@@ -34,7 +30,7 @@ struct BytesHashCompare
     // calls operator() / equal(). Provide both from the same type.
     size_t hash(Bytes const &a) const
     {
-        return komihash(a.bytes, sizeof(Bytes), 0);
+        return seeded_fast_hash(a.bytes, sizeof(Bytes));
     }
 
     size_t operator()(Bytes const &a) const

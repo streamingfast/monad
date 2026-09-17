@@ -101,6 +101,8 @@ add_library(
   "ethereum/db/db_snapshot_filesystem.h"
   "ethereum/db/file_db.cpp"
   "ethereum/db/file_db.hpp"
+  "ethereum/db/offset_trie.hpp"
+  "ethereum/db/offset_trie.cpp"
   "ethereum/db/partial_trie_db.hpp"
   "ethereum/db/partial_trie_db.cpp"
   "ethereum/db/state_machine_init.cpp"
@@ -114,7 +116,6 @@ add_library(
   # ethereum/event
   "ethereum/event/exec_event_ctypes.h"
   "ethereum/event/exec_event_ctypes_metadata.c"
-  "ethereum/event/exec_event_recorder.cpp"
   "ethereum/event/exec_event_recorder.hpp"
   "ethereum/event/exec_iter_help.h"
   "ethereum/event/record_block_events.cpp"
@@ -318,7 +319,7 @@ target_include_directories(
   PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/test
   PRIVATE ${Boost_INCLUDE_DIRS}
   PUBLIC ${cthash_SOURCE_DIR}/include
-  PUBLIC ${silkpre_SOURCE_DIR}/lib)
+  PRIVATE ${silkpre_SOURCE_DIR}/lib)
 
 target_include_directories(
   monad_execution_native
@@ -350,13 +351,14 @@ target_link_libraries(
   PRIVATE monad_crypto
   PRIVATE PkgConfig::brotli
   PRIVATE PkgConfig::crypto++
+  PRIVATE PkgConfig::secp256k1
   PUBLIC ethash::keccak
   PUBLIC evmc
   PUBLIC immer
   PUBLIC intx::intx
   PUBLIC nlohmann_json::nlohmann_json
   PUBLIC quill::quill
-  PUBLIC silkpre
+  PRIVATE silkpre
   PUBLIC unordered_dense
   PUBLIC TBB::tbb)
 monad_compile_options(monad_execution_ethereum)
@@ -370,6 +372,7 @@ target_link_libraries(
   PUBLIC monad_trie
   PUBLIC evmc
   PUBLIC magic_enum::magic_enum
+  PRIVATE PkgConfig::secp256k1
   PUBLIC quill::quill)
 monad_compile_options(monad_execution_native)
 
