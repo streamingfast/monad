@@ -217,6 +217,7 @@ Result<void> process_monad_block(
 
     // block_round, epoch, author and monad_block_input not available in replay mode
     record_block_start(
+        exec_recorder,
         block_id,
         chain.get_chain_id(),
         block.header,
