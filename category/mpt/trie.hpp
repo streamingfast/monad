@@ -57,6 +57,7 @@
 
 MONAD_MPT_NAMESPACE_BEGIN
 
+class DbStatsPublisher;
 class Node;
 
 struct write_operation_io_receiver
@@ -232,6 +233,15 @@ class UpdateAux
     bool alternate_slow_fast_writer_{false};
     bool can_write_to_fast_{true};
 
+    // Lifetime totals, never reset. The per-upsert figures that the stats log
+    // and the slow-ring speed control consume are the difference between
+    // consecutive snapshots.
+    detail::TrieUpdateCollectedStats stats_;
+    detail::TrieUpdateCollectedStats prev_upsert_stats_;
+    detail::TrieUpdateCollectedStats last_upsert_stats_;
+    // Not owned; outlives this aux when set.
+    DbStatsPublisher *stats_publisher_{nullptr};
+
 public:
     // Allocate the first cnv chunk for db metadata copies
     static constexpr unsigned cnv_chunks_for_db_metadata = 1;
@@ -252,8 +262,6 @@ public:
     MONAD_ASYNC_NAMESPACE::AsyncIO *io{nullptr};
     node_writer_unique_ptr_type node_writer_fast{};
     node_writer_unique_ptr_type node_writer_slow{};
-
-    detail::TrieUpdateCollectedStats stats;
 
     // in-memory
     UpdateAux() = default;
@@ -281,8 +289,24 @@ public:
     void move_trie_version_forward(
         uint64_t src, uint64_t dest, timeline_id tid = timeline_id::primary);
 
+    // Lifetime totals, monotonically increasing across every upsert.
+    detail::TrieUpdateCollectedStats stats_snapshot() const noexcept
+    {
+        return stats_;
+    }
+
+    // What the most recent upsert alone contributed.
+    detail::TrieUpdateCollectedStats last_upsert_stats() const noexcept
+    {
+        return last_upsert_stats_;
+    }
+
+    void set_stats_publisher(DbStatsPublisher *const publisher) noexcept
+    {
+        stats_publisher_ = publisher;
+    }
+
     // collect and print trie update stats
-    void reset_stats();
     void collect_expire_stats(bool is_read);
     void collect_number_nodes_created_stats();
     void collect_compaction_read_stats(
@@ -292,7 +316,9 @@ public:
         virtual_chunk_offset_t node_offset, uint32_t node_disk_size,
         timeline_id tid);
 
-    void print_update_stats(uint64_t version, timeline_id tid);
+    void print_update_stats(
+        uint64_t version, timeline_id tid,
+        detail::TrieUpdateCollectedStats const &upsert_stats);
 
     using chunk_list = DbMetadataContext::chunk_list;
 
@@ -378,7 +404,7 @@ public:
 };
 
 static_assert(
-    sizeof(UpdateAux) == 120 + sizeof(detail::TrieUpdateCollectedStats));
+    sizeof(UpdateAux) == 128 + 3 * sizeof(detail::TrieUpdateCollectedStats));
 static_assert(alignof(UpdateAux) == 8);
 
 template <receiver Receiver>
@@ -510,13 +536,13 @@ void find_notify_fiber_future(
 void find_owning_notify_fiber_future(
     UpdateAux &, NodeCache &, inflight_map_owning_t &,
     ::boost::fibers::promise<find_owning_cursor_result_type> promise,
-    NodeCursor const &start, NibblesView, uint64_t version);
+    NodeCursor const &start, NibblesView, uint64_t version, timeline_id tid);
 
 // rodb load root
 void load_root_notify_fiber_future(
     UpdateAux &, NodeCache &, inflight_map_owning_t &,
     ::boost::fibers::promise<find_owning_cursor_result_type> promise,
-    uint64_t version);
+    uint64_t version, timeline_id tid);
 
 /*! \brief blocking find node indexed by key from root, It works for both
 on-disk and in-memory trie. When node along key is not yet in memory, it loads
@@ -541,7 +567,7 @@ Node::SharedPtr read_node_blocking(
 
 //////////////////////////////////////////////////////////////////////////////
 // helpers
-inline constexpr unsigned num_pages(file_offset_t const offset, unsigned bytes)
+constexpr unsigned num_pages(file_offset_t const offset, unsigned bytes)
 {
     auto const rd_offset = round_down_align<DISK_PAGE_BITS>(offset);
     bytes += static_cast<unsigned>(offset - rd_offset);

@@ -20,10 +20,10 @@
 #include <category/core/cli/help_formatter.hpp>
 #include <category/core/config.hpp>
 #include <category/core/hex.hpp>
-#include <category/core/keccak.h>
 #include <category/core/keccak.hpp>
 #include <category/core/log.hpp>
 #include <category/core/result.hpp>
+#include <category/crypto/keccak.h>
 #include <category/execution/ethereum/core/account.hpp>
 #include <category/execution/ethereum/core/fmt/account_fmt.hpp> // NOLINT
 #include <category/execution/ethereum/core/fmt/bytes_fmt.hpp> // NOLINT
@@ -133,7 +133,7 @@ template <class T>
              std::same_as<T, std::string_view>
 auto to_triedb_key(T input, bool already_hashed = false)
 {
-    using res = std::invoke_result_t<hash256 (*)(T), T>;
+    using res = std::invoke_result_t<monad_hash256 (*)(T), T>;
     return already_hashed ? byte_string{input.data(), input.size()}
                           : byte_string{keccak256(input).bytes, sizeof(res)};
 }
@@ -811,11 +811,22 @@ std::optional<uint64_t> resolve_snapshot_version(
     return value;
 }
 
+char const *snapshot_format_name(monad_snapshot_format const format)
+{
+    switch (format) {
+    case MONAD_SNAPSHOT_FORMAT_V0:
+        return "v0";
+    case MONAD_SNAPSHOT_FORMAT_V1:
+        return "v1";
+    }
+    MONAD_ABORT("unhandled monad_snapshot_format");
+}
+
 MONAD_ANONYMOUS_NAMESPACE_END
 
 int main(int const argc, char *argv[])
 {
-    std::vector<std::filesystem::path> dbname_paths;
+    std::filesystem::path dbname_path;
     std::optional<unsigned> sq_thread_cpu = std::nullopt;
     auto log_level = quill::LogLevel::Info;
     bool interactive = false;
@@ -826,15 +837,16 @@ int main(int const argc, char *argv[])
     bool use_secondary = false;
     uint64_t total_shards = 1;
     uint64_t shard_number = 0;
+    monad_snapshot_format snapshot_format = MONAD_SNAPSHOT_FORMAT_V0;
+    std::unordered_map<std::string, monad_snapshot_format> const
+        snapshot_format_map{
+            {"v0", MONAD_SNAPSHOT_FORMAT_V0}, {"v1", MONAD_SNAPSHOT_FORMAT_V1}};
 
     CLI::App cli{
         "Inspection and snapshot tooling for a Monad execution database.",
         "monad-cli"};
     monad::cli::HelpFormatter{GIT_COMMIT_HASH}.install(cli);
-    cli.add_option(
-           "--db",
-           dbname_paths,
-           "A comma-separated list of previously created database paths")
+    cli.add_option("--db", dbname_path, "A previously created database path")
         ->required();
     cli.add_option(
         "--sq-thread-cpu,--sq_thread_cpu",
@@ -881,6 +893,18 @@ int main(int const argc, char *argv[])
             "Shard number for this node (0 to total_shards-1, default: 0). "
             "Each "
             "shard writes its portion of data and headers.")
+        ->needs(dump_binary_snapshot_option);
+    cli_group
+        ->add_option(
+            "--snapshot-format,--snapshot_format",
+            snapshot_format,
+            "Stream layout to write: v0 (default) omits the per-stream header, "
+            "so the dump also restores on binaries that predate it; v1 writes "
+            "a versioned header per stream and restores only on binaries that "
+            "know it. A load detects the layout on disk, so this applies to "
+            "dumps only.")
+        ->transform(
+            CLI::CheckedTransformer(snapshot_format_map, CLI::ignore_case))
         ->needs(dump_binary_snapshot_option);
     cli_group
         ->add_option(
@@ -978,9 +1002,9 @@ int main(int const argc, char *argv[])
 
     uint64_t resolved_version = 0;
     {
-        fmt::println("Opening read only database {}.", dbname_paths);
+        fmt::println("Opening read only database {}.", dbname_path);
         ReadOnlyOnDiskDbConfig const ro_config{
-            .sq_thread_cpu = sq_thread_cpu, .dbname_paths = dbname_paths};
+            .sq_thread_cpu = sq_thread_cpu, .dbname_path = dbname_path};
         AsyncIOContext io_ctx{ro_config};
         Db ro_db{
             io_ctx,
@@ -1021,14 +1045,9 @@ int main(int const argc, char *argv[])
         auto *const context =
             monad_db_snapshot_filesystem_write_user_context_create(
                 dump_binary_snapshot.value().c_str(), resolved_version);
-        std::vector<char const *> c_dbname_paths;
-        for (auto const &path : dbname_paths) {
-            c_dbname_paths.emplace_back(path.c_str());
-        }
         [[maybe_unused]] auto const begin = std::chrono::steady_clock::now();
         bool const success = monad_db_dump_snapshot(
-            c_dbname_paths.data(),
-            c_dbname_paths.size(),
+            dbname_path.c_str(),
             sq_thread_cpu.value_or(std::numeric_limits<unsigned>::max()),
             resolved_version,
             monad_db_snapshot_write_filesystem,
@@ -1036,7 +1055,8 @@ int main(int const argc, char *argv[])
             dump_concurrency_limit,
             total_shards,
             shard_number,
-            use_secondary);
+            use_secondary,
+            snapshot_format);
         // Finalize (flush/close the data files and write the checksums) before
         // logging success: destroy asserts on a write/checksum failure, so
         // doing it first keeps a late failure from being preceded by a
@@ -1044,23 +1064,19 @@ int main(int const argc, char *argv[])
         monad_db_snapshot_filesystem_write_user_context_destroy(context);
         LOG_INFO(
             "snapshot dump success={} version={} directory={} "
-            "dump_from_secondary={} elapsed={}",
+            "dump_from_secondary={} format={} elapsed={}",
             success,
             resolved_version,
             dump_binary_snapshot.value(),
             use_secondary,
+            snapshot_format_name(snapshot_format),
             std::chrono::steady_clock::now() - begin);
         return success == false;
     }
     else if (load_binary_snapshot.has_value()) {
-        std::vector<char const *> c_dbname_paths;
-        for (auto const &path : dbname_paths) {
-            c_dbname_paths.emplace_back(path.c_str());
-        }
         [[maybe_unused]] auto const begin = std::chrono::steady_clock::now();
         monad_db_snapshot_load_filesystem(
-            c_dbname_paths.data(),
-            c_dbname_paths.size(),
+            dbname_path.c_str(),
             sq_thread_cpu.value_or(std::numeric_limits<unsigned>::max()),
             load_binary_snapshot.value().c_str(),
             resolved_version,

@@ -22,12 +22,16 @@
 
 #include <atomic>
 #include <filesystem>
-#include <mutex>
-#include <span>
+#include <optional>
+#include <type_traits>
 #include <variant>
-#include <vector>
 
 MONAD_ASYNC_NAMESPACE_BEGIN
+
+namespace test
+{
+    struct StoragePoolTestAccess; // test-only access to the hash formulae
+}
 
 /* \brief Makes available the lowest possible latency zoned storage, if `zonefs`
 is available. Otherwise falls back to an emulation which can use a file on a
@@ -68,6 +72,8 @@ pathological i/o performance loss at usually the most inconvenient times.
 */
 class storage_pool
 {
+    friend struct test::StoragePoolTestAccess;
+
 public:
     //! \brief Type of chunk, conventional or sequential
     enum chunk_type
@@ -97,7 +103,7 @@ public:
             // Preceding this is an array of uint32_t of chunk bytes used
 
             uint32_t spare_[12]; // set aside for flags later
-            uint32_t num_cnv_chunks; // number of cnv chunks per device
+            uint32_t num_cnv_chunks; // conventional chunks ahead of the rest
             uint32_t config_hash; // hash of this configuration
             uint32_t chunk_capacity;
             uint8_t magic[4]; // "MND0" for v1 of this metadata
@@ -148,6 +154,10 @@ public:
 
         static_assert(sizeof(metadata_t) == 64);
 
+        // Base address and length of the mapping make_device_ established over
+        // this device's metadata. The base is CPU page aligned.
+        std::pair<void *, size_t> metadata_mapping_() const noexcept;
+
         constexpr device_t(
             int const readwritefd, type_t_ const type,
             uint64_t const unique_hash, file_offset_t const size_of_file,
@@ -161,6 +171,15 @@ public:
         }
 
     public:
+        //! The size of the device in bytes, as of when this pool opened it.
+        //! This is the quantity chunks() and the device's unique_hash are
+        //! derived from, so it is what has to be recorded to later recover
+        //! the geometry of a device grown in place.
+        file_offset_t size_bytes() const noexcept
+        {
+            return size_of_file_;
+        }
+
         //! The current filesystem path of the device (it can change over time)
         std::filesystem::path current_path() const;
 
@@ -192,44 +211,34 @@ public:
         std::pair<file_offset_t, file_offset_t> capacity() const;
     };
 
-    /*! \brief A zone chunk from storage, which is always managed by a shared
-    ptr. When the shared ptr count reaches zero, any file descriptors or other
-    resources associated with the chunk are released.
+    /*! \brief A chunk of storage, derived from its id and cheap to copy. It
+    borrows the pool's device, including the descriptor every chunk reads and
+    writes through, so it must not outlive the pool.
      */
     class chunk_t
     {
         friend class storage_pool;
 
         device_t &device_;
-        int read_fd_{-1}, write_fd_{-1};
         file_offset_t const offset_{file_offset_t(-1)},
             capacity_{file_offset_t(-1)};
         uint32_t const chunkid_within_device_{uint32_t(-1)};
         uint32_t const chunkid_within_zone_{uint32_t(-1)};
-        bool const owns_readfd_{false}, owns_writefd_{false},
-            append_only_{false};
+        bool const append_only_{false};
 
     public:
         constexpr chunk_t(
-            device_t &device, int const read_fd, int const write_fd,
-            file_offset_t const offset, file_offset_t const capacity,
-            uint32_t const chunkid_within_device,
-            uint32_t const chunkid_within_zone, bool const owns_readfd,
-            bool const owns_writefd, bool const append_only)
+            device_t &device, file_offset_t const offset,
+            file_offset_t const capacity, uint32_t const chunkid_within_device,
+            uint32_t const chunkid_within_zone, bool const append_only)
             : device_(device)
-            , read_fd_(read_fd)
-            , write_fd_(write_fd)
             , offset_(offset)
             , capacity_(capacity)
             , chunkid_within_device_(chunkid_within_device)
             , chunkid_within_zone_(chunkid_within_zone)
-            , owns_readfd_(owns_readfd)
-            , owns_writefd_(owns_writefd)
             , append_only_(append_only)
         {
         }
-
-        virtual ~chunk_t();
 
         //! \brief Returns the storage device this chunk is stored upon
         device_t &device() noexcept
@@ -259,7 +268,7 @@ public:
         //! with any offset which needs to be added to any i/o performed with it
         std::pair<int, file_offset_t> read_fd() const noexcept
         {
-            return {read_fd_, offset_};
+            return {device_.readwritefd_, offset_};
         }
 
         //! \brief Returns a file descriptor able to write to the chunk, along
@@ -307,10 +316,45 @@ public:
     //! \brief What to do when opening the pool for use.
     enum class mode
     {
+        //! The source must already carry pool metadata; abort if it does
+        //! not.
         open_existing,
+        //! Initialise the source if it does not, otherwise open it as it is.
         create_if_needed,
-        truncate
+        //! Discard the source's contents and initialise it.
+        truncate,
+        //! Take up storage the source now offers but the pool does not yet
+        //! use, by relocating the metadata of a device extended in place.
+        //! Existing data is kept, and re-running resumes an interrupted run.
+        grow
     };
+
+    //! \brief How much space a database's metadata needs in the first half of
+    //! conventional chunk 0, supplied by the caller that owns that layout so
+    //! this layer needs no knowledge of it.
+    struct db_metadata_budget
+    {
+        //! Fixed header, ahead of the per-chunk array. Should be the largest
+        //! of any on-disk format the caller can still read, so a pool stays
+        //! migratable without remapping.
+        size_t header_bytes;
+        //! Cost of each sequential chunk in the per-chunk array.
+        size_t bytes_per_chunk;
+
+        //! A pool with no database on it, which has nothing to fit. Spelled
+        //! out so that skipping the check is a decision rather than an
+        //! omission.
+        static constexpr db_metadata_budget no_database() noexcept
+        {
+            return {.header_bytes = 0, .bytes_per_chunk = 0};
+        }
+    };
+
+    //! Smallest chunk capacity any pool carrying a database can have been
+    //! created with. This layer enforces no minimum of its own; the floor
+    //! comes from the database metadata having to fit in half of conventional
+    //! chunk 0, which the owning layer enforces on open.
+    static constexpr uint32_t min_chunk_capacity = 1u << 21;
 
     //! \brief Flags for storage pool creation
     struct creation_flags
@@ -320,8 +364,6 @@ public:
         //! How much to shift left a bit to set chunk capacity during creation.
         //! The maximum is 32 (4Gb).
         uint32_t chunk_capacity : 5;
-        //! Whether to interleave chunks evenly during creation
-        uint32_t interleave_chunks_evenly : 1;
         //! Whether to open the database read-only
         uint32_t open_read_only : 1;
         //! Whether to open the database read-only allowing a dirty closed
@@ -338,17 +380,26 @@ public:
         //! message directing the operator to run monad-mpt --upgrade.
         uint32_t allow_migration : 1;
 
-        //! Number of conventional chunks to allocate per device. Default is 3.
+        //! Number of conventional chunks to allocate. Default is 3.
         uint32_t num_cnv_chunks;
+
+        //! What db_metadata recorded as the size of the device before the
+        //! extend.
+        std::optional<file_offset_t> recorded_size_of_grown_device;
+
+        //! Space the database's metadata needs, from the caller that owns that
+        //! layout. Nothing if there is no database.
+        std::optional<db_metadata_budget> metadata_budget;
 
         constexpr creation_flags()
             : chunk_capacity(28)
-            , interleave_chunks_evenly(false)
             , open_read_only(false)
             , open_read_only_allow_dirty(false)
             , disable_mismatching_storage_pool_check(false)
             , allow_migration(false)
             , num_cnv_chunks(3)
+            , recorded_size_of_grown_device(std::nullopt)
+            , metadata_budget(std::nullopt)
         {
         }
 
@@ -363,20 +414,114 @@ public:
 
 private:
     bool const is_read_only_, is_read_only_allow_dirty_, is_migration_allowed_,
-        is_newly_truncated_;
-    std::vector<device_t> devices_;
+        is_newly_truncated_, is_growing_;
+    device_t device_;
+    // A chunk's whole geometry follows from its id, so these counts are all
+    // the pool keeps per chunk type.
+    uint32_t cnv_chunks_count_{0}, seq_chunks_count_{0};
 
-    // Lock protects everything below this
-    mutable std::mutex lock_;
+    // The pool metadata a device carries in its final sizeof(metadata_t)
+    // bytes, as read back. Absent on a blank device, and on one extended in
+    // place, which strands the footer mid-device.
+    struct device_pool_metadata_
+    {
+        uint32_t chunk_capacity;
+        uint32_t num_cnv_chunks;
+        uint32_t config_hash;
+        size_t chunks;
+    };
 
-    std::vector<chunk_t> chunks_[2];
+    // Read-only description of the source, gathered before anything is
+    // written, so a refused device is never modified.
+    struct device_info_
+    {
+        device_t::type_t_ type;
+        uint64_t unique_hash;
+        // Current size: BLKGETSIZE64 for a block device, st_size for a file.
+        file_offset_t size;
+        std::optional<device_pool_metadata_> pool_metadata;
+        // The device number compute_unique_hash_ was given, so that the hash
+        // can be recomputed at a different size -- which is what validating a
+        // grown device's previous size needs.
+        uint64_t hash_dev_no;
+    };
 
-    device_t make_device_(
+    // Everything about `source`, including the pool metadata read back from
+    // its end.
+    static device_info_ read_device_info_(std::filesystem::path const &source);
+
+    // The hash formulae, each in one place so the validating pre-pass and
+    // adopt_device_ cannot drift apart. Members rather than file-local statics
+    // because device_t::type_t_ is private to device_t and only storage_pool
+    // is its friend.
+    static uint64_t compute_unique_hash_(
+        device_t::type_t_ type, uint64_t dev_no, file_offset_t size);
+
+    static uint32_t compute_config_hash_(
+        uint64_t unique_hash, size_t chunks, uint32_t chunk_capacity);
+
+    // A source which grew in place: it presents no footer at the end its
+    // current size gives it, because extending strands the footer mid-device,
+    // but carries a stranded one below which validates against the pool's own
+    // hash.
+    struct grown_device_
+    {
+        // The recorded size, once validated: the size this device had when it
+        // was last part of this pool, as validated against the
+        // stranded footer's own config_hash.
+        file_offset_t previous_size;
+        size_t previous_chunks; // chunks() at previous_size
+        uint32_t chunk_capacity; // read back from the stranded footer
+        uint32_t num_cnv_chunks;
+    };
+
+    // Reads the sizeof(metadata_t) bytes a footer would occupy if the device
+    // were exactly `size` bytes long, and returns it if it carries the magic.
+    static std::optional<device_t::metadata_t>
+    read_footer_for_size_(int fd, file_offset_t size);
+
+    // Checks `recorded_size` against the footer stranded there by the extend
+    // which grew `source`, for a source presenting no footer at its end.
+    // Returns nothing unless that footer describes the pool as it was at
+    // `recorded_size`; `footer_found` then distinguishes a size with no footer
+    // at all from one whose footer belongs elsewhere. Reads only.
+    static std::optional<grown_device_> validate_grown_device_(
+        std::filesystem::path const &source, device_info_ const &current,
+        std::optional<file_offset_t> recorded_size, bool &footer_found);
+
+    // Aborts, having written nothing, if `info` is not a device this pool can
+    // take up: not blank and carrying no footer that `recorded_size` explains,
+    // or grown past what the chunk id space or `budget` allows.
+    static std::optional<grown_device_> validate_device_to_grow_(
+        std::filesystem::path const &source, device_info_ const &info,
+        std::optional<file_offset_t> recorded_size,
+        std::optional<db_metadata_budget> const &budget);
+
+    // Writes the grown device's metadata region at the end its current size
+    // gives it: the bytes-used array carried over from the region stranded at
+    // `grown_device.previous_size` with the new chunks zeroed, then the
+    // footer. The footer is written and made durable last, so it is the commit
+    // record -- and with one device it is the only one, so nothing else has
+    // to be durable first.
+    static void relocate_device_metadata_(
+        std::filesystem::path const &source, file_offset_t current_size,
+        grown_device_ const &grown_device, uint32_t new_config_hash);
+
+    static device_t make_device_(
         mode op, device_t::type_t_ type, std::filesystem::path const &path,
         int fd, std::variant<uint64_t, device_t const *> dev_no_or_dev,
         creation_flags flags);
 
-    void fill_chunks_(creation_flags const &flags);
+    // device_ has const members and so must be built before the constructor
+    // body runs; each of these opens one source into a ready device_t.
+    static device_t open_device_(
+        std::filesystem::path const &source, mode op, creation_flags flags);
+    static device_t reopen_device_read_only_(device_t const &src);
+    static device_t make_anonymous_device_(off_t len, creation_flags flags);
+
+    // Stamps the config hash on a blank device, aborts if an existing one
+    // disagrees, and establishes the chunk counts.
+    void adopt_device_(creation_flags const &flags);
 
     struct clone_as_read_only_tag_
     {
@@ -385,11 +530,10 @@ private:
     storage_pool(storage_pool const *src, clone_as_read_only_tag_);
 
 public:
-    //! \brief Constructs a storage pool from the list of backing storage
-    //! sources
+    //! \brief Constructs a storage pool from its backing storage source
     explicit storage_pool(
-        std::span<std::filesystem::path const> sources,
-        mode mode = mode::create_if_needed, creation_flags flags = {});
+        std::filesystem::path const &source, mode mode = mode::create_if_needed,
+        creation_flags flags = {});
 
     //! \brief Constructs a storage pool from a temporary anonymous inode.
     //! Useful for test code.
@@ -399,6 +543,11 @@ public:
     //! specific size. Useful for test code.
     explicit storage_pool(
         use_anonymous_sized_inode_tag, off_t len, creation_flags flags = {});
+
+    // Copying would double-close the device descriptor and double-unmap its
+    // metadata.
+    storage_pool(storage_pool const &) = delete;
+    storage_pool &operator=(storage_pool const &) = delete;
 
     ~storage_pool();
 
@@ -431,29 +580,60 @@ public:
         return is_newly_truncated_;
     }
 
-    //! \brief Returns a list of the backing storage devices
-    std::span<device_t const> devices() const noexcept
+    //! \brief True if the storage pool was opened with mode::grow.
+    //! Consulted by DbMetadataContext to decide whether a pool reporting more
+    //! chunks than the metadata describes should be grown or rejected with a
+    //! "run monad-mpt --grow" message.
+    bool is_growing() const noexcept
     {
-        return {devices_};
+        return is_growing_;
     }
+
+    //! \brief Returns the backing storage device
+    device_t const &device() const noexcept
+    {
+        return device_;
+    }
+
+    //! \brief What a mode::grow open of `source` would do, decided without
+    //! writing anything.
+    struct grow_preview
+    {
+        //! The validated previous size of the source: the size it had before
+        //! it was extended in place, zero if it was not. Its contents are kept
+        //! either way.
+        file_offset_t grown_previous_size;
+        //! Total chunks, cnv and seq, the source offered at that size.
+        size_t grown_previous_chunks;
+    };
+
+    //! \brief Classifies `source` as a mode::grow open would, writing
+    //! nothing. It applies the same refusals, so a caller can put an accurate
+    //! confirmation prompt in front of the operation and know the operation
+    //! will not then refuse it. `recorded_size` is what db_metadata holds for
+    //! the source; the validated previous size it yields comes back in
+    //! `grown_previous_size`.
+    static grow_preview preview_grow(
+        std::filesystem::path const &source,
+        std::optional<file_offset_t> recorded_size,
+        std::optional<db_metadata_budget> const &budget);
 
     //! \brief Returns the number of chunks for the specified type
     size_t chunks(chunk_type const which) const noexcept
     {
-        return chunks_[which].size();
+        return which == cnv ? cnv_chunks_count_ : seq_chunks_count_;
     }
 
-    //! \brief Get an existing chunk, if it is activated
-    chunk_t &chunk(chunk_type which, uint32_t id);
+    //! \brief The chunk of this type with this id, by value. It borrows the
+    //! pool's device, so it must not outlive the pool.
+    chunk_t chunk(chunk_type which, uint32_t id);
 
     //! \brief Clones an existing storage pool as read-only
     storage_pool clone_as_read_only() const;
-
-private:
-    //! \brief Activate a chunk (i.e. open file descriptors to it, if necessary)
-    chunk_t activate_chunk(
-        chunk_type which, device_t &device, uint32_t id_within_device,
-        uint32_t id_within_zone);
 };
+
+// chunk() builds one of these per i/o, so nothing may need running when one
+// goes away.
+static_assert(std::is_trivially_destructible_v<storage_pool::chunk_t>);
 
 MONAD_ASYNC_NAMESPACE_END

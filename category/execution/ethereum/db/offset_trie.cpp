@@ -35,7 +35,6 @@
 #include <bit>
 #include <cstdint>
 #include <cstring>
-#include <limits>
 #include <span>
 #include <utility>
 #include <vector>
@@ -61,6 +60,22 @@ NodeId OffsetTrie::read_root(byte_string_view const blob)
     return root;
 }
 
+namespace
+{
+    // Set (val = true) or clear (val = false) the bit for byte offset `off`
+    template <bool val>
+    void set_offset_value(std::span<uint64_t> const offsets, uint64_t const off)
+    {
+        uint64_t const bit = uint64_t{1} << (off & 63);
+        if constexpr (val) {
+            offsets[off >> 6] |= bit;
+        }
+        else {
+            offsets[off >> 6] &= ~bit;
+        }
+    }
+}
+
 OffsetTrie::OffsetTrie(byte_string_view const blob)
     : blob_(blob)
     , root{read_root(blob_)}
@@ -79,12 +94,20 @@ OffsetTrie::OffsetTrie(byte_string_view const blob)
     MONAD_ASSERT(node.bytes() == region_end || node.tag() != EMPTY);
     std::vector<uint64_t> node_offsets((blob_.size() + 63) / 64, 0);
 
+    // A node's bit is set when the walk reaches it and cleared when a parent
+    // claims it as a child.
+    // A child whose bit is clear is either previously unseen/invalid or already
+    // claimed by a different parent.
     auto const is_valid_offset = [&](NodeId c) {
+        if (c == NULL_ID) {
+            return;
+        }
         uint64_t child_offset = static_cast<uint64_t>(c);
         MONAD_ASSERT(
-            c == NULL_ID ||
-            (child_offset < node_offset && child_offset < blob_.size() &&
-             ((node_offsets[child_offset >> 6] >> (child_offset & 63)) & 1)));
+            child_offset < blob_.size() &&
+            (node_offsets[child_offset >> 6] &
+             (uint64_t{1} << (child_offset & 63))));
+        set_offset_value<false>(node_offsets, child_offset);
     };
     unsigned char rlp_buf[MAX_NODE_RLP];
 
@@ -131,17 +154,23 @@ OffsetTrie::OffsetTrie(byte_string_view const blob)
                     // emit a 32-byte ref where the trie inlines it.
                     if (rem.rlp_size() >= 32) {
                         bytes32_t h;
-                        keccak256(rem.rlp_data(), rem.rlp_size(), h.bytes);
+                        monad_keccak256(
+                            rem.rlp_data(), rem.rlp_size(), h.bytes);
                         hashes_.emplace(NodeId{node_offset}, h);
                     }
                 }});
 
-        node_offsets[node_offset >> 6] |= 1ull << (node_offset & 63);
+        set_offset_value<true>(node_offsets, node_offset);
         node = NodeViewBase{base + next_offset};
         node_offset = next_offset;
     }
     MONAD_ASSERT(node.bytes() == region_end); // nodes tile exactly
     is_valid_offset(root);
+
+    // Every node was claimed exactly once, a leftover bit is a node not
+    // reachable from root.
+    MONAD_ASSERT(std::ranges::all_of(
+        node_offsets, [](uint64_t const w) { return w == 0; }));
 }
 
 NodeViewBase OffsetTrie::find_original(NodeId id, NibblesView key) const
@@ -208,9 +237,10 @@ bytes32_t OffsetTrie::hash(NodeId const id)
 
                 unsigned char buf[MAX_NODE_RLP];
                 node_rlp_span const rem = encode_rlp(node, node_rlp_span{buf});
+                MONAD_ASSERT(rem.rlp_size() >= 32);
                 bytes32_t h;
                 // RLP occupies the tail: [rem.end(), buf_end).
-                keccak256(rem.rlp_data(), rem.rlp_size(), h.bytes);
+                monad_keccak256(rem.rlp_data(), rem.rlp_size(), h.bytes);
 
                 hashes_.emplace(id, h);
                 return h;
@@ -242,7 +272,7 @@ OffsetTrie::node_rlp_span OffsetTrie::child_ref_compute(
         MONAD_ABORT("offset trie: unprimed hash-referenced node (bad offset)");
     }
     bytes32_t h;
-    keccak256(child_rlp, child_rlp_len, h.bytes);
+    monad_keccak256(child_rlp, child_rlp_len, h.bytes);
     hashes_.emplace(id, h);
     rlp::encode_string(dest.last(33), byte_string_view{h.bytes, 32});
     return dest.shrink(33);
@@ -271,22 +301,17 @@ OffsetTrie::encode_rlp(NodeViewBase const node, OffsetTrie::node_rlp_span dest)
         return d;
     };
     // Prepend the list header for payload [s.end(), dest.end()); return the
-    // final span. encode_list_prefix can transiently write up to 8 bytes,
-    // so build the header in a local and copy only its real length into
-    // place.
+    // final span.
     auto const wrap = [](OffsetTrie::node_rlp_span const s) {
         size_t const payload_len = s.rlp_size();
-        unsigned char hdr[9];
-        auto const rest =
-            rlp::encode_list_prefix(std::span<unsigned char>{hdr}, payload_len);
-        size_t const hdr_len = sizeof(hdr) - rest.size();
-        std::memcpy(s.last(hdr_len).data(), hdr, hdr_len);
+        size_t const hdr_len = rlp::list_length(payload_len) - payload_len;
+        rlp::encode_list_prefix_compact(s.last(hdr_len), payload_len);
         return s.shrink(hdr_len);
     };
-    return node_rlp_span{match(
+    return match(
         node,
         Cases{
-            [&, wrap](BranchView b) -> std::span<unsigned char> {
+            [&, wrap](BranchView b) -> node_rlp_span {
                 dest.back() = 0x80; // empty branch value — last list element
                 dest = dest.shrink(1);
                 std::array<node_id_wire_t, 16> const children = b.children();
@@ -336,14 +361,13 @@ OffsetTrie::encode_rlp(NodeViewBase const node, OffsetTrie::node_rlp_span dest)
                 }
                 return wrap(dest);
             },
-            [&, encode_path, wrap](ExtView e) -> std::span<unsigned char> {
+            [&, encode_path, wrap](ExtView e) -> node_rlp_span {
                 // child ref — last element
                 dest = child_ref<priming_pass>(e.child(), dest);
                 dest = encode_path(dest, e.path(), /*terminating=*/false);
                 return wrap(dest);
             },
-            [&, encode_path, wrap](
-                AccountLeafView l) -> std::span<unsigned char> {
+            [&, encode_path, wrap](AccountLeafView l) -> node_rlp_span {
                 // The leaf's value is the account's canonical RLP, which the
                 // node no longer holds whole: rebuild it straight into dest's
                 // tail — last field first, like everything else here —
@@ -352,17 +376,8 @@ OffsetTrie::encode_rlp(NodeViewBase const node, OffsetTrie::node_rlp_span dest)
                 // through hash() is what ties the account to its storage — a
                 // leaf can only claim the root its subtree actually hashes to,
                 // and NULL_ID resolves to NULL_ROOT, i.e. no storage at all.
-                bytes32_t const storage_root = hash(l.storage());
-                byte_string_view const code_hash = l.code_hash_rlp();
-                std::memcpy(
-                    dest.last(HASH_RLP_LEN).data(),
-                    code_hash.data(),
-                    HASH_RLP_LEN);
-                dest = dest.shrink(HASH_RLP_LEN);
-                rlp::encode_string(
-                    dest.last(HASH_RLP_LEN),
-                    byte_string_view{storage_root.bytes, 32});
-                dest = dest.shrink(HASH_RLP_LEN);
+                dest = encode_rlp(l.code_hash_rlp(), dest);
+                dest = encode_rlp(hash(l.storage()), dest);
                 byte_string_view const nonce_balance = l.nonce_balance_rlp();
                 std::memcpy(
                     dest.last(nonce_balance.size()).data(),
@@ -386,8 +401,7 @@ OffsetTrie::encode_rlp(NodeViewBase const node, OffsetTrie::node_rlp_span dest)
                 dest = encode_path(dest, l.path(), /*terminating=*/true);
                 return wrap(dest);
             },
-            [&, encode_path, wrap](
-                StorageLeafView l) -> std::span<unsigned char> {
+            [&, encode_path, wrap](StorageLeafView l) -> node_rlp_span {
                 bytes32_t const v = l.value();
                 // storage value = rlp(zeroless(slot)), itself wrapped again
                 // as the leaf's value string: write the inner rlp(zl) into
@@ -407,9 +421,9 @@ OffsetTrie::encode_rlp(NodeViewBase const node, OffsetTrie::node_rlp_span dest)
                 dest = encode_path(dest, l.path(), /*terminating=*/true);
                 return wrap(dest);
             },
-            [](DigestView) -> std::span<unsigned char> { std::unreachable(); },
-            [](NullView) -> std::span<unsigned char> { std::unreachable(); },
-        })};
+            [](DigestView) -> node_rlp_span { std::unreachable(); },
+            [](NullView) -> node_rlp_span { std::unreachable(); },
+        });
 }
 
 namespace
@@ -443,7 +457,7 @@ namespace
     void append_path(byte_string &b, NibblesView const path)
     {
         unsigned const nlen = path.nibble_size();
-        MONAD_ASSERT(nlen <= std::numeric_limits<unsigned char>::max());
+        MONAD_ASSERT(nlen <= MAX_PATH_NIBBLES);
         b.push_back(static_cast<unsigned char>(nlen));
         size_t const start = b.size();
         b.resize(start + (nlen + 1) / 2, 0);
@@ -561,7 +575,8 @@ NodeId OffsetTrie::clone_acct(
 {
     // Everything up to the path — tag, storage edge and both field runs — is
     // copied verbatim, so re-pathing neither decodes nor re-encodes it.
-    byte_string node{acc.bytes(), rlp_end(child_end(acc.payload()))};
+    byte_string node{
+        acc.bytes(), rlp_end(code_hash_end(child_end(acc.payload())))};
     append_path(node, new_path);
     return put_node(id, std::move(node));
 }

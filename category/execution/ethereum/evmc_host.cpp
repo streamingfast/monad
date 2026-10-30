@@ -70,7 +70,7 @@ evmc_storage_status EvmcHostBase::set_storage(
 {
     MONAD_TRY
     {
-        return state_.set_storage(address, key, value);
+        return to_evmc_storage_status(state_.set_storage(address, key, value));
     }
     MONAD_CATCH(...)
     {
@@ -232,21 +232,6 @@ void EvmcHostBase::set_transient_storage(
     MONAD_TRY
     {
         return state_.set_transient_storage(address, key, value);
-    }
-    MONAD_CATCH(...)
-    {
-        capture_current_exception();
-    }
-    stack_unwind();
-}
-
-EvmcHostBase::PageStorageStatus EvmcHostBase::update_page(
-    evmc::address const &address, evmc::bytes32 const &page_key,
-    evmc_storage_status const status) noexcept
-{
-    MONAD_TRY
-    {
-        return state_.update_page(address, page_key, status);
     }
     MONAD_CATCH(...)
     {

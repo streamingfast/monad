@@ -94,7 +94,7 @@ namespace monad::vm
                         bytecode_size);
                     break;
                 }
-                auto compile_time =
+                auto const compile_time =
                     std::chrono::duration_cast<std::chrono::microseconds>(
                         compile_end - compile_start)
                         .count();
@@ -236,7 +236,6 @@ namespace monad::vm
         CompileJobQueue compile_job_queue_;
         std::condition_variable compile_job_cv_;
         std::mutex compile_job_mutex_;
-        std::unique_lock<std::mutex> compile_job_lock_;
         std::thread compiler_thread_;
         std::atomic_flag stop_flag_;
         size_t compile_job_soft_limit_;

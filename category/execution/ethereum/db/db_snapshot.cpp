@@ -42,7 +42,7 @@ struct monad_db_snapshot_loader
     monad::mpt::Db db;
     monad::mpt::Node::SharedPtr root;
     std::array<monad::byte_string, 256> eth_headers;
-    std::deque<monad::hash256> hash_alloc;
+    std::deque<monad_hash256> hash_alloc;
     std::deque<monad::mpt::Update> update_alloc;
     std::deque<monad::byte_string> bytes_alloc;
     std::array<
@@ -62,12 +62,10 @@ struct monad_db_snapshot_loader
     uint64_t bytes_read;
 
     monad_db_snapshot_loader(
-        uint64_t const block, char const *const *const dbname_paths,
-        size_t const len, unsigned const sq_thread_cpu,
-        bool const load_to_secondary)
+        uint64_t const block, char const *const dbname_path,
+        unsigned const sq_thread_cpu, bool const load_to_secondary)
         : block{block}
-        , db{open_target_db(
-              dbname_paths, len, sq_thread_cpu, load_to_secondary)}
+        , db{open_target_db(dbname_path, sq_thread_cpu, load_to_secondary)}
         , bytes_read{0}
     {
     }
@@ -79,9 +77,14 @@ struct monad_db_snapshot_loader
 
 private:
     static monad::mpt::Db open_target_db(
-        char const *const *const dbname_paths, size_t const len,
-        unsigned const sq_thread_cpu, bool const load_to_secondary)
+        char const *const dbname_path, unsigned const sq_thread_cpu,
+        bool const load_to_secondary)
     {
+        // An empty path asks OnDiskDbConfig for an anonymous in-memory pool,
+        // which would load the snapshot into nothing and report success.
+        MONAD_ASSERT_PRINTF(
+            dbname_path != nullptr && *dbname_path != '\0',
+            "dbname_path must name the database's storage device");
         monad::mpt::Db primary{monad::mpt::OnDiskDbConfig{
             .append = true,
             .compaction = false,
@@ -92,7 +95,7 @@ private:
                 sq_thread_cpu == std::numeric_limits<unsigned>::max()
                     ? std::nullopt
                     : std::make_optional(sq_thread_cpu),
-            .dbname_paths = {dbname_paths, dbname_paths + len}}};
+            .dbname_path = dbname_path}};
         if (!load_to_secondary) {
             return primary;
         }
@@ -117,6 +120,22 @@ uint64_t get_shard(monad::mpt::NibblesView const path)
     }
     MONAD_ASSERT(ret < MONAD_SNAPSHOT_SHARDS);
     return ret;
+}
+
+// A format is stamped into every stream header unchecked, so a value from
+// outside the enum would leave a complete, checksummed dump that no reader
+// accepts. Reject it before the dump writes anything. The switch has no
+// default label so that a new format is a build error here rather than a
+// silently mis-framed artifact.
+void check_snapshot_format(monad_snapshot_format const format)
+{
+    switch (format) {
+    case MONAD_SNAPSHOT_FORMAT_V0:
+    case MONAD_SNAPSHOT_FORMAT_V1:
+        return;
+    }
+    MONAD_ABORT_PRINTF(
+        "unknown monad_snapshot_format %d", static_cast<int>(format));
 }
 
 // When the target is page-encoded, drain the accumulator into per-account
@@ -243,6 +262,42 @@ uint64_t monad_db_snapshot_loader_read_account(
     return bytes_consumed;
 }
 
+// Consume the stream header if there is one, leaving `stream` at its first
+// record.
+void read_stream_header(
+    monad::byte_string_view &stream, monad_snapshot_type const kind)
+{
+    using namespace monad;
+    if (stream.size() < sizeof(monad_snapshot_stream_header)) {
+        return;
+    }
+    auto const header =
+        unaligned_load<monad_snapshot_stream_header>(stream.data());
+    if (header.magic != MONAD_SNAPSHOT_STREAM_MAGIC) {
+        return;
+    }
+    // A legacy stream can hold the guard byte by chance, but not the magic, so
+    // past the magic a bad guard is corruption rather than an older layout and
+    // must not silently bypass the version and kind checks below.
+    MONAD_ASSERT_PRINTF(
+        header.guard == MONAD_SNAPSHOT_STREAM_GUARD,
+        "snapshot stream opens with the header magic but guard 0x%02x "
+        "(expected 0x%02x)",
+        header.guard,
+        MONAD_SNAPSHOT_STREAM_GUARD);
+    MONAD_ASSERT_PRINTF(
+        header.version == MONAD_SNAPSHOT_STREAM_VERSION,
+        "snapshot stream version %u is not supported (expected %u)",
+        header.version,
+        MONAD_SNAPSHOT_STREAM_VERSION);
+    MONAD_ASSERT_PRINTF(
+        header.kind == kind,
+        "snapshot stream holds kind %u where kind %u was expected",
+        header.kind,
+        static_cast<unsigned>(kind));
+    stream.remove_prefix(sizeof(header));
+}
+
 class NibblePath
 {
 private:
@@ -291,16 +346,94 @@ public:
     }
 };
 
+using SnapshotWriteFn = uint64_t (*)(
+    uint64_t shard, monad_snapshot_type, unsigned char const *bytes, size_t len,
+    void *user);
+
+// Writes the records of every stream of one dump, and is shared by every clone
+// of the traverse machine as well as by the eth-header writes outside it.
+//
+// Every record goes through here so that a framed stream cannot be opened
+// without its header: such a stream is byte for byte a valid
+// MONAD_SNAPSHOT_FORMAT_V0 stream, so it would load without complaint rather
+// than fail.
+class SnapshotStreamWriter
+{
+    SnapshotWriteFn const write_;
+    void *const user_;
+    monad_snapshot_format const format_;
+    std::array<
+        std::array<bool, MONAD_SNAPSHOT_FILES_PER_SHARD>, MONAD_SNAPSHOT_SHARDS>
+        header_written_{};
+    // Length of each shard's account stream counted from its first record, so
+    // that the offsets it hands out do not shift when a header is present.
+    std::array<uint64_t, MONAD_SNAPSHOT_SHARDS> account_bytes_written_{};
+
+    // Written lazily so that a kind a shard has no records for leaves a
+    // zero-length stream rather than a header-only one.
+    void write_stream_header_once(
+        uint64_t const shard, monad_snapshot_type const kind)
+    {
+        if (format_ == MONAD_SNAPSHOT_FORMAT_V0) {
+            return;
+        }
+        auto &written = header_written_.at(shard).at(kind);
+        if (written) {
+            return;
+        }
+        monad_snapshot_stream_header const header{
+            .magic = MONAD_SNAPSHOT_STREAM_MAGIC,
+            .version = static_cast<uint8_t>(format_),
+            .kind = static_cast<uint8_t>(kind),
+            .reserved = 0,
+            .guard = MONAD_SNAPSHOT_STREAM_GUARD};
+        std::array<unsigned char, sizeof(header)> bytes;
+        monad::unaligned_store(bytes.data(), header);
+        MONAD_ASSERT(
+            write_(shard, kind, bytes.data(), bytes.size(), user_) ==
+            bytes.size());
+        written = true;
+    }
+
+public:
+    SnapshotStreamWriter(
+        SnapshotWriteFn const write, void *const user,
+        monad_snapshot_format const format)
+        : write_{write}
+        , user_{user}
+        , format_{format}
+    {
+    }
+
+    SnapshotStreamWriter(SnapshotStreamWriter const &) = delete;
+
+    void write_record(
+        uint64_t const shard, monad_snapshot_type const kind,
+        unsigned char const *const bytes, size_t const len)
+    {
+        write_stream_header_once(shard, kind);
+        MONAD_ASSERT(write_(shard, kind, bytes, len, user_) == len);
+    }
+
+    // Appends one account record, returning the offset it occupies in the
+    // shard's account stream, which is how a storage record names its account.
+    uint64_t write_account_record(
+        uint64_t const shard, unsigned char const *const bytes,
+        size_t const len)
+    {
+        uint64_t const offset = account_bytes_written_.at(shard);
+        account_bytes_written_.at(shard) += len;
+        write_record(shard, MONAD_SNAPSHOT_ACCOUNT, bytes, len);
+        return offset;
+    }
+};
+
 struct MonadSnapshotTraverseMachine : public monad::mpt::TraverseMachine
 {
     unsigned char nibble;
     NibblePath path;
-    std::array<uint64_t, MONAD_SNAPSHOT_SHARDS> &account_bytes_written;
+    SnapshotStreamWriter &writer;
     uint64_t account_offset;
-    uint64_t (*write)(
-        uint64_t shard, monad_snapshot_type, unsigned char const *bytes,
-        size_t len, void *user);
-    void *user;
     uint64_t total_shards;
     uint64_t shard_number;
     // Source db is page-encoded: storage leaves hold encoded pages rather than
@@ -308,18 +441,12 @@ struct MonadSnapshotTraverseMachine : public monad::mpt::TraverseMachine
     bool page_encoded;
 
     MonadSnapshotTraverseMachine(
-        std::array<uint64_t, MONAD_SNAPSHOT_SHARDS> &account_bytes_written,
-        uint64_t (*write)(
-            uint64_t shard, monad_snapshot_type, unsigned char const *bytes,
-            size_t len, void *user),
-        void *const user, uint64_t const total_shards,
+        SnapshotStreamWriter &writer, uint64_t const total_shards,
         uint64_t const shard_number, bool const page_encoded)
         : nibble{monad::mpt::INVALID_BRANCH}
         , path{}
-        , account_bytes_written{account_bytes_written}
+        , writer{writer}
         , account_offset{std::numeric_limits<uint64_t>::max()}
-        , write(write)
-        , user{user}
         , total_shards{total_shards}
         , shard_number{shard_number}
         , page_encoded{page_encoded}
@@ -367,50 +494,36 @@ struct MonadSnapshotTraverseMachine : public monad::mpt::TraverseMachine
         if (nibble == CODE_NIBBLE) {
             MONAD_ASSERT(path.length() == HASH_SIZE);
             uint64_t const len = val.size();
-            MONAD_ASSERT(
-                write(
-                    shard,
-                    MONAD_SNAPSHOT_CODE,
-                    reinterpret_cast<unsigned char const *>(&len),
-                    sizeof(len),
-                    user) == sizeof(len));
-            MONAD_ASSERT(
-                write(shard, MONAD_SNAPSHOT_CODE, val.data(), len, user) ==
-                len);
+            writer.write_record(
+                shard,
+                MONAD_SNAPSHOT_CODE,
+                reinterpret_cast<unsigned char const *>(&len),
+                sizeof(len));
+            writer.write_record(
+                shard, MONAD_SNAPSHOT_CODE, val.data(), val.size());
         }
         else {
             MONAD_ASSERT(nibble == STATE_NIBBLE);
             if (path.length() == HASH_SIZE) {
-                account_offset = account_bytes_written.at(shard);
-                account_bytes_written.at(shard) += val.size();
-                MONAD_ASSERT(
-                    write(
-                        shard,
-                        MONAD_SNAPSHOT_ACCOUNT,
-                        val.data(),
-                        val.size(),
-                        user) == val.size());
+                account_offset =
+                    writer.write_account_record(shard, val.data(), val.size());
             }
             else {
                 MONAD_ASSERT(path.length() == (HASH_SIZE * 2));
                 // Emit one slot-format storage entry, prefixed with the owning
                 // account's offset so the loader can re-link it.
                 auto const emit_slot = [&](byte_string_view const entry) {
-                    MONAD_ASSERT(
-                        write(
-                            shard,
-                            MONAD_SNAPSHOT_STORAGE,
-                            reinterpret_cast<unsigned char const *>(
-                                &account_offset),
-                            sizeof(account_offset),
-                            user) == sizeof(account_offset));
-                    MONAD_ASSERT(
-                        write(
-                            shard,
-                            MONAD_SNAPSHOT_STORAGE,
-                            entry.data(),
-                            entry.size(),
-                            user) == entry.size());
+                    writer.write_record(
+                        shard,
+                        MONAD_SNAPSHOT_STORAGE,
+                        reinterpret_cast<unsigned char const *>(
+                            &account_offset),
+                        sizeof(account_offset));
+                    writer.write_record(
+                        shard,
+                        MONAD_SNAPSHOT_STORAGE,
+                        entry.data(),
+                        entry.size());
                 };
                 if (page_encoded) {
                     // Source db is page-encoded: expand the storage leaf into
@@ -466,23 +579,27 @@ MONAD_ANONYMOUS_NAMESPACE_END
 // Directory Format
 //   block number
 //     shard
-//       account    -> empty | leaf.value(), ...
-//       storage    -> empty | [account_offset, leaf.value()], ...
-//       code       -> empty | [size, code], ...
-//       eth header -> empty | rlp(header)
+//       account
+//       storage
+//       code
+//       eth_header
+// Each file holds one stream, empty or in the layout db_snapshot.h describes.
 bool monad_db_dump_snapshot(
-    char const *const *const dbname_paths, size_t const len,
-    unsigned const sq_thread_cpu, uint64_t const block,
+    char const *const dbname_path, unsigned const sq_thread_cpu,
+    uint64_t const block,
     uint64_t (*write)(
         uint64_t shard, monad_snapshot_type, unsigned char const *bytes,
         size_t len, void *user),
     void *const user, unsigned const dump_concurrency_limit,
     uint64_t const total_shards, uint64_t const shard_number,
-    bool const dump_from_secondary)
+    bool const dump_from_secondary, monad_snapshot_format const format)
 {
     using namespace monad;
     using namespace monad::mpt;
 
+    MONAD_ASSERT_PRINTF(
+        dbname_path != nullptr && *dbname_path != '\0',
+        "dbname_path must name the database's storage device");
     MONAD_ASSERT_PRINTF(
         total_shards >= 1, "total_shards must be >= 1, got %lu", total_shards);
     MONAD_ASSERT_PRINTF(
@@ -490,6 +607,7 @@ bool monad_db_dump_snapshot(
         "shard_number (%lu) must be < total_shards (%lu)",
         shard_number,
         total_shards);
+    check_snapshot_format(format);
 
     // Set all queue sizes to dump_concurrency_limit to avoid double queuing
     ReadOnlyOnDiskDbConfig const config{
@@ -498,13 +616,14 @@ bool monad_db_dump_snapshot(
         .sq_thread_cpu = sq_thread_cpu != std::numeric_limits<unsigned>::max()
                              ? std::make_optional(sq_thread_cpu)
                              : std::nullopt,
-        .dbname_paths = {dbname_paths, dbname_paths + len},
+        .dbname_path = dbname_path,
         .concurrent_read_io_limit = dump_concurrency_limit};
     AsyncIOContext io_context{config};
     Db db{
         io_context,
         dump_from_secondary ? timeline_id::secondary : timeline_id::primary};
 
+    SnapshotStreamWriter writer{write, user, format};
     for (uint64_t b = block < 256 ? 0 : block - 255; b <= block; ++b) {
         uint64_t const header_shard = block - b;
         if (header_shard % total_shards != shard_number) {
@@ -521,13 +640,11 @@ bool monad_db_dump_snapshot(
             return false;
         }
         auto const header_view = header_cursor_res.value().node->value();
-        MONAD_ASSERT(
-            write(
-                header_shard,
-                MONAD_SNAPSHOT_ETH_HEADER,
-                header_view.data(),
-                header_view.size(),
-                user) == header_view.size());
+        writer.write_record(
+            header_shard,
+            MONAD_SNAPSHOT_ETH_HEADER,
+            header_view.data(),
+            header_view.size());
     }
 
     auto const root = db.load_root_for_version(block);
@@ -548,11 +665,8 @@ bool monad_db_dump_snapshot(
         return false;
     }
 
-    std::array<uint64_t, MONAD_SNAPSHOT_SHARDS> account_bytes_written{};
     MonadSnapshotTraverseMachine machine{
-        account_bytes_written,
-        write,
-        user,
+        writer,
         total_shards,
         shard_number,
         db.state_machine_type() == state_machine_kind::monad};
@@ -572,16 +686,15 @@ bool monad_db_dump_snapshot(
 // state_machine_kind; a page-encoded target converts slot leaves to page
 // leaves on the fly. The target's kind must already be stamped on disk.
 monad_db_snapshot_loader *monad_db_snapshot_loader_create(
-    uint64_t const block, char const *const *const dbname_paths,
-    size_t const len, unsigned const sq_thread_cpu,
-    bool const load_to_secondary)
+    uint64_t const block, char const *const dbname_path,
+    unsigned const sq_thread_cpu, bool const load_to_secondary)
 {
     // The metadata-driven Db ctor and open_secondary_timeline() resolve the
     // persisted kind through the registry, so both factories must be present.
     monad::register_ethereum_state_machines();
     monad::register_monad_state_machines();
     auto *loader = new monad_db_snapshot_loader(
-        block, dbname_paths, len, sq_thread_cpu, load_to_secondary);
+        block, dbname_path, sq_thread_cpu, load_to_secondary);
     MONAD_ASSERT(
         loader->db.get_latest_version() == monad::mpt::INVALID_BLOCK_NUM,
         "database must be empty when loading snapshot");
@@ -599,28 +712,36 @@ void monad_db_snapshot_loader_load(
     using namespace monad::mpt;
     constexpr size_t BYTES_READ_BEFORE_FLUSH = 10ull * 1024 * 1024 * 1024;
     MONAD_ASSERT(loader);
+    // Account offsets index from the first account record, so the storage loop
+    // below must resolve them against this header-stripped view rather than the
+    // raw buffer.
+    byte_string_view accounts{};
     if (account) {
-        for (uint64_t account_offset = 0; account_offset != account_len;) {
+        accounts = byte_string_view{account, account_len};
+        read_stream_header(accounts, MONAD_SNAPSHOT_ACCOUNT);
+        for (uint64_t account_offset = 0; account_offset != accounts.size();) {
             account_offset += monad_db_snapshot_loader_read_account(
-                loader, shard, account_offset, {account, account_len});
+                loader, shard, account_offset, accounts);
             if (loader->bytes_read >= BYTES_READ_BEFORE_FLUSH) {
                 monad_db_snapshot_loader_flush(loader);
             }
-            MONAD_ASSERT(account_offset <= account_len);
+            MONAD_ASSERT(account_offset <= accounts.size());
         }
     }
 
     if (storage) {
         MONAD_ASSERT(account);
         byte_string_view storage_view{storage, storage_len};
+        read_stream_header(storage_view, MONAD_SNAPSHOT_STORAGE);
         auto &account_offset_to_update =
             loader->account_offset_to_update.at(shard);
         while (!storage_view.empty()) {
+            MONAD_ASSERT(storage_view.size() >= sizeof(uint64_t));
             uint64_t const account_offset =
                 unaligned_load<uint64_t>(storage_view.data());
             if (!account_offset_to_update.contains(account_offset)) {
                 monad_db_snapshot_loader_read_account(
-                    loader, shard, account_offset, {account, account_len});
+                    loader, shard, account_offset, accounts);
             }
             storage_view.remove_prefix(sizeof(account_offset));
             byte_string_view const before{storage_view};
@@ -675,6 +796,7 @@ void monad_db_snapshot_loader_load(
 
     if (code) {
         byte_string_view code_view{code, code_len};
+        read_stream_header(code_view, MONAD_SNAPSHOT_CODE);
         while (!code_view.empty()) {
             MONAD_ASSERT(code_view.size() >= sizeof(uint64_t));
             uint64_t const size = unaligned_load<uint64_t>(code_view.data());
@@ -698,11 +820,13 @@ void monad_db_snapshot_loader_load(
 
     if (eth_header) {
         byte_string_view enc{eth_header, eth_header_len};
+        read_stream_header(enc, MONAD_SNAPSHOT_ETH_HEADER);
+        byte_string_view const rlp_header{enc};
         auto const header = rlp::decode_block_header(enc);
         MONAD_ASSERT(header.has_value());
         MONAD_ASSERT(header.value().number == (loader->block - shard));
         // stash to upsert versions last
-        loader->eth_headers.at(shard).assign(eth_header, eth_header_len);
+        loader->eth_headers.at(shard).assign(rlp_header);
     }
     monad_db_snapshot_loader_flush(loader);
 }

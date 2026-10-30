@@ -30,6 +30,6 @@ namespace monad::vm::fuzzing
     void assert_equal(State &, State &);
 
     void assert_equal(
-        evmc::Result const &evmone_result, evmc::Result const &compiler_result,
+        evmc::Result const &spec_result, evmc::Result const &compiler_result,
         bool strict_out_of_gas);
 }

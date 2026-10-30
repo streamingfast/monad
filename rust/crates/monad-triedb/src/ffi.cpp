@@ -22,12 +22,16 @@
 #include <category/execution/monad/db/storage_page.hpp>
 #include <category/execution/monad/staking/read_valset.hpp>
 #include <category/mpt/db.hpp>
+#include <category/mpt/db_stats_shm.hpp>
+#include <category/mpt/detail/collected_stats.hpp>
 #include <category/mpt/ondisk_db_config.hpp>
 #include <category/mpt/traverse.hpp>
 #include <category/mpt/traverse_util.hpp>
+#include <category/mpt/util.hpp>
 
 #include <quill/std/SystemError.h>
 
+#include <algorithm>
 #include <cassert>
 #include <filesystem>
 #include <iostream>
@@ -35,7 +39,6 @@
 #include <memory>
 #include <optional>
 #include <utility>
-#include <vector>
 
 struct TriedbRoInner
 {
@@ -43,15 +46,44 @@ struct TriedbRoInner
     monad::mpt::Db db;
     monad::mpt::AsyncContext async_ctx;
 
+    // Secondary timeline, opened when active. Both timelines share the one
+    // AsyncIOContext (an AsyncIO is one-per-thread). During the migration the
+    // secondary is the page-encoded backfill target; after page db gets
+    // promoted to primary, secondary becomes the frozen slot-encoded history
+    // that serves pre-cutoff versions the primary doesn't have. Versioned
+    // reads route primary first, then secondary (see db_for).
+    std::optional<monad::mpt::Db> secondary_db;
+    std::optional<monad::mpt::AsyncContext> secondary_async_ctx;
+
     explicit TriedbRoInner(
-        std::vector<std::filesystem::path> dbname_paths,
-        uint64_t const node_lru_max_mem)
+        std::filesystem::path dbname_path, uint64_t const node_lru_max_mem)
         : io_ctx{monad::mpt::ReadOnlyOnDiskDbConfig{
               .disable_mismatching_storage_pool_check = true,
-              .dbname_paths = std::move(dbname_paths)}}
+              .dbname_path = std::move(dbname_path)}}
         , db{io_ctx}
         , async_ctx{db, node_lru_max_mem}
     {
+        if (db.timeline_active(monad::mpt::timeline_id::secondary)) {
+            secondary_db.emplace(io_ctx, monad::mpt::timeline_id::secondary);
+            secondary_async_ctx.emplace(*secondary_db, node_lru_max_mem);
+        }
+    }
+
+    // The primary owns everything from its earliest version upward; only
+    // versions below that floor fall through to the secondary (the strictly
+    // older history). An empty primary reports INVALID_BLOCK_NUM (u64 max)
+    // as its earliest, which routes every version to the secondary.
+    monad::mpt::Db &db_for(uint64_t const version)
+    {
+        if (version >= db.get_earliest_version() || !secondary_db.has_value()) {
+            return db;
+        }
+        return *secondary_db;
+    }
+
+    monad::mpt::AsyncContext &async_ctx_for(uint64_t const version)
+    {
+        return (&db_for(version) == &db) ? async_ctx : *secondary_async_ctx;
     }
 };
 
@@ -77,32 +109,27 @@ namespace
 }
 
 int triedb_open(
-    char const *dbdirpath, TriedbRoInner **db, uint64_t const node_lru_max_mem)
+    char const *dbpath, TriedbRoInner **db, uint64_t const node_lru_max_mem)
 {
-    if (dbdirpath == nullptr || db == nullptr || *db != nullptr) {
+    if (dbpath == nullptr || db == nullptr || *db != nullptr) {
         return -1;
     }
 
-    std::vector<std::filesystem::path> paths;
     std::error_code ec;
-
-    if (std::filesystem::is_block_file(dbdirpath, ec)) {
-        paths.emplace_back(dbdirpath);
+    if (std::filesystem::is_directory(dbpath, ec)) {
+        LOG_ERROR(
+            "Database path {} is a directory, but a database is the single "
+            "storage device it lives on; name that device.",
+            dbpath);
+        return -2;
     }
-    else if (!ec) {
-        for (auto const &file :
-             std::filesystem::directory_iterator(dbdirpath, ec)) {
-            paths.emplace_back(file.path());
-        }
-    }
-
     if (ec) {
-        LOG_ERROR("Failed to inspect database path: {} ({})", dbdirpath, ec);
+        LOG_ERROR("Failed to inspect database path: {} ({})", dbpath, ec);
         return -2;
     }
 
     try {
-        *db = new TriedbRoInner{std::move(paths), node_lru_max_mem};
+        *db = new TriedbRoInner{dbpath, node_lru_max_mem};
     }
     catch (std::exception const &e) {
         std::cerr << e.what();
@@ -127,8 +154,8 @@ int triedb_read(
 
     *value = nullptr;
 
-    auto result =
-        db->db.find(key_to_nibbles_view(key, key_len_nibbles), block_id);
+    auto result = db->db_for(block_id).find(
+        key_to_nibbles_view(key, key_len_nibbles), block_id);
     if (!result.has_value()) {
         return -1;
     }
@@ -159,23 +186,114 @@ bool triedb_is_page_encoded(TriedbRoInner *const db)
 uint8_t triedb_migration_phase(TriedbRoInner *const db)
 {
     // Phase codes; must stay in sync with the contract in ffi.h and the Rust
-    // MigrationPhase mapping in lib.rs.
+    // MigrationPhase mapping in lib.rs. The phase fully determines each
+    // timeline's encoding (see ffi.h), so readers derive both from it.
     enum phase : uint8_t
     {
         legacy = 0,
         dual_timeline = 1,
         page_encoded = 2,
+        promoted = 3,
     };
 
     if (db == nullptr) {
         return legacy;
     }
+    bool const secondary_active =
+        db->db.timeline_active(monad::mpt::timeline_id::secondary);
     if (db->db.state_machine_type() == monad::mpt::state_machine_kind::monad) {
-        return page_encoded;
+        return secondary_active ? promoted : page_encoded;
     }
-    return db->db.timeline_active(monad::mpt::timeline_id::secondary)
-               ? dual_timeline
-               : legacy;
+    return secondary_active ? dual_timeline : legacy;
+}
+
+struct TriedbStatsReader
+{
+    monad::mpt::DbStatsReader reader;
+};
+
+int triedb_stats_open(
+    char const *const path, TriedbStatsReader **const stats_reader)
+{
+    if (path == nullptr || stats_reader == nullptr ||
+        *stats_reader != nullptr) {
+        return -1;
+    }
+
+    // Nothing may unwind into Rust across this extern "C" boundary: every
+    // allocating call belongs inside the try, non-std throws included.
+    try {
+        auto reader = monad::mpt::DbStatsReader::open(path);
+        if (!reader.has_value()) {
+            return -2;
+        }
+        *stats_reader = new TriedbStatsReader{std::move(*reader)};
+    }
+    catch (std::exception const &e) {
+        std::cerr << e.what();
+        return -3;
+    }
+    catch (...) {
+        std::cerr << "triedb_stats_open: unknown exception";
+        return -3;
+    }
+    return 0;
+}
+
+void triedb_stats_close(TriedbStatsReader *const stats_reader)
+{
+    delete stats_reader;
+}
+
+bool triedb_update_stats_read(
+    TriedbStatsReader *const stats_reader, triedb_update_stats *const out)
+{
+    static_assert(
+        sizeof(triedb_update_stats) ==
+        sizeof(monad::mpt::detail::TrieUpdateCollectedStats));
+
+    if (stats_reader == nullptr || out == nullptr) {
+        return false;
+    }
+
+    auto const stats = stats_reader->reader.read_update_stats();
+    if (!stats.has_value()) {
+        return false;
+    }
+
+    out->nodes_created_or_updated = stats->nodes_created_or_updated;
+    out->nreads_compaction = stats->nreads_compaction;
+    out->nreads_before_compact_offset_fast =
+        stats->nreads_before_compact_offset[0];
+    out->nreads_before_compact_offset_slow =
+        stats->nreads_before_compact_offset[1];
+    out->nreads_after_compact_offset_fast =
+        stats->nreads_after_compact_offset[0];
+    out->nreads_after_compact_offset_slow =
+        stats->nreads_after_compact_offset[1];
+    out->bytes_read_before_compact_offset_fast =
+        stats->bytes_read_before_compact_offset[0];
+    out->bytes_read_before_compact_offset_slow =
+        stats->bytes_read_before_compact_offset[1];
+    out->bytes_read_after_compact_offset_fast =
+        stats->bytes_read_after_compact_offset[0];
+    out->bytes_read_after_compact_offset_slow =
+        stats->bytes_read_after_compact_offset[1];
+    out->compacted_nodes_in_fast = stats->compacted_nodes_in_fast;
+    out->compacted_nodes_in_slow = stats->compacted_nodes_in_slow;
+    out->nodes_copied_fast_to_fast_for_fast =
+        stats->nodes_copied_fast_to_fast_for_fast;
+    out->nodes_copied_fast_to_fast_for_slow =
+        stats->nodes_copied_fast_to_fast_for_slow;
+    out->nodes_copied_slow_to_fast_for_slow =
+        stats->nodes_copied_slow_to_fast_for_slow;
+    out->compacted_bytes_in_fast = stats->compacted_bytes_in_fast;
+    out->compacted_bytes_in_slow = stats->compacted_bytes_in_slow;
+    out->bytes_copied_slow_to_fast_for_slow =
+        stats->bytes_copied_slow_to_fast_for_slow;
+    out->nodes_updated_expire = stats->nodes_updated_expire;
+    out->nreads_expire = stats->nreads_expire;
+    return true;
 }
 
 void triedb_storage_stats_read(
@@ -286,7 +404,7 @@ void triedb_async_read(
 {
     auto *state = new auto(monad::async::connect(
         monad::mpt::make_get_sender(
-            &db->async_ctx,
+            &db->async_ctx_for(block_id),
             key_to_nibbles_view(key, key_len_nibbles),
             block_id),
         AsyncReadReceiver{callback, user}));
@@ -436,7 +554,8 @@ bool triedb_traverse(
     triedb_async_traverse_callback_fn callback)
 {
     monad::mpt::NibblesView const prefix{0, key_len_nibbles, key};
-    auto cursor = db->db.find(prefix, block_id);
+    monad::mpt::Db &routed_db = db->db_for(block_id);
+    auto cursor = routed_db.find(prefix, block_id);
     if (!cursor.has_value()) {
         callback(
             triedb_async_traverse_callback_finished_early,
@@ -451,7 +570,8 @@ bool triedb_traverse(
     TraverseMachineWithCallback machine(
         context, callback, monad::mpt::NibblesView{});
 
-    bool const completed = db->db.traverse(cursor.value(), machine, block_id);
+    bool const completed =
+        routed_db.traverse(cursor.value(), machine, block_id);
 
     callback(
         completed ? triedb_async_traverse_callback_finished_normally
@@ -498,13 +618,14 @@ void triedb_async_ranged_get(
                 value.data(),
                 value.size());
         });
+    monad::mpt::AsyncContext &ctx = db->async_ctx_for(block_id);
     (new auto(monad::async::connect(
-         monad::mpt::make_get_node_sender(&db->async_ctx, prefix, block_id),
+         monad::mpt::make_get_node_sender(&ctx, prefix, block_id),
          GetRootForTraverseReceiver(
              context,
              callback,
              monad::mpt::make_traverse_sender(
-                 &db->async_ctx, {}, std::move(machine), block_id)))))
+                 &ctx, {}, std::move(machine), block_id)))))
         ->initiate();
 }
 
@@ -516,18 +637,21 @@ void triedb_async_traverse(
     monad::mpt::NibblesView const prefix{0, key_len_nibbles, key};
     auto machine = std::make_unique<TraverseMachineWithCallback>(
         context, callback, monad::mpt::NibblesView{});
+    monad::mpt::AsyncContext &ctx = db->async_ctx_for(block_id);
     (new auto(monad::async::connect(
-         monad::mpt::make_get_node_sender(&db->async_ctx, prefix, block_id),
+         monad::mpt::make_get_node_sender(&ctx, prefix, block_id),
          GetRootForTraverseReceiver(
              context,
              callback,
              monad::mpt::make_traverse_sender(
-                 &db->async_ctx, {}, std::move(machine), block_id)))))
+                 &ctx, {}, std::move(machine), block_id)))))
         ->initiate();
 }
 
 size_t triedb_poll(TriedbRoInner *db, bool const blocking, size_t const count)
 {
+    // Both timelines share one AsyncIO, so polling the primary handle pumps
+    // the secondary's reads too.
     return db->db.poll(blocking, count);
 }
 
@@ -569,12 +693,31 @@ uint64_t triedb_latest_verified_version(TriedbRoInner *db)
 
 uint64_t triedb_earliest_version(TriedbRoInner *db)
 {
-    return db->db.get_earliest_version();
+    uint64_t earliest = db->db.get_earliest_version();
+    if (db->secondary_db.has_value()) {
+        earliest = std::min(earliest, db->secondary_db->get_earliest_version());
+    }
+    return earliest;
 }
 
 uint64_t triedb_latest_version(TriedbRoInner *db)
 {
-    return db->db.get_latest_version();
+    uint64_t latest = db->db.get_latest_version();
+    if (db->secondary_db.has_value()) {
+        uint64_t const secondary_latest =
+            db->secondary_db->get_latest_version();
+        if (latest == monad::mpt::INVALID_BLOCK_NUM ||
+            (secondary_latest != monad::mpt::INVALID_BLOCK_NUM &&
+             secondary_latest > latest)) {
+            latest = secondary_latest;
+        }
+    }
+    return latest;
+}
+
+uint64_t triedb_primary_earliest_version(TriedbRoInner *db)
+{
+    return db->db.get_earliest_version();
 }
 
 namespace
@@ -595,7 +738,8 @@ void triedb_free_valset(validator_set *valset)
 validator_set *triedb_read_valset(
     TriedbRoInner *db, size_t const block_num, uint64_t const requested_epoch)
 {
-    auto ret = monad::staking::read_valset(db->db, block_num, requested_epoch);
+    auto ret = monad::staking::read_valset(
+        db->db_for(block_num), block_num, requested_epoch);
     if (!ret.has_value()) {
         return nullptr;
     }

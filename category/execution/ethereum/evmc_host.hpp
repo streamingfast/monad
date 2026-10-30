@@ -15,6 +15,7 @@
 
 #pragma once
 
+#include <category/core/assert.h>
 #include <category/core/bytes.hpp>
 #include <category/core/config.hpp>
 #include <category/core/throw.hpp>
@@ -29,7 +30,10 @@
 #include <category/execution/ethereum/trace/call_tracer.hpp>
 #include <category/execution/ethereum/trace/state_tracer.hpp>
 #include <category/execution/ethereum/transaction_gas.hpp>
+#include <category/vm/evm/access_status.h>
 #include <category/vm/evm/delegation.hpp>
+#include <category/vm/evm/page_storage_status.h>
+#include <category/vm/evm/storage_status.h>
 #include <category/vm/evm/traits.hpp>
 #include <category/vm/host.hpp>
 #include <category/vm/runtime/types.hpp>
@@ -101,10 +105,6 @@ public:
     virtual void set_transient_storage(
         evmc::address const &, evmc::bytes32 const &key,
         evmc::bytes32 const &value) noexcept override;
-
-    virtual PageStorageStatus update_page(
-        evmc::address const &, evmc::bytes32 const &page_key,
-        evmc_storage_status) noexcept override;
 };
 
 static_assert(sizeof(EvmcHostBase) == 72);
@@ -210,7 +210,7 @@ struct EvmcHost final : public EvmcHostBase
             if (is_precompile<traits>(address)) {
                 return EVMC_ACCESS_WARM;
             }
-            return state_.access_account(address);
+            return to_evmc_access_status(state_.access_account(address));
         }
         MONAD_CATCH(...)
         {
@@ -225,13 +225,35 @@ struct EvmcHost final : public EvmcHostBase
     {
         MONAD_TRY
         {
-            return state_.access_storage<traits>(address, key);
+            return to_evmc_access_status(
+                state_.access_storage<traits>(address, key));
         }
         MONAD_CATCH(...)
         {
             capture_current_exception();
         }
         stack_unwind();
+    }
+
+    virtual evmc_page_storage_status update_page(
+        evmc::address const &address, evmc::bytes32 const &key,
+        evmc_storage_status const status) noexcept override
+    {
+        if constexpr (traits::mip_8_active()) {
+            MONAD_TRY
+            {
+                return to_evmc_page_storage_status(state_.update_page(
+                    address, key, from_evmc_storage_status(status)));
+            }
+            MONAD_CATCH(...)
+            {
+                capture_current_exception();
+            }
+            stack_unwind();
+        }
+        else {
+            MONAD_ABORT("update_page is MIP-8 only");
+        }
     }
 
     CallTracerBase &get_call_tracer() noexcept

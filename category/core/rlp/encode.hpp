@@ -18,6 +18,7 @@
 #include <category/core/assume.h>
 #include <category/core/byte_string.hpp>
 #include <category/core/endian.hpp>
+#include <category/core/int.hpp>
 #include <category/core/likely.h>
 #include <category/core/rlp/config.hpp>
 #include <category/core/runtime/unaligned.hpp>
@@ -50,10 +51,23 @@ namespace impl
             n <<= lz_bytes * 8;
         }
 
-        size_t const n_be = std::byteswap(n);
+        size_t const n_be = bswap(n);
         MONAD_ASSUME(d.size() >= sizeof(size_t));
         unaligned_store(d.data(), n_be);
         return d.subspan((sizeof(size_t) - lz_bytes));
+    }
+
+    // Write only the significant big-endian bytes, leaving the tail untouched.
+    constexpr std::span<unsigned char>
+    encode_length_compact(std::span<unsigned char> d, size_t n)
+    {
+        size_t const len = length_length(n);
+        MONAD_ASSUME(d.size() >= len);
+        for (size_t i = len; i != 0; --i) {
+            d[i - 1] = static_cast<unsigned char>(n);
+            n >>= 8;
+        }
+        return d.subspan(len);
     }
 }
 
@@ -125,6 +139,18 @@ encode_list_prefix(std::span<unsigned char> d, size_t const payload_size)
                static_cast<unsigned char>(impl::length_length(payload_size));
         return impl::encode_length(d.subspan(1), payload_size);
     }
+}
+
+// Write exactly list_length(payload_size) - payload_size bytes.
+constexpr std::span<unsigned char> encode_list_prefix_compact(
+    std::span<unsigned char> d, size_t const payload_size)
+{
+    if (payload_size <= 55) {
+        return encode_list_prefix(d, payload_size);
+    }
+    MONAD_ASSUME(d.size() > 0);
+    d[0] = 0xF7 + static_cast<unsigned char>(impl::length_length(payload_size));
+    return impl::encode_length_compact(d.subspan(1), payload_size);
 }
 
 constexpr std::span<unsigned char>

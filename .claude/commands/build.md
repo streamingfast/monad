@@ -33,7 +33,7 @@ You are helping the user configure and build the monad C++ project located at $C
 | `category/core/toolchains/gcc-avx512.cmake` | `-march=skylake-avx512`. Works with both GCC and Clang. |
 | `category/core/toolchains/gcc-asan.cmake` | ASAN + UBSAN (includes `-march=haswell`). **GCC only — do not use with Clang** (use `clang-fuzz.cmake` instead). |
 | `category/core/toolchains/gcc-tsan.cmake` | TSAN (includes `-march=haswell`). **GCC only.** |
-| `category/core/toolchains/clang-tsan.cmake` | TSAN (includes `-march=haswell`). **Clang only.** Note: currently hard-codes a `-fsanitize-blacklist` path that may not exist on all machines. |
+| `category/core/toolchains/clang-tsan.cmake` | TSAN (includes `-march=haswell`). **Clang only.** |
 | `category/core/toolchains/clang-fuzz.cmake` | ASAN + UBSAN + fuzzing coverage instrumentation. **Clang only.** Note: includes fuzzing flags (`-fsanitize-coverage`, `-DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION`), so this is more than plain ASAN. There is no plain Clang ASAN toolchain — warn the user about the extra flags if they just asked for `--asan --clang`. |
 
 ### CMake options available
@@ -50,8 +50,8 @@ You are helping the user configure and build the monad C++ project located at $C
 | Option | Default | Description |
 |--------|---------|-------------|
 | `MONAD_COMPILER_COVERAGE` | OFF | Build with coverage instrumentation |
-| `MONAD_COMPILER_TESTING` | OFF | Build compiler tests (requires the `third_party/evmone` submodule) |
-| `MONAD_COMPILER_BENCHMARKS` | OFF | Build compiler benchmarks (requires the `third_party/evmone` submodule) |
+| `MONAD_COMPILER_TESTING` | OFF | Build compiler tests |
+| `MONAD_COMPILER_BENCHMARKS` | OFF | Build compiler benchmarks |
 | `MONAD_COMPILER_DUMP_ASM` | OFF | Dump assembly files into `build/asm` |
 | `MONAD_COMPILER_STATS` | OFF | Print JIT compiler statistics |
 | `MONAD_COMPILER_HOT_PATH_STATS` | OFF | Print VM hot-path statistics |
@@ -187,7 +187,7 @@ CC=clang-19 CXX=clang++-19 cmake -G Ninja -B build \
 
 - If cmake configure fails, check for missing dependencies and suggest install commands
 - If configure fails with "GCC version 15 or higher is required", ensure `CC=gcc-15 CXX=g++-15` is set (or use `CC=clang-19 CXX=clang++-19` for Clang)
-- If configure fails with missing `CMakeLists.txt` in `third_party/` (including `third_party/evmone`, which is required for `MONAD_COMPILER_TESTING`, `MONAD_COMPILER_BENCHMARKS`, lint, and fuzz builds), run `git submodule update --init --recursive`
+- If configure fails with missing `CMakeLists.txt` in `third_party/`, run `git submodule update --init --recursive`
 - If build fails with `#error avx2 or avx512 required`, ensure a toolchain file is being used
 - If build fails, show the relevant error lines and suggest fixes
 

@@ -29,7 +29,7 @@ extern "C"
 typedef struct TriedbRoInner TriedbRoInner;
 
 int triedb_open(
-    char const *dbdirpath, TriedbRoInner **, uint64_t node_lru_max_mem);
+    char const *dbpath, TriedbRoInner **, uint64_t node_lru_max_mem);
 int triedb_close(TriedbRoInner *);
 
 // returns -1 if key not found
@@ -43,13 +43,15 @@ int triedb_read(
 // is an encoded page; otherwise storage is slot-encoded.
 bool triedb_is_page_encoded(TriedbRoInner *);
 
-// Dual-DB migration phase of the on-disk triedb, derived from the primary
-// timeline's state-machine kind and secondary-timeline presence (the same
-// pair monad-mpt reports). Read racily from the mmap'd metadata; safe on a
-// read-only handle while the writer is live.
+// Dual-DB migration phase. Fully determines each timeline's encoding, so
+// readers derive both from it. Safe on a read-only handle while the writer
+// is live.
 //   0 = legacy        (primary ethereum, no secondary)
-//   1 = dual-timeline (primary ethereum, secondary active — migrating)
-//   2 = page-encoded  (primary monad — migration complete)
+//   1 = dual-timeline (primary ethereum, page secondary backfilling)
+//   2 = page-encoded  (primary monad, no secondary)
+//   3 = promoted      (primary monad, slot secondary kept as history)
+// Phases only change offline via monad-mpt with every reader and the daemon
+// stopped; a handle observes one phase for its lifetime.
 uint8_t triedb_migration_phase(TriedbRoInner *);
 
 // Storage-pool disk capacity and usage, in bytes. Zeros for in-memory /
@@ -61,6 +63,51 @@ typedef struct triedb_storage_stats
 } triedb_storage_stats;
 
 void triedb_storage_stats_read(TriedbRoInner *, triedb_storage_stats *out);
+
+// Reader for the statistics sidecar a writing db publishes (the execution
+// binary's --db-stats-file). Independent of the db handle: the sidecar is a
+// separate path with its own lifetime, it is absent unless the writer was
+// configured with one, and it carries counters that live in the writing
+// process and so cannot be reached through a read-only db.
+typedef struct TriedbStatsReader TriedbStatsReader;
+
+// 0 on success, nonzero on failure: the file is absent, unreadable, or not a
+// sidecar of a layout this build understands, or the arguments are bad
+// (`*out` must be null on entry).
+int triedb_stats_open(char const *path, TriedbStatsReader **);
+void triedb_stats_close(TriedbStatsReader *);
+
+// Lifetime totals of the writing process's trie updates. They restart at zero
+// when that process does. `fast` and `slow` name the two node rings.
+typedef struct triedb_update_stats
+{
+    uint64_t nodes_created_or_updated;
+    uint64_t nreads_compaction;
+    uint64_t nreads_before_compact_offset_fast;
+    uint64_t nreads_before_compact_offset_slow;
+    uint64_t nreads_after_compact_offset_fast;
+    uint64_t nreads_after_compact_offset_slow;
+    uint64_t bytes_read_before_compact_offset_fast;
+    uint64_t bytes_read_before_compact_offset_slow;
+    uint64_t bytes_read_after_compact_offset_fast;
+    uint64_t bytes_read_after_compact_offset_slow;
+    uint64_t compacted_nodes_in_fast;
+    uint64_t compacted_nodes_in_slow;
+    uint64_t nodes_copied_fast_to_fast_for_fast;
+    uint64_t nodes_copied_fast_to_fast_for_slow;
+    uint64_t nodes_copied_slow_to_fast_for_slow;
+    uint64_t compacted_bytes_in_fast;
+    uint64_t compacted_bytes_in_slow;
+    uint64_t bytes_copied_slow_to_fast_for_slow;
+    uint64_t nodes_updated_expire;
+    uint64_t nreads_expire;
+} triedb_update_stats;
+
+// False if the arguments are bad, the writer predates these counters, or it
+// kept republishing them for the whole retry budget; `out` is left untouched.
+// All-zero is a legitimate reading from a writer that has not upserted yet,
+// so it cannot double as the failure signal.
+bool triedb_update_stats_read(TriedbStatsReader *, triedb_update_stats *out);
 
 // Compute the storage page key for a 32-byte slot key on a page-encoded db:
 // page_key = slot >> 7. Writes the 32-byte big-endian page key (the key the
@@ -135,9 +182,15 @@ uint64_t triedb_latest_finalized_version(TriedbRoInner *);
 uint64_t triedb_latest_verified_version(TriedbRoInner *);
 
 // returns MAX if doesn't exist
+// Earliest version available on any timeline.
 uint64_t triedb_earliest_version(TriedbRoInner *);
 // returns MAX if doesn't exist
+// Latest version available on any timeline.
 uint64_t triedb_latest_version(TriedbRoInner *);
+// Earliest version on file in the primary timeline. Versions below it are
+// only on file in the secondary (when one is active); on an archive node
+// after the offline promote that is the frozen slot-encoded history.
+uint64_t triedb_primary_earliest_version(TriedbRoInner *);
 
 #pragma pack(push, 1)
 

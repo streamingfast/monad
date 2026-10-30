@@ -33,6 +33,7 @@
 #include <category/mpt/config.hpp>
 #include <category/mpt/db_error.hpp>
 #include <category/mpt/db_metadata_context.hpp>
+#include <category/mpt/db_stats_shm.hpp>
 #include <category/mpt/detail/timeline.hpp>
 #include <category/mpt/find_request_sender.hpp>
 #include <category/mpt/nibbles_view.hpp>
@@ -108,9 +109,9 @@ AsyncIOContext::AsyncIOContext(ReadOnlyOnDiskDbConfig const &options)
         pool_options.open_read_only = true;
         pool_options.disable_mismatching_storage_pool_check =
             options.disable_mismatching_storage_pool_check;
-        MONAD_ASSERT(!options.dbname_paths.empty());
+        MONAD_ASSERT(!options.dbname_path.empty());
         return async::storage_pool{
-            options.dbname_paths,
+            options.dbname_path,
             async::storage_pool::mode::open_existing,
             pool_options};
     }()}
@@ -132,27 +133,27 @@ AsyncIOContext::AsyncIOContext(OnDiskDbConfig const &options)
         pool_options.num_cnv_chunks = options.root_offsets_chunk_count + 1;
         pool_options.set_chunk_capacity(options.chunk_capacity);
         auto const len = options.file_size_db * 1024 * 1024 * 1024 + 24576;
-        if (options.dbname_paths.empty()) {
+        if (options.dbname_path.empty()) {
             return async::storage_pool{
                 async::use_anonymous_sized_inode_tag{}, len, pool_options};
         }
         // initialize db file on disk
-        for (auto const &dbname_path : options.dbname_paths) {
-            if (!std::filesystem::exists(dbname_path)) {
-                int const fd = ::open(
-                    dbname_path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
-                MONAD_ASSERT_PRINTF(
-                    fd != -1, "open failed due to %s", strerror(errno));
-                auto const unfd =
-                    monad::make_scope_exit([fd]() noexcept { ::close(fd); });
-                MONAD_ASSERT_PRINTF(
-                    ::ftruncate(fd, len) != -1,
-                    "ftruncate failed due to %s",
-                    strerror(errno));
-            }
+        if (!std::filesystem::exists(options.dbname_path)) {
+            int const fd = ::open(
+                options.dbname_path.c_str(),
+                O_CREAT | O_RDWR | O_CLOEXEC,
+                0600);
+            MONAD_ASSERT_PRINTF(
+                fd != -1, "open failed due to %s", strerror(errno));
+            auto const unfd =
+                monad::make_scope_exit([fd]() noexcept { ::close(fd); });
+            MONAD_ASSERT_PRINTF(
+                ::ftruncate(fd, len) != -1,
+                "ftruncate failed due to %s",
+                strerror(errno));
         }
         return async::storage_pool{
-            options.dbname_paths,
+            options.dbname_path,
             options.append ? async::storage_pool::mode::open_existing
                            : async::storage_pool::mode::truncate,
             pool_options};
@@ -420,6 +421,7 @@ public:
         NodeCursor start;
         NibblesView key;
         uint64_t version;
+        timeline_id tid;
     };
 
     using Comms = std::variant<
@@ -437,6 +439,8 @@ private:
     {
         OnDiskDbServiceThread *parent;
         AsyncIOContext async_io;
+        // Declared before aux so it outlives the aux that points at it.
+        std::optional<DbStatsPublisher> stats_publisher;
         UpdateAux aux;
         std::atomic<bool> sleeping{false}, done{false};
 
@@ -453,8 +457,15 @@ private:
             OnDiskDbServiceThread *const parent, OnDiskDbConfig const &options)
             : parent(parent)
             , async_io(options)
+            , stats_publisher(
+                  options.stats_file_path.has_value()
+                      ? DbStatsPublisher::create(*options.stats_file_path)
+                      : std::nullopt)
             , aux{async_io.io, options.fixed_history_length}
         {
+            if (stats_publisher.has_value()) {
+                aux.set_stats_publisher(&stats_publisher.value());
+            }
             if (options.rewind_to_latest_finalized) {
                 auto const latest_block_id =
                     aux.metadata_ctx().get_latest_finalized_version();
@@ -486,7 +497,8 @@ private:
                                 std::move(req->promise),
                                 req->start,
                                 req->key,
-                                req->version);
+                                req->version,
+                                req->tid);
                         }
                         else {
                             MONAD_ASSERT(req->key.empty());
@@ -495,7 +507,8 @@ private:
                                 node_cache,
                                 inflight,
                                 std::move(req->promise),
-                                req->version);
+                                req->version,
+                                req->tid);
                         }
                     }
                     else if (auto *req = std::get_if<4>(&request);
@@ -946,11 +959,18 @@ public:
 struct RODb::Impl final
 {
     std::shared_ptr<OnDiskDbServiceThread> worker_thread_;
+    timeline_id const tid_;
 
-    explicit Impl(std::shared_ptr<OnDiskDbServiceThread> worker_thread)
+    explicit Impl(
+        std::shared_ptr<OnDiskDbServiceThread> worker_thread,
+        timeline_id const tid)
         : worker_thread_(std::move(worker_thread))
+        , tid_(tid)
     {
         MONAD_ASSERT(worker_thread_ != nullptr);
+        MONAD_ASSERT(
+            worker_thread_->aux().metadata_ctx().timeline_active(tid_),
+            "RODb opened on an inactive timeline");
     }
 
     UpdateAux &aux()
@@ -968,14 +988,15 @@ struct RODb::Impl final
                 .promise = std::move(promise),
                 .start = start,
                 .key = key,
-                .version = version});
+                .version = version,
+                .tid = tid_});
         return fut.get();
     }
 
     NodeCursor load_root_fiber_blocking(uint64_t const version)
     {
         auto const root_offset =
-            aux().metadata_ctx().get_root_offset_at_version(version);
+            aux().metadata_ctx().get_root_offset_at_version(version, tid_);
         if (root_offset == INVALID_OFFSET) {
             return {};
         }
@@ -998,36 +1019,67 @@ struct RODb::Impl final
             .root = std::move(node),
             .machine = machine,
             .version = version,
-            .concurrency_limit = concurrency_limit});
+            .concurrency_limit = concurrency_limit,
+            .tid = tid_});
         return fut.get();
     }
 };
 
+RODb::RODb(std::unique_ptr<Impl> impl)
+    : impl_(std::move(impl))
+{
+}
+
 RODb::RODb(ReadOnlyOnDiskDbConfig const &options)
     : impl_(std::make_unique<Impl>(
-          std::make_shared<OnDiskDbServiceThread>(options)))
+          std::make_shared<OnDiskDbServiceThread>(options),
+          timeline_id::primary))
 {
 }
 
 RODb::~RODb() = default;
 
+std::unique_ptr<RODb> RODb::open_secondary_timeline() const
+{
+    MONAD_ASSERT(impl_);
+    MONAD_ASSERT(impl_->tid_ == timeline_id::primary);
+    if (!impl_->aux().metadata_ctx().timeline_active(timeline_id::secondary)) {
+        return nullptr;
+    }
+    return std::unique_ptr<RODb>(new RODb(
+        std::make_unique<Impl>(impl_->worker_thread_, timeline_id::secondary)));
+}
+
 uint64_t RODb::get_latest_version() const
 {
     MONAD_ASSERT(impl_);
-    return impl_->aux().metadata_ctx().db_history_max_version();
+    return impl_->aux().metadata_ctx().db_history_max_version(impl_->tid_);
 }
 
 uint64_t RODb::get_earliest_version() const
 {
     MONAD_ASSERT(impl_);
-    return impl_->aux().metadata_ctx().db_history_min_valid_version();
+    return impl_->aux().metadata_ctx().db_history_min_valid_version(
+        impl_->tid_);
+}
+
+bool RODb::timeline_active(timeline_id const tid) const
+{
+    MONAD_ASSERT(impl_);
+    return impl_->aux().metadata_ctx().timeline_active(tid);
+}
+
+bool RODb::version_is_valid_ondisk(uint64_t const version) const
+{
+    MONAD_ASSERT(impl_);
+    return impl_->aux().metadata_ctx().version_is_valid_ondisk(
+        version, impl_->tid_);
 }
 
 state_machine_kind RODb::state_machine_type() const
 {
     MONAD_ASSERT(impl_);
-    return impl_->aux().metadata_ctx().get_state_machine_kind(
-        timeline_id::primary);
+    return impl_->aux().metadata_ctx().get_state_machine_kind(impl_->tid_);
 }
 
 DbError find_result_to_db_error(find_result const result) noexcept
@@ -1324,13 +1376,8 @@ DbStorageStats Db::get_storage_stats() const
     if (!is_on_disk()) {
         return {0, 0};
     }
-    uint64_t capacity = 0;
-    uint64_t used = 0;
-    for (auto const &dev : impl_->aux().io->storage_pool().devices()) {
-        auto const [c, u] = dev.capacity();
-        capacity += c;
-        used += u;
-    }
+    auto const [capacity, used] =
+        impl_->aux().io->storage_pool().device().capacity();
     return {capacity, used};
 }
 
@@ -1477,6 +1524,7 @@ uint64_t Db::get_history_length() const
 
 AsyncContext::AsyncContext(Db &db, size_t const node_lru_max_mem)
     : aux(db.impl_->aux())
+    , tid(db.impl_->tid())
     , node_cache(node_lru_max_mem)
 {
 }
@@ -1536,7 +1584,7 @@ namespace detail
             std::shared_ptr<Node> root{};
             bool const block_alive_after_read =
                 sender->context.aux.metadata_ctx().version_is_valid_ondisk(
-                    sender->block_id);
+                    sender->block_id, sender->context.tid);
             if (block_alive_after_read) {
                 sender->root = detail::deserialize_node_from_receiver_result(
                     std::move(buffer_), buffer_off, io_state);
@@ -1567,6 +1615,7 @@ namespace detail
         async::erased_connected_operation *const io_state;
         uint64_t const version;
         UpdateAux &aux;
+        timeline_id const tid;
 
         static constexpr bool lifetime_managed_internally = true;
 
@@ -1580,10 +1629,11 @@ namespace detail
                 delete this_io_state;
                 return;
             }
-            get_result = aux.metadata_ctx().version_is_valid_ondisk(version)
-                             ? std::move(res).assume_value()
-                             : find_result_type<T>{
-                                   T{}, find_result::version_no_longer_exist};
+            get_result =
+                aux.metadata_ctx().version_is_valid_ondisk(version, tid)
+                    ? std::move(res).assume_value()
+                    : find_result_type<T>{
+                          T{}, find_result::version_no_longer_exist};
 
             io_state->completed(async::success());
             delete this_io_state;
@@ -1599,7 +1649,8 @@ namespace detail
         case op_t::op_get_data1:
         case op_t::op_get_node1: {
             chunk_offset_t const offset =
-                context.aux.metadata_ctx().get_root_offset_at_version(block_id);
+                context.aux.metadata_ctx().get_root_offset_at_version(
+                    block_id, context.tid);
             auto const virt_offset = context.aux.physical_to_virtual(offset);
             NodeCache::ConstAccessor acc;
             if (context.node_cache.find(acc, virt_offset)) {
@@ -1642,7 +1693,8 @@ namespace detail
         case op_t::op_get_data2:
         case op_t::op_get_node2: {
             // verify version is valid in db history before doing anything
-            if (!context.aux.metadata_ctx().version_is_valid_ondisk(block_id)) {
+            if (!context.aux.metadata_ctx().version_is_valid_ondisk(
+                    block_id, context.tid)) {
                 get_result = {T{}, find_result::version_no_longer_exist};
                 io_state->completed(async::success());
                 return async::success();
@@ -1656,9 +1708,10 @@ namespace detail
                     cur,
                     block_id,
                     nv,
-                    op_type == op_t::op_get2),
+                    op_type == op_t::op_get2,
+                    context.tid),
                 find_request_receiver_t<T>{
-                    get_result, io_state, block_id, context.aux}));
+                    get_result, io_state, block_id, context.aux, context.tid}));
             state->initiate();
             return async::success();
         }

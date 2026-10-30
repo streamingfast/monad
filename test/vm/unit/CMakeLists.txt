@@ -20,10 +20,12 @@ add_executable(vm-unit-tests)
 target_sources(vm-unit-tests PRIVATE
     async_compile_tests.cpp
     bin_tests.cpp
+    cached_allocator_tests.cpp
     compiler_tests.cpp
     evm-as_tests.cpp
     monad_vm_interface_tests.cpp
     monad_vm_memory_pool_tests.cpp
+    mocked_host_tests.cpp
     utils_tests.cpp
     uint256_tests.cpp
     uint128_tests.cpp
@@ -34,6 +36,7 @@ target_sources(vm-unit-tests PRIVATE
     emitter_tests.cpp
     interpreter_tests.cpp
     lru_weight_cache_tests.cpp
+    status_code_tests.cpp
     test_params.cpp
     runtime/fixture.cpp
     runtime/fixture.S
@@ -68,7 +71,6 @@ target_link_libraries(vm-unit-tests
     PRIVATE monad-vm::monad-vm-interpreter
     PRIVATE monad-vm::monad-vm-utils
     PRIVATE GTest::gtest
-    PRIVATE evmc::mocked_host
     PRIVATE monad_execution
     PRIVATE monad_core
     PRIVATE quill::quill
@@ -76,7 +78,7 @@ target_link_libraries(vm-unit-tests
 
 if(MONAD_COMPILER_TESTING)
     target_link_libraries(vm-unit-tests
-        PRIVATE evmone
+        PRIVATE monadml-evm
     )
 endif()
 

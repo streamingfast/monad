@@ -15,6 +15,7 @@
 
 cmake_policy(SET CMP0144 NEW) # find_package uses upper-case _ROOT variables
 
+include(CheckCXXSourceCompiles)
 include(CheckCXXSourceRuns)
 include(CheckCXXSymbolExists)
 
@@ -58,6 +59,41 @@ function(check_if_boost_fiber_needs_ucontext_macro)
       )
     endif()
   endif()
+  # Boost.Context only annotates fiber switches for ASAN and TSAN in its
+  # ucontext backend.
+  check_cxx_source_compiles("
+  #if defined(__SANITIZE_ADDRESS__)
+  #elif defined(__has_feature)
+  #  if !__has_feature(address_sanitizer)
+  #    error
+  #  endif
+  #else
+  #  error
+  #endif
+  int main() { return 0; }" MONAD_HAVE_ASAN)
+  check_cxx_source_compiles("
+  #if defined(__SANITIZE_THREAD__)
+  #elif defined(__has_feature)
+  #  if !__has_feature(thread_sanitizer)
+  #    error
+  #  endif
+  #else
+  #  error
+  #endif
+  int main() { return 0; }" MONAD_HAVE_TSAN)
+  if(MONAD_HAVE_ASAN)
+    set_property(
+      TARGET Boost::context
+      APPEND
+      PROPERTY INTERFACE_COMPILE_DEFINITIONS BOOST_USE_ASAN BOOST_USE_UCONTEXT)
+    target_sources(boost_fiber PRIVATE fiber/boost_context_ucontext.cpp)
+  elseif(MONAD_HAVE_TSAN)
+    set_property(
+      TARGET Boost::context
+      APPEND
+      PROPERTY INTERFACE_COMPILE_DEFINITIONS BOOST_USE_TSAN BOOST_USE_UCONTEXT)
+    target_sources(boost_fiber PRIVATE fiber/boost_context_ucontext.cpp)
+  endif()
 endfunction()
 check_if_boost_fiber_needs_ucontext_macro()
 
@@ -71,6 +107,7 @@ add_library(
   "config.hpp"
   # core
   "address.hpp"
+  "asan.h"
   "assert.c"
   "assert.h"
   "assume.h"
@@ -95,8 +132,6 @@ add_library(
   "hex.hpp"
   "int.hpp"
   "is_specialization_of.hpp"
-  "keccak.c"
-  "keccak.h"
   "keccak.hpp"
   "likely.h"
   "log.cpp"
@@ -170,6 +205,7 @@ add_library(
   "rlp/decode_error.hpp"
   "rlp/encode.hpp"
   # runtime
+  "runtime/bit.hpp"
   "runtime/non_temporal_memory.hpp"
   "runtime/uint256.hpp"
   "runtime/uint256/intrinsics.hpp"
@@ -205,14 +241,6 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
             "procfs/statm.h")
 endif()
 
-target_include_directories(monad_core PRIVATE "${THIRD_PARTY_DIR}/openssl")
-if(${CMAKE_SYSTEM_PROCESSOR} MATCHES "x86_64")
-  target_sources(monad_core PRIVATE "keccak_impl.S")
-else()
-  target_sources(monad_core
-                 PRIVATE "third_party/openssl/crypto/sha/keccak1600.c")
-endif()
-
 monad_compile_options(monad_core)
 target_include_directories(monad_core PUBLIC ${CATEGORY_MAIN_DIR})
 
@@ -235,7 +263,7 @@ target_link_libraries(monad_core PUBLIC Boost::fiber TBB::tbb)
 target_link_libraries(monad_core PUBLIC CLI11::CLI11)
 target_link_libraries(monad_core PUBLIC komihash)
 target_link_libraries(monad_core PUBLIC blake3)
-target_link_libraries(monad_core PUBLIC ethash::keccak)
+target_link_libraries(monad_core PUBLIC monad_crypto)
 target_link_libraries(monad_core PUBLIC evmc)
 target_link_libraries(monad_core PUBLIC quill)
 target_link_libraries(monad_core PUBLIC unordered_dense)

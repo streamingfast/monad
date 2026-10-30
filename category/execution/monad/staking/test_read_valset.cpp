@@ -91,7 +91,8 @@ protected:
             vm::VM vm;
             mpt::Db db{
                 std::make_unique<OnDiskMachine>(),
-                mpt::OnDiskDbConfig{.dbname_paths = {db_file.path}}};
+                mpt::OnDiskDbConfig{
+                    .dbname_path = db_file.path, .chunk_capacity = 24}};
             TrieDb tdb{db};
             BlockState bs{tdb, vm};
             State state{bs, Incarnation{0, 0}};
@@ -129,7 +130,7 @@ protected:
             tdb.finalize(TEST_BLOCK_NUM, NULL_HASH_BLAKE3);
         }
         io_ctx.emplace(
-            mpt::ReadOnlyOnDiskDbConfig{.dbname_paths = {db_file.path}});
+            mpt::ReadOnlyOnDiskDbConfig{.dbname_path = db_file.path});
         ro.emplace(*io_ctx);
     }
 

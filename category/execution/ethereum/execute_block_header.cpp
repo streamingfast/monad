@@ -18,6 +18,7 @@
 #include <category/core/bytes.hpp>
 #include <category/core/endian.hpp>
 #include <category/core/int.hpp>
+#include <category/core/monad_exception.hpp>
 #include <category/execution/ethereum/block_hash_history.hpp>
 #include <category/execution/ethereum/core/block.hpp>
 #include <category/execution/ethereum/event/exec_event_ctypes.h>
@@ -120,7 +121,8 @@ void execute_block_header(
         staking::execute_block_prelude<traits>(state);
     }
 
-    MONAD_ASSERT(block_state.can_merge(state));
+    MONAD_ASSERT_THROW(
+        block_state.can_merge(state), "block state cannot be merged");
     block_state.merge(state);
     // NOTE(firehose): the block-prologue account access list is not emitted
     // here; each prologue system call (block hash history, EIP-4788 beacon

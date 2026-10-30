@@ -27,9 +27,9 @@
 #include <category/core/byte_string.hpp>
 #include <category/core/io/buffers.hpp>
 #include <category/core/io/ring.hpp>
-#include <category/core/keccak.h>
 #include <category/core/log.hpp>
 #include <category/core/small_prng.hpp>
+#include <category/crypto/keccak.h>
 #include <category/mpt/detail/timeline.hpp>
 #include <category/mpt/find_request_sender.hpp>
 #include <category/mpt/nibbles_view.hpp>
@@ -238,12 +238,12 @@ void prepare_keccak(
                 if (!seen.contains(j)) {
                     seen.insert(j);
                     keccak_keys[i].resize(32);
-                    keccak256(
+                    monad_keccak256(
                         (unsigned char const *)&j, 4, keccak_keys[i].data());
 
                     val = (i + key_offset) * 2;
                     keccak_values[i].resize(32);
-                    keccak256(
+                    monad_keccak256(
                         (unsigned char const *)&val,
                         8,
                         keccak_values[i].data());
@@ -271,10 +271,12 @@ void prepare_keccak(
             while (keys_per_slice.find(key) != keys_per_slice.end());
             keys_per_slice.insert(key);
             keccak_keys[i].resize(32);
-            keccak256((unsigned char const *)&key, 8, keccak_keys[i].data());
+            monad_keccak256(
+                (unsigned char const *)&key, 8, keccak_keys[i].data());
             val = key * 2;
             keccak_values[i].resize(32);
-            keccak256((unsigned char const *)&val, 8, keccak_values[i].data());
+            monad_keccak256(
+                (unsigned char const *)&val, 8, keccak_values[i].data());
         }
     }
     else {
@@ -282,10 +284,12 @@ void prepare_keccak(
         for (size_t i = 0; i < nkeys; ++i) {
             key = (i + key_offset) % MAX_NUM_KEYS;
             keccak_keys[i].resize(32);
-            keccak256((unsigned char const *)&key, 8, keccak_keys[i].data());
+            monad_keccak256(
+                (unsigned char const *)&key, 8, keccak_keys[i].data());
             val = key * 2;
             keccak_values[i].resize(32);
-            keccak256((unsigned char const *)&val, 8, keccak_values[i].data());
+            monad_keccak256(
+                (unsigned char const *)&val, 8, keccak_values[i].data());
         }
     }
 }
@@ -300,7 +304,7 @@ int main(int const argc, char *argv[])
 
     unsigned n_slices = 20;
     bool append = false;
-    std::vector<std::filesystem::path> dbname_paths;
+    std::filesystem::path dbname_path;
     std::filesystem::path csv_stats_path;
     uint64_t key_offset = 0;
     unsigned sq_thread_cpu = 15;
@@ -332,10 +336,7 @@ int main(int const argc, char *argv[])
                 "--append",
                 append,
                 "append to the latest block in existing db");
-            cli.add_option(
-                "--db-names",
-                dbname_paths,
-                "db file names, can have more than one");
+            cli.add_option("--db-name", dbname_path, "db file name");
             cli.add_option(
                 "--csv-stats", csv_stats_path, "CSV stats file name");
             cli.add_option(
@@ -463,10 +464,10 @@ int main(int const argc, char *argv[])
             auto keccak_keys = std::vector<monad::byte_string>{keccak_cap};
             auto keccak_values = std::vector<monad::byte_string>{keccak_cap};
 
-            if (dbname_paths.empty()) {
-                dbname_paths.emplace_back("test.db");
+            if (dbname_path.empty()) {
+                dbname_path = "test.db";
             }
-            for (auto const &dbname_path : dbname_paths) {
+            {
                 if (!std::filesystem::exists(dbname_path)) {
                     int const fd = ::open(
                         dbname_path.c_str(),
@@ -488,7 +489,7 @@ int main(int const argc, char *argv[])
 
             { /* upsert test begin */
                 MONAD_ASYNC_NAMESPACE::storage_pool pool{
-                    {dbname_paths},
+                    dbname_path,
                     append
                         ? MONAD_ASYNC_NAMESPACE::storage_pool::mode::
                               open_existing
@@ -659,10 +660,7 @@ int main(int const argc, char *argv[])
                             end_test - begin_test)
                             .count()) /
                     1000000.0;
-                uint64_t bytes_used = 0;
-                for (auto const &device : pool.devices()) {
-                    bytes_used += device.capacity().second;
-                }
+                uint64_t const bytes_used = pool.device().capacity().second;
                 printf(
                     "\nTotal test time: %f secs. Total storage consumed: %f "
                     "Gb\n",
@@ -697,7 +695,7 @@ int main(int const argc, char *argv[])
                 MONAD_ASYNC_NAMESPACE::storage_pool::creation_flags flag{};
                 flag.open_read_only = true;
                 MONAD_ASYNC_NAMESPACE::storage_pool pool{
-                    {dbname_paths},
+                    dbname_path,
                     MONAD_ASYNC_NAMESPACE::storage_pool::mode::open_existing,
                     flag};
                 auto io = MONAD_ASYNC_NAMESPACE::AsyncIO{pool, rwbuf};
@@ -781,7 +779,7 @@ int main(int const argc, char *argv[])
                             if (!done) {
                                 size_t key_src =
                                     (rand() % (n_slices * SLICE_LEN));
-                                keccak256(
+                                monad_keccak256(
                                     (unsigned char const *)&key_src,
                                     8,
                                     key.data());
@@ -814,7 +812,8 @@ int main(int const argc, char *argv[])
                                 NodeCursor{start_node},
                                 aux.metadata_ctx().db_history_max_version(),
                                 NibblesView{},
-                                true},
+                                true,
+                                timeline_id::primary},
                             receiver_t(
                                 ops,
                                 signal_done,
@@ -873,7 +872,7 @@ int main(int const argc, char *argv[])
                         key.resize(32);
                         while (!signal_done) {
                             size_t key_src = (rand() % (n_slices * SLICE_LEN));
-                            keccak256(
+                            monad_keccak256(
                                 (unsigned char const *)&key_src, 8, key.data());
 
                             ::boost::fibers::promise<
@@ -952,7 +951,7 @@ int main(int const argc, char *argv[])
                         while (0 ==
                                signal_done.load(std::memory_order_relaxed)) {
                             size_t key_src = (rand() % (n_slices * SLICE_LEN));
-                            keccak256(
+                            monad_keccak256(
                                 (unsigned char const *)&key_src, 8, key.data());
 
                             ::boost::fibers::promise<

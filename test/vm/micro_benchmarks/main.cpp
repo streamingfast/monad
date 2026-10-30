@@ -13,12 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-#include "test_state.hpp"
-
 #include <category/core/address.hpp>
 #include <category/core/int.hpp>
 #include <category/core/keccak.hpp>
 #include <category/execution/ethereum/chain/ethereum_mainnet.hpp>
+#include <category/execution/ethereum/core/units.hpp>
 #include <category/execution/ethereum/db/test/commit_simple.hpp>
 #include <category/execution/ethereum/state2/block_state.hpp>
 #include <category/execution/ethereum/state3/state.hpp>
@@ -27,12 +26,11 @@
 
 #include <test/utils/json_state.hpp>
 
+#include <test/utils/test_state.hpp>
 #include <test/vm/utils/evm-as_utils.hpp>
 #include <test/vm/utils/test_block_hash_buffer.hpp>
 #include <test/vm/utils/test_host.hpp>
 #include <test/vm/vm/test_vm.hpp>
-
-#include <evmone/test/state/host.hpp>
 
 #include <CLI/CLI.hpp>
 
@@ -340,7 +338,7 @@ static void init_execute_state(
     auto icode = make_shared_intercode(raw_code);
     Code code{{code_hash, std::move(icode)}};
 
-    static constexpr uint256_t BALANCE = exp(uint256_t{10}, uint256_t{18});
+    static constexpr uint256_t BALANCE = 1_ether;
     Account code_account{
         .balance = BALANCE,
         .code_hash = code_hash,
@@ -559,7 +557,6 @@ using enum BlockchainTestVM::Implementation;
 static BlockchainTestVM::Implementation const all_impls[] = {
     Interpreter,
     BlockchainTestVM::Implementation::Compiler,
-    Evmone,
 };
 
 static void run_benchmark(

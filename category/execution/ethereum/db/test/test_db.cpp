@@ -31,8 +31,8 @@
 #include <category/mpt/test/test_fixtures_gtest.hpp>
 #include <category/mpt/traverse.hpp>
 #include <category/mpt/traverse_util.hpp>
+#include <category/vm/evm/status_code.h>
 
-#include <ethash/keccak.hpp>
 #include <nlohmann/json.hpp>
 
 #include <gmock/gmock.h>
@@ -191,7 +191,7 @@ TEST(DBTest, read_only)
     {
         mpt::Db db{
             std::make_unique<OnDiskMachine>(),
-            mpt::OnDiskDbConfig{.dbname_paths = {name}}};
+            mpt::OnDiskDbConfig{.dbname_path = name, .chunk_capacity = 24}};
         TrieDb rw(db);
 
         Account const acct1{.nonce = 1};
@@ -213,7 +213,7 @@ TEST(DBTest, read_only)
             BlockHeader{.number = 1});
 
         mpt::AsyncIOContext io_ctx{
-            mpt::ReadOnlyOnDiskDbConfig{.dbname_paths = {name}}};
+            mpt::ReadOnlyOnDiskDbConfig{.dbname_path = name}};
         mpt::Db ro_db{io_ctx};
         TrieDb ro{ro_db};
         ASSERT_EQ(ro.get_block_number(), 1);
@@ -496,7 +496,7 @@ TYPED_TEST(DBTest, commit_receipts_transactions)
     receipts.push_back(std::move(rct));
 
     std::vector<Transaction> transactions;
-    std::vector<hash256> tx_hash;
+    std::vector<monad_hash256> tx_hash;
     static constexpr auto price{20'000'000'000};
     static constexpr auto value{0xde0b6b3a7640000_u256};
     static constexpr auto r{
@@ -588,7 +588,7 @@ TYPED_TEST(DBTest, commit_receipts_transactions)
             EXPECT_EQ(sender, senders[i]) << i;
         }
     };
-    auto verify_tx_hash = [&](hash256 const &tx_hash,
+    auto verify_tx_hash = [&](monad_hash256 const &tx_hash,
                               uint64_t const block_id,
                               unsigned const tx_idx) {
         auto const find_res = this->db.find(
@@ -707,13 +707,13 @@ TEST_F(OnDiskTrieDbWithFileFixture, get_transactions)
 
     { // nonblocking RODb
         mpt::RODb rodb{
-            mpt::ReadOnlyOnDiskDbConfig{.dbname_paths = {this->dbname}}};
+            mpt::ReadOnlyOnDiskDbConfig{.dbname_path = this->dbname}};
         verify_transactions(rodb);
     }
 
     { // blocking read-only Db
         mpt::AsyncIOContext io_ctx{
-            mpt::ReadOnlyOnDiskDbConfig{.dbname_paths = {this->dbname}}};
+            mpt::ReadOnlyOnDiskDbConfig{.dbname_path = this->dbname}};
         mpt::Db rodb{io_ctx};
         verify_transactions(rodb);
     }
@@ -733,7 +733,8 @@ TYPED_TEST(DBTest, to_json)
         if (this->on_disk) {
             return mpt::Db{
                 std::make_unique<OnDiskMachine>(),
-                mpt::OnDiskDbConfig{.dbname_paths = {dbname}}};
+                mpt::OnDiskDbConfig{
+                    .dbname_path = dbname, .chunk_capacity = 24}};
         }
         return mpt::Db{std::make_unique<InMemoryMachine>()};
     }();
@@ -815,7 +816,7 @@ TYPED_TEST(DBTest, to_json)
     if (this->on_disk) {
         // also test to_json from a read only db
         mpt::AsyncIOContext io_ctx{
-            mpt::ReadOnlyOnDiskDbConfig{.dbname_paths = {dbname}}};
+            mpt::ReadOnlyOnDiskDbConfig{.dbname_path = dbname}};
         mpt::Db ro_db{io_ctx};
         TrieDb ro{ro_db};
         EXPECT_EQ(expected_payload, ro.to_json());
@@ -874,7 +875,7 @@ TYPED_TEST(DBTest, commit_call_frames)
         .gas_used = 21'000u,
         .input = byte_string{0xaa, 0xbb, 0xcc},
         .output = byte_string{},
-        .status = EVMC_SUCCESS,
+        .status = MONAD_STATUS_SUCCESS,
         .depth = 0,
     };
 
@@ -888,7 +889,7 @@ TYPED_TEST(DBTest, commit_call_frames)
         .gas_used = 10'000u,
         .input = byte_string{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x01},
         .output = byte_string{0x01, 0x02},
-        .status = EVMC_REVERT,
+        .status = MONAD_STATUS_REVERT,
         .depth = 1,
     };
 

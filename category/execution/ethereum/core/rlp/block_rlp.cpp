@@ -35,6 +35,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -164,29 +165,24 @@ Result<BlockHeader> decode_block_header(byte_string_view &enc)
     BOOST_OUTCOME_TRY(block_header.prev_randao, decode_bytes32(payload));
     BOOST_OUTCOME_TRY(block_header.nonce, decode_byte_string_fixed<8>(payload));
 
-    if (payload.size() > 0) {
+    if (!payload.empty()) {
         BOOST_OUTCOME_TRY(
             block_header.base_fee_per_gas, decode_unsigned<uint256_t>(payload));
-        if (payload.size() > 0) {
-            BOOST_OUTCOME_TRY(
-                block_header.withdrawals_root, decode_bytes32(payload));
-            if (payload.size() > 0) {
-                BOOST_OUTCOME_TRY(
-                    block_header.blob_gas_used,
-                    decode_unsigned<uint64_t>(payload));
-                BOOST_OUTCOME_TRY(
-                    block_header.excess_blob_gas,
-                    decode_unsigned<uint64_t>(payload));
-                BOOST_OUTCOME_TRY(
-                    block_header.parent_beacon_block_root,
-                    decode_bytes32(payload));
-
-                if (payload.size() > 0) {
-                    BOOST_OUTCOME_TRY(
-                        block_header.requests_hash, decode_bytes32(payload));
-                }
-            }
-        }
+    }
+    if (!payload.empty()) {
+        BOOST_OUTCOME_TRY(
+            block_header.withdrawals_root, decode_bytes32(payload));
+    }
+    if (!payload.empty()) {
+        BOOST_OUTCOME_TRY(
+            block_header.blob_gas_used, decode_unsigned<uint64_t>(payload));
+        BOOST_OUTCOME_TRY(
+            block_header.excess_blob_gas, decode_unsigned<uint64_t>(payload));
+        BOOST_OUTCOME_TRY(
+            block_header.parent_beacon_block_root, decode_bytes32(payload));
+    }
+    if (!payload.empty()) {
+        BOOST_OUTCOME_TRY(block_header.requests_hash, decode_bytes32(payload));
     }
 
     if (MONAD_UNLIKELY(!payload.empty())) {
@@ -214,13 +210,16 @@ decode_block_header_vector(byte_string_view &enc)
     return ommers;
 }
 
-Result<Block> decode_block(byte_string_view &enc)
+template <NullptrOrRef<std::vector<byte_string_view>> Out>
+Result<Block>
+decode_block_impl(byte_string_view &enc, Out const raw_transactions)
 {
     Block block;
     BOOST_OUTCOME_TRY(auto payload, parse_list_metadata(enc));
 
     BOOST_OUTCOME_TRY(block.header, decode_block_header(payload));
-    BOOST_OUTCOME_TRY(block.transactions, decode_transaction_list(payload));
+    BOOST_OUTCOME_TRY(
+        block.transactions, decode_transaction_list(payload, raw_transactions));
     BOOST_OUTCOME_TRY(block.ommers, decode_block_header_vector(payload));
 
     if (payload.size() > 0) {
@@ -233,6 +232,17 @@ Result<Block> decode_block(byte_string_view &enc)
     }
 
     return block;
+}
+
+Result<Block> decode_block(byte_string_view &enc)
+{
+    return decode_block_impl(enc, nullptr);
+}
+
+Result<Block> decode_block(
+    byte_string_view &enc, std::vector<byte_string_view> &raw_transactions)
+{
+    return decode_block_impl(enc, std::ref(raw_transactions));
 }
 
 MONAD_RLP_NAMESPACE_END

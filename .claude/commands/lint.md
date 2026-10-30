@@ -17,7 +17,7 @@ Linting requires a specific build configuration to match CI. All of these must b
 - Debug build type
 - `MONAD_COMPILER_TESTING=ON` and `MONAD_COMPILER_BENCHMARKS=ON`
 - `UTILS_CLANG_TIDY_AUTO_CONST=ON`
-- submodules initialized, including `third_party/evmone` (`git submodule update --init --recursive`)
+- submodules initialized (`git submodule update --init --recursive`)
 
 ### Steps
 
@@ -39,8 +39,8 @@ Linting requires a specific build configuration to match CI. All of these must b
    This produces `build/utils/clang-tidy-auto-const/libConstCorrectnessChecks.so`, which `check-clang-tidy.sh` automatically loads if present. Without this plugin, the custom `misc-auto-const-correctness` check won't run and lint results will differ from CI.
 
 3. **Run clang-tidy:**
-   - **Check only** (no `--fix`): `scripts/check-clang-tidy.sh -p build`
-   - **Fix mode** (`--fix`): `scripts/apply-clang-tidy-fixes.sh build` — this requires a clean git working tree (no uncommitted changes) and will error otherwise.
+   - **Check only** (no `--fix`): `scripts/check-clang-tidy.sh`
+   - **Fix mode** (`--fix`): `scripts/check-clang-tidy.sh -- -fix -format` — this requires a clean git working tree (no uncommitted changes) and will error otherwise.
 
 4. **Run trait instantiation check:**
    ```bash
@@ -53,7 +53,7 @@ The project's `.clang-tidy` config treats all warnings as errors and covers bugp
 ### Error handling
 
 - If `build/` doesn't exist or was configured with the wrong compiler/build type, reconfigure as shown above
-- If `third_party/evmone` is missing, run `git submodule update --init --recursive`
+- If a `third_party/` submodule is missing, run `git submodule update --init --recursive`
 - If `--fix` is used with uncommitted changes, the fix script will error — tell the user to commit or stash first
 
 ### Important

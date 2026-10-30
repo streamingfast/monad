@@ -19,6 +19,7 @@
 #include <category/core/config.hpp>
 #include <category/core/int.hpp>
 #include <category/core/likely.h>
+#include <category/core/monad_exception.hpp>
 #include <category/core/result.hpp>
 #include <category/execution/ethereum/block_hash_buffer.hpp>
 #include <category/execution/ethereum/chain/chain.hpp>
@@ -391,7 +392,7 @@ Receipt ExecuteTransaction<traits>::execute_final(
 
     // EIP-7623
     if constexpr (traits::evm_rev() >= MONAD_ETH_PRAGUE) {
-        auto const floor_gas = floor_data_gas(tx_);
+        auto const floor_gas = floor_data_gas<traits>(tx_);
         if (gas_used < floor_gas) {
             auto const delta = floor_gas - gas_used;
             state.subtract_from_balance(sender_, gas_cost * delta);
@@ -487,7 +488,8 @@ Result<Receipt> ExecuteTransaction<traits>::operator()()
 
         auto result = execute_impl2(state);
 
-        MONAD_ASSERT(block_state_.can_merge(state));
+        MONAD_ASSERT_THROW(
+            block_state_.can_merge(state), "block state cannot be merged");
         if (result.has_error()) {
             return std::move(result.error());
         }

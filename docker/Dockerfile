@@ -32,6 +32,20 @@ RUN rustup toolchain install 1.91.1 --profile minimal --component clippy
 RUN rustup toolchain install nightly-2025-12-09 --profile minimal --component rustfmt
 RUN RUSTFLAGS="-C linker=gcc-15" cargo install cargo-shear@1.9.1
 
+FROM base AS base_vm_test
+
+RUN apt-get update && \
+    apt-get install -y opam && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
+    rm -rf /opt
+
+ARG OCAML_VERSION=5.4.1
+
+RUN opam init --bare -y && \
+    opam switch create "$OCAML_VERSION" "$OCAML_VERSION" && \
+    opam install -y dune
+
 FROM base AS build
 
 COPY . src
@@ -111,7 +125,7 @@ ARG CMAKE_BUILD_TYPE
 # security=insecure for tests which use io_uring
 RUN --security=insecure cd src && CC=${CC:?} CXX=${CXX:?} CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE:?} ./scripts/test.sh
 
-FROM base AS build_and_test_vm
+FROM base_vm_test AS build_and_test_vm
 
 COPY . src
 
@@ -121,7 +135,7 @@ ARG CMAKE_BUILD_TYPE
 ARG TOOLCHAIN
 
 RUN cd src && CC=${CC:?} CXX=${CXX:?} CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE:?} CMAKE_TOOLCHAIN_FILE=category/core/toolchains/${TOOLCHAIN:?}.cmake ./scripts/configure.sh
-RUN cd src && cmake build -DMONAD_COMPILER_TESTING=On
+RUN cd src && cmake build -DMONAD_COMPILER_TESTING=On -DMONAD_COMPILER_BENCHMARKS=On
 
 RUN --mount=type=secret,id=actions_results_url \
     --mount=type=secret,id=actions_runtime_token \
@@ -138,6 +152,7 @@ RUN --mount=type=secret,id=actions_results_url \
       cmake -B build -DCMAKE_C_COMPILER_LAUNCHER= -DCMAKE_CXX_COMPILER_LAUNCHER=; \
     fi && \
     ./scripts/vm/build-tests.sh && \
+    cmake --build build -t execution-benchmarks vm-micro-benchmarks compile-benchmarks mce && \
     { sccache --show-stats || true; }
 RUN cd src && ./scripts/vm/test.sh
 
@@ -190,17 +205,20 @@ RUN --mount=type=secret,id=actions_results_url \
     CMAKE_C_COMPILER_LAUNCHER=$SCCACHE_LAUNCHER CMAKE_CXX_COMPILER_LAUNCHER=$SCCACHE_LAUNCHER \
     cargo test  --release --all-targets --all-features
 
-FROM base AS code_quality
+FROM base_vm_test AS code_quality
 
 COPY . src
 
-RUN cd src && CMAKE_TOOLCHAIN_FILE=category/core/toolchains/gcc-avx2.cmake cmake -S . -B build           \
-  -DMONAD_COMPILER_BENCHMARKS=On  \
-  -DMONAD_COMPILER_TESTING=On     \
-  -DCMAKE_BUILD_TYPE=Debug        \
-  -DCMAKE_C_COMPILER=clang-19     \
-  -DCMAKE_CXX_COMPILER=clang++-19 \
-  -DUTILS_CLANG_TIDY_AUTO_CONST=On
+RUN cd src && CMAKE_TOOLCHAIN_FILE=category/core/toolchains/gcc-avx2.cmake cmake -S . -B build  \
+  -DCMAKE_BUILD_TYPE=Debug             \
+  -DCMAKE_C_COMPILER=clang-19          \
+  -DCMAKE_CXX_COMPILER=clang++-19      \
+  -DUTILS_CLANG_TIDY_AUTO_CONST=On     \
+  -DCMAKE_EXPORT_COMPILE_COMMANDS=TRUE \
+  -DMONAD_COMPILER_BENCHMARKS=On       \
+  -DMONAD_COMPILER_TESTING=On          \
+  -DMONAD_COMPILER_STATS=On            \
+  -DMONAD_COMPILER_HOT_PATH_STATS=On
 
 RUN cd src && cmake --build build -t ConstCorrectnessChecks
 RUN cd src && ./scripts/check-clang-tidy.sh
@@ -284,7 +302,7 @@ RUN cd src && cmake -B build-zkvm -S zkvm/guest \
     -DCMAKE_BUILD_TYPE=Release
 RUN cd src && cmake --build build-zkvm --target monad-zkvm --parallel
 
-FROM base AS vm_fuzz
+FROM base_vm_test AS vm_fuzz
 
 RUN apt-get update && apt-get install -y tmux
 

@@ -87,6 +87,7 @@ impl MonadExecutor {
         grandparent_id: Option<[u8; 32]>,
         gas_limit: u64,
         max_calls: usize,
+        max_output_size: usize,
         emit_native_transfer_logs: bool,
         overrides: &[(&BlockOverride, &StateOverrideSet)],
     ) -> Result<EthSimulateSuccess, EthSimulateError> {
@@ -153,6 +154,9 @@ impl MonadExecutor {
                     Some(StorageOverride::State(storage_override)) => {
                         for (k, v) in storage_override {
                             state_overrides.set_state_at(i, addr, k, v)
+                        }
+                        if storage_override.is_empty() {
+                            state_overrides.set_empty_state_at(i, addr);
                         }
                     }
                     Some(StorageOverride::StateDiff(override_state_diff)) => {
@@ -227,6 +231,7 @@ impl MonadExecutor {
                 rlp_encoded_grandparent_id.len(),
                 gas_limit,
                 max_calls,
+                max_output_size,
                 state_overrides.as_mut_ptr(),
                 block_overrides.as_mut_ptr(),
                 emit_native_transfer_logs,

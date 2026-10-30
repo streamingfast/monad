@@ -15,6 +15,7 @@
 
 #include "fixture.hpp"
 
+#include <category/core/byte_string.hpp>
 #include <category/core/bytes.hpp>
 #include <category/core/int.hpp>
 #include <category/core/runtime/uint256.hpp>
@@ -29,7 +30,7 @@
 using namespace monad;
 using namespace monad::vm;
 using namespace monad::vm::runtime;
-using namespace monad::vm::compiler::test;
+using namespace monad::vm::test;
 
 constexpr auto addr = uint256_t{678};
 constexpr auto wei = uint256_t{782374};
@@ -295,7 +296,7 @@ TYPED_TEST(RuntimeTraitsTest, ExtCodeCopy)
     auto copy = TestFixture::wrap(extcodecopy<traits>);
 
     this->host_.accounts[address_from_uint256(addr)].code =
-        evmc::bytes(this->code_.begin(), this->code_.end());
+        byte_string(this->code_.begin(), this->code_.end());
 
     constexpr auto initial_gas = [] {
         if constexpr (is_monad_trait_v<typename TestFixture::Trait>) {
@@ -323,7 +324,7 @@ TYPED_TEST(RuntimeTraitsTest, ExtCodeCopyOutOfBounds)
     auto copy = TestFixture::wrap(extcodecopy<traits>);
 
     this->host_.accounts[address_from_uint256(addr)].code =
-        evmc::bytes(this->code_.begin(), this->code_.end());
+        byte_string(this->code_.begin(), this->code_.end());
 
     constexpr auto initial_gas = [] {
         if constexpr (is_monad_trait_v<typename TestFixture::Trait>) {
@@ -355,7 +356,7 @@ TYPED_TEST(RuntimeTraitsTest, ExtCodeSize)
     auto size = TestFixture::wrap(extcodesize<traits>);
 
     this->host_.accounts[address_from_uint256(addr)].code =
-        evmc::bytes(this->code_.begin(), this->code_.end());
+        byte_string(this->code_.begin(), this->code_.end());
 
     this->ctx_.gas_remaining = 10'000;
 

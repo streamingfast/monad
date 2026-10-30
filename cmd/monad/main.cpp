@@ -76,7 +76,6 @@
 #include <string>
 #include <sys/sysinfo.h>
 #include <unistd.h>
-#include <vector>
 
 MONAD_NAMESPACE_BEGIN
 
@@ -144,7 +143,8 @@ try {
     unsigned sq_thread_cpu = static_cast<unsigned>(get_nprocs() - 1);
     bool disable_sq_thread_cpu = false;
     std::optional<unsigned> ro_sq_thread_cpu;
-    std::vector<fs::path> dbname_paths;
+    fs::path dbname_path;
+    fs::path db_stats_file;
     fs::path snapshot;
     fs::path dump_snapshot;
     std::string statesync;
@@ -184,12 +184,19 @@ try {
         ro_sq_thread_cpu,
         "sq_thread_cpu for the read only db (optional, disables SQPOLL if not "
         "specified)");
-    cli.add_option(
+    CLI::Option *const db_option = cli.add_option(
         "--db",
-        dbname_paths,
-        "A comma-separated list of previously created database paths. You can "
-        "configure the storage pool with one or more files/devices. If no "
-        "value is passed, the replay will run with an in-memory triedb");
+        dbname_path,
+        "A previously created database path. If no value is passed, the "
+        "replay will run with an in-memory triedb");
+    cli.add_option(
+           "--db-stats-file,--db_stats_file",
+           db_stats_file,
+           "Path of a file to publish triedb update counters into, for a "
+           "metrics scraper in another process to read. Must be on a "
+           "filesystem shared with that process; a tmpfs avoids writing it "
+           "back to disk")
+        ->needs(db_option);
     cli.add_option(
         "--dump-snapshot,--dump_snapshot",
         dump_snapshot,
@@ -295,7 +302,7 @@ try {
 
     MONAD_ASSERT(init_trusted_setup());
 
-    auto const db_in_memory = dbname_paths.empty();
+    auto const db_in_memory = dbname_path.empty();
     [[maybe_unused]] auto const load_start_time =
         std::chrono::steady_clock::now();
 
@@ -325,7 +332,11 @@ try {
                 .sq_thread_cpu = disable_sq_thread_cpu
                                      ? std::optional<unsigned>{}
                                      : std::optional<unsigned>{sq_thread_cpu},
-                .dbname_paths = dbname_paths}};
+                .dbname_path = dbname_path,
+                .stats_file_path =
+                    db_stats_file.empty()
+                        ? std::optional<fs::path>{}
+                        : std::optional<fs::path>{db_stats_file}}};
         }
         // In memory db: initialize state machine based on chain revision
         auto const *const monad_chain =
@@ -344,6 +355,27 @@ try {
     TrieDb triedb{
         raw_db,
         /*enable_multiblock_cache=*/true};
+
+    // Dual-timeline: open the secondary alongside the primary. The primary
+    // always owns the latest state; a secondary is optional.
+    // runloop_monad: writes every block to every open db.
+    // runloop_monad_ethblocks:
+    //             before mip8 fork: writes every block to every open db
+    //             after mip8 fork: asserts primary db must be page-encoded,
+    //             writes to primary db only, freeze secondary slot db if
+    //             secondary db is active.
+    std::optional<mpt::Db> secondary_raw_db;
+    std::optional<TrieDb> secondary_db;
+    if (!db_in_memory &&
+        raw_db.timeline_active(monad::mpt::timeline_id::secondary)) {
+        secondary_raw_db = raw_db.open_secondary_timeline();
+        MONAD_ASSERT(secondary_raw_db.has_value());
+        secondary_db.emplace(*secondary_raw_db);
+        MONAD_ASSERT(
+            secondary_db->is_page_encoded() != triedb.is_page_encoded(),
+            "dual-timeline dbs must pair one slot and one page encoding");
+    }
+
     // Note: in memory db block number is always zero
     uint64_t const init_block_num = [&] {
         if (!snapshot.empty()) {
@@ -382,7 +414,7 @@ try {
             .triedb = &triedb,
             .network = &net.value(),
             .ro_sq_thread_cpu = ro_sq_thread_cpu,
-            .dbname_paths = dbname_paths});
+            .dbname_path = dbname_path});
     }
 
     LOG_INFO(
@@ -414,8 +446,8 @@ try {
 
     if (!db_in_memory) {
         mpt::AsyncIOContext io_ctx{mpt::ReadOnlyOnDiskDbConfig{
-            .sq_thread_cpu = ro_sq_thread_cpu, .dbname_paths = dbname_paths}};
-        mpt::Db rodb{io_ctx};
+            .sq_thread_cpu = ro_sq_thread_cpu, .dbname_path = dbname_path}};
+        mpt::Db rodb{io_ctx, monad::mpt::timeline_id::primary};
         initialized_headers_from_triedb = init_block_hash_buffer_from_triedb(
             rodb, start_block_num, block_hash_buffer);
     }
@@ -480,25 +512,12 @@ try {
         case CHAIN_CONFIG_MONAD_DEVNET:
         case CHAIN_CONFIG_MONAD_TESTNET:
         case CHAIN_CONFIG_MONAD_MAINNET: {
-            std::optional<mpt::Db> secondary_db;
-            std::optional<TrieDb> secondary_triedb;
-            if (raw_db.timeline_active(monad::mpt::timeline_id::secondary)) {
-                secondary_db = raw_db.open_secondary_timeline();
-                MONAD_ASSERT(secondary_db.has_value());
-                secondary_triedb.emplace(*secondary_db);
-                MONAD_ASSERT(
-                    secondary_triedb->is_page_encoded(),
-                    "secondary timeline must be page-encoded");
-                MONAD_ASSERT(
-                    !db.is_page_encoded(),
-                    "primary must be slot-encoded when the secondary "
-                    "timeline is active");
-            }
             if (as_eth_blocks) {
                 return runloop_monad_ethblocks(
                     dynamic_cast<MonadChain const &>(*chain),
                     block_db_path,
                     db,
+                    secondary_db.has_value() ? &*secondary_db : nullptr,
                     vm,
                     block_hash_buffer,
                     priority_pool,
@@ -507,9 +526,7 @@ try {
                     stop,
                     trace_calls,
                     block_db_timeout,
-                    exec_recorder,
-                    secondary_triedb.has_value() ? &*secondary_triedb
-                                                 : nullptr);
+                    exec_recorder);
             }
             else {
                 // TODO: Remove this check once dual-db is deprecated.
@@ -518,7 +535,7 @@ try {
                 if (chain_config == CHAIN_CONFIG_MONAD_TESTNET ||
                     chain_config == CHAIN_CONFIG_MONAD_MAINNET) {
                     bool const primary_is_page = db.is_page_encoded();
-                    bool const secondary_active = secondary_triedb.has_value();
+                    bool const secondary_active = secondary_db.has_value();
                     MONAD_ASSERT_PRINTF(
                         primary_is_page || secondary_active,
                         "live monad requires a page-encoded timeline "
@@ -536,6 +553,7 @@ try {
                     block_db_path,
                     raw_db,
                     db,
+                    secondary_db.has_value() ? &*secondary_db : nullptr,
                     vm,
                     block_hash_buffer,
                     priority_pool,
@@ -543,9 +561,7 @@ try {
                     end_block_num,
                     stop,
                     trace_calls,
-                    exec_recorder,
-                    secondary_triedb.has_value() ? &*secondary_triedb
-                                                 : nullptr);
+                    exec_recorder);
             }
         }
         }
@@ -587,7 +603,7 @@ try {
         LOG_INFO("Dump db of block: {}", block_num);
         mpt::AsyncIOContext io_ctx(mpt::ReadOnlyOnDiskDbConfig{
             .sq_thread_cpu = ro_sq_thread_cpu,
-            .dbname_paths = dbname_paths,
+            .dbname_path = dbname_path,
             .concurrent_read_io_limit = 128});
         mpt::Db db{io_ctx};
         TrieDb ro_db{db, false};

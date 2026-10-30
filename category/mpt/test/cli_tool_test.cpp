@@ -21,11 +21,14 @@
 #include <category/async/detail/scope_polyfill.hpp>
 #include <category/async/io.hpp>
 #include <category/async/storage_pool.hpp>
+#include <category/async/util.hpp>
+#include <category/core/assert.h>
 #include <category/core/byte_string.hpp>
 #include <category/core/hex.hpp>
 #include <category/core/io/buffers.hpp>
 #include <category/core/io/ring.hpp>
 #include <category/core/test_util/gtest_signal_stacktrace_printer.hpp> // NOLINT
+#include <category/core/test_util/temp_file_cleanup.hpp>
 #include <category/mpt/cli_tool_impl.hpp>
 #include <category/mpt/db.hpp>
 #include <category/mpt/db_metadata_context.hpp>
@@ -39,7 +42,10 @@
 #include <category/mpt/update.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <csignal>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -54,6 +60,7 @@
 #include <utility>
 #include <vector>
 
+#include <fcntl.h>
 #include <stdlib.h>
 #include <unistd.h>
 
@@ -90,7 +97,7 @@ TEST(cli_tool, help_prints_help)
 
 TEST(cli_tool, create)
 {
-    char temppath[] = "cli_tool_test_XXXXXX";
+    char temppath[] = "cli_tool_tmp_test_XXXXXX";
     auto const fd = mkstemp(temppath);
     if (-1 == fd) {
         abort();
@@ -106,7 +113,12 @@ TEST(cli_tool, create)
         std::stringstream cout;
         std::stringstream cerr;
         std::string_view args[] = {
-            "monad-mpt", "--storage", temppath, "--create"};
+            "monad-mpt",
+            "--storage",
+            temppath,
+            "--create",
+            "--root-offsets-chunk-count",
+            "2"};
         int const retcode = main_impl(cout, cerr, args);
         ASSERT_EQ(retcode, 0);
         EXPECT_NE(
@@ -123,7 +135,7 @@ TEST(cli_tool, create)
 
 TEST(cli_tool, create_with_explicit_state_machine_flag)
 {
-    char temppath[] = "cli_tool_test_XXXXXX";
+    char temppath[] = "cli_tool_tmp_test_XXXXXX";
     auto const fd = mkstemp(temppath);
     if (-1 == fd) {
         abort();
@@ -141,6 +153,8 @@ TEST(cli_tool, create_with_explicit_state_machine_flag)
         "--storage",
         temppath,
         "--create",
+        "--root-offsets-chunk-count",
+        "2",
         "--state-machine",
         "ethereum"};
     int const retcode = main_impl(cout, cerr, args);
@@ -152,7 +166,7 @@ TEST(cli_tool, create_with_explicit_state_machine_flag)
 
 TEST(cli_tool, state_machine_unknown_kind_rejected)
 {
-    char temppath[] = "cli_tool_test_XXXXXX";
+    char temppath[] = "cli_tool_tmp_test_XXXXXX";
     auto const fd = mkstemp(temppath);
     if (-1 == fd) {
         abort();
@@ -170,6 +184,8 @@ TEST(cli_tool, state_machine_unknown_kind_rejected)
         "--storage",
         temppath,
         "--create",
+        "--root-offsets-chunk-count",
+        "2",
         "--state-machine",
         "nonsense"};
     int const retcode = main_impl(cout, cerr, args);
@@ -181,7 +197,7 @@ TEST(cli_tool, state_machine_unknown_kind_rejected)
 // before any pool is created.
 TEST(cli_tool, root_offsets_chunk_count_over_capacity_rejected)
 {
-    char temppath[] = "cli_tool_test_XXXXXX";
+    char temppath[] = "cli_tool_tmp_test_XXXXXX";
     auto const fd = mkstemp(temppath);
     if (-1 == fd) {
         abort();
@@ -215,7 +231,7 @@ namespace
     read_kind(char const *const path, monad::mpt::timeline_id const tid)
     {
         monad::mpt::AsyncIOContext io_ctx{monad::mpt::ReadOnlyOnDiskDbConfig{
-            .dbname_paths = {std::filesystem::path{path}}}};
+            .dbname_path = {std::filesystem::path{path}}}};
         monad::mpt::UpdateAux const aux(io_ctx.io);
         return aux.metadata_ctx().get_state_machine_kind(tid);
     }
@@ -223,7 +239,7 @@ namespace
     bool read_secondary_active(char const *const path)
     {
         monad::mpt::AsyncIOContext io_ctx{monad::mpt::ReadOnlyOnDiskDbConfig{
-            .dbname_paths = {std::filesystem::path{path}}}};
+            .dbname_path = {std::filesystem::path{path}}}};
         monad::mpt::UpdateAux const aux(io_ctx.io);
         return aux.metadata_ctx().timeline_active(
             monad::mpt::timeline_id::secondary);
@@ -232,11 +248,86 @@ namespace
     uint8_t read_primary_ring_idx(char const *const path)
     {
         monad::mpt::AsyncIOContext io_ctx{monad::mpt::ReadOnlyOnDiskDbConfig{
-            .dbname_paths = {std::filesystem::path{path}}}};
+            .dbname_path = {std::filesystem::path{path}}}};
         monad::mpt::UpdateAux const aux(io_ctx.io);
         return aux.metadata_ctx().primary_ring_idx();
     }
 
+    // Sweep before any test runs rather than from make_temp_pool: most tests
+    // here mkstemp their pool file directly, and gtest_discover_tests gives
+    // each one its own process, so a filtered run would otherwise sweep
+    // nothing at all.
+    //
+    // mkstemp resolves these names relative to the working directory, so they
+    // land wherever ctest ran the binary from -- the build directory holding
+    // this target and the discovery files ctest generates for it. The prefix
+    // must therefore be one no build artifact can share: a bare "cli_tool_"
+    // also matches cli_tool_test and cli_tool_test[1]_*.cmake.
+    // The archive/restore tests take their 8 GB pools from create_temp_file
+    // instead, which mkstemps monad_db_test_* into the temporary directory. The
+    // prefix is shared with live files of other suites, so the age threshold is
+    // the whole of the safety here.
+    struct SweepStaleTempPools : public ::testing::Environment
+    {
+        void SetUp() override
+        {
+            monad::test::remove_stale_temp_files(
+                std::filesystem::current_path(), "cli_tool_tmp_");
+            monad::test::remove_stale_temp_files(
+                MONAD_ASYNC_NAMESPACE::working_temporary_directory(),
+                "monad_db_test_");
+        }
+    };
+
+    ::testing::Environment *const sweep_stale_temp_pools =
+        ::testing::AddGlobalTestEnvironment(new SweepStaleTempPools);
+
+    // Whether a database has been stamped on the device, read raw so that
+    // asking the question does not itself create one.
+    bool device_carries_db_metadata(char const *const path)
+    {
+        using monad::mpt::detail::db_metadata;
+        int const fd = ::open(path, O_RDONLY | O_CLOEXEC);
+        MONAD_ASSERT(fd != -1);
+        auto const unfd =
+            monad::make_scope_exit([fd]() noexcept { ::close(fd); });
+        std::array<char, db_metadata::MAGIC_STRING_LEN> magic{};
+        return ::pread(fd, magic.data(), magic.size(), 0) ==
+                   ssize_t(magic.size()) &&
+               0 == memcmp(
+                        magic.data(),
+                        db_metadata::MAGIC,
+                        db_metadata::MAGIC_STRING_LEN);
+    }
+
+    // A death test's child aborts by design, so its scope guards never run and
+    // the pool file it built -- tens of megabytes of real blocks -- would be
+    // left to the age-based sweep above. The handler runs in the aborting
+    // process, so the path has to sit in a fixed buffer.
+    char abort_unlink_path[64];
+
+    extern "C" void unlink_fixture_then_die(int const sig)
+    {
+        if (abort_unlink_path[0] != '\0') {
+            (void)::unlink(abort_unlink_path);
+        }
+        (void)::signal(sig, SIG_DFL);
+        (void)::raise(sig);
+    }
+
+    void unlink_on_abort(char const *const path)
+    {
+        MONAD_ASSERT(std::strlen(path) < sizeof(abort_unlink_path));
+        std::strncpy(abort_unlink_path, path, sizeof(abort_unlink_path) - 1);
+        (void)::signal(SIGABRT, unlink_fixture_then_die);
+    }
+
+    // Tests here pass --root-offsets-chunk-count 2 rather than the CLI's
+    // production default of 16, which cuts what --create writes by 8x. Two is
+    // the minimum activate_secondary_header accepts, so secondary-lifecycle
+    // tests in this file now split 2 into 1+1; update_aux_test.cpp is what
+    // still covers a split with more than one chunk per side.
+    //
     // Provision a temp pool file. Caller owns the unlink scope.
     void make_temp_pool(char *const temppath)
     {
@@ -271,19 +362,24 @@ namespace
             std::stringstream cout;
             std::stringstream cerr;
             std::string_view create_args[] = {
-                "monad-mpt", "--storage", temppath, "--create"};
+                "monad-mpt",
+                "--storage",
+                temppath,
+                "--create",
+                "--root-offsets-chunk-count",
+                "2"};
             ASSERT_EQ(0, main_impl(cout, cerr, create_args)) << cerr.str();
         }
 
-        std::vector<std::filesystem::path> paths{temppath};
+        std::filesystem::path const paths{temppath};
         MONAD_ASYNC_NAMESPACE::storage_pool::creation_flags const flags;
         MONAD_ASYNC_NAMESPACE::storage_pool pool{
-            std::span{paths},
+            paths,
             MONAD_ASYNC_NAMESPACE::storage_pool::mode::open_existing,
             flags};
         auto const chunk_count = static_cast<uint32_t>(
             pool.chunks(MONAD_ASYNC_NAMESPACE::storage_pool::seq));
-        auto &cnv_chunk =
+        auto cnv_chunk =
             pool.chunk(MONAD_ASYNC_NAMESPACE::storage_pool::cnv, 0);
         auto const [write_fd, base_offset] = cnv_chunk.write_fd(0);
         off_t const half_capacity = // NOLINT(misc-include-cleaner)
@@ -349,7 +445,7 @@ namespace
 // that disagrees with the stamp is therefore an error, not a silent no-op.
 TEST(cli_tool, create_with_conflicting_state_machine_on_existing_pool_rejected)
 {
-    char temppath[] = "cli_tool_test_XXXXXX";
+    char temppath[] = "cli_tool_tmp_test_XXXXXX";
     make_temp_pool(temppath);
     auto const untempfile =
         monad::make_scope_exit([&]() noexcept { unlink(temppath); });
@@ -358,7 +454,12 @@ TEST(cli_tool, create_with_conflicting_state_machine_on_existing_pool_rejected)
         std::stringstream cout;
         std::stringstream cerr;
         std::string_view create_args[] = {
-            "monad-mpt", "--storage", temppath, "--create"};
+            "monad-mpt",
+            "--storage",
+            temppath,
+            "--create",
+            "--root-offsets-chunk-count",
+            "2"};
         ASSERT_EQ(0, main_impl(cout, cerr, create_args));
     }
     {
@@ -369,6 +470,8 @@ TEST(cli_tool, create_with_conflicting_state_machine_on_existing_pool_rejected)
             "--storage",
             temppath,
             "--create",
+            "--root-offsets-chunk-count",
+            "2",
             "--state-machine",
             "monad"};
         EXPECT_NE(0, main_impl(cout, cerr, args));
@@ -384,7 +487,7 @@ TEST(cli_tool, create_with_conflicting_state_machine_on_existing_pool_rejected)
 // Re-running a provisioning script must stay idempotent.
 TEST(cli_tool, create_with_matching_state_machine_on_existing_pool_accepted)
 {
-    char temppath[] = "cli_tool_test_XXXXXX";
+    char temppath[] = "cli_tool_tmp_test_XXXXXX";
     make_temp_pool(temppath);
     auto const untempfile =
         monad::make_scope_exit([&]() noexcept { unlink(temppath); });
@@ -397,6 +500,8 @@ TEST(cli_tool, create_with_matching_state_machine_on_existing_pool_accepted)
             "--storage",
             temppath,
             "--create",
+            "--root-offsets-chunk-count",
+            "2",
             "--state-machine",
             "ethereum"};
         ASSERT_EQ(0, main_impl(cout, cerr, create_args));
@@ -409,6 +514,8 @@ TEST(cli_tool, create_with_matching_state_machine_on_existing_pool_accepted)
             "--storage",
             temppath,
             "--create",
+            "--root-offsets-chunk-count",
+            "2",
             "--state-machine",
             "ethereum"};
         EXPECT_EQ(0, main_impl(cout, cerr, args)) << cerr.str();
@@ -423,7 +530,7 @@ TEST(cli_tool, create_with_matching_state_machine_on_existing_pool_accepted)
 // ethereum default must not be read as a request to restamp.
 TEST(cli_tool, create_without_state_machine_on_existing_pool_accepted)
 {
-    char temppath[] = "cli_tool_test_XXXXXX";
+    char temppath[] = "cli_tool_tmp_test_XXXXXX";
     make_temp_pool(temppath);
     auto const untempfile =
         monad::make_scope_exit([&]() noexcept { unlink(temppath); });
@@ -445,7 +552,12 @@ TEST(cli_tool, create_without_state_machine_on_existing_pool_accepted)
         std::stringstream cout;
         std::stringstream cerr;
         std::string_view args[] = {
-            "monad-mpt", "--storage", temppath, "--create"};
+            "monad-mpt",
+            "--storage",
+            temppath,
+            "--create",
+            "--root-offsets-chunk-count",
+            "2"};
         EXPECT_EQ(0, main_impl(cout, cerr, args)) << cerr.str();
     }
 
@@ -456,7 +568,7 @@ TEST(cli_tool, create_without_state_machine_on_existing_pool_accepted)
 
 TEST(cli_tool, activate_secondary_stamps_secondary_kind)
 {
-    char temppath[] = "cli_tool_test_XXXXXX";
+    char temppath[] = "cli_tool_tmp_test_XXXXXX";
     make_temp_pool(temppath);
     auto const untempfile =
         monad::make_scope_exit([&]() noexcept { unlink(temppath); });
@@ -465,7 +577,12 @@ TEST(cli_tool, activate_secondary_stamps_secondary_kind)
         std::stringstream cout;
         std::stringstream cerr;
         std::string_view create_args[] = {
-            "monad-mpt", "--storage", temppath, "--create"};
+            "monad-mpt",
+            "--storage",
+            temppath,
+            "--create",
+            "--root-offsets-chunk-count",
+            "2"};
         ASSERT_EQ(0, main_impl(cout, cerr, create_args));
     }
     {
@@ -499,7 +616,7 @@ TEST(cli_tool, activate_secondary_stamps_secondary_kind)
 // conflicting request to restamp the ethereum primary.
 TEST(cli_tool, activate_secondary_with_kind_differing_from_primary_accepted)
 {
-    char temppath[] = "cli_tool_test_XXXXXX";
+    char temppath[] = "cli_tool_tmp_test_XXXXXX";
     make_temp_pool(temppath);
     auto const untempfile =
         monad::make_scope_exit([&]() noexcept { unlink(temppath); });
@@ -508,7 +625,12 @@ TEST(cli_tool, activate_secondary_with_kind_differing_from_primary_accepted)
         std::stringstream cout;
         std::stringstream cerr;
         std::string_view create_args[] = {
-            "monad-mpt", "--storage", temppath, "--create"};
+            "monad-mpt",
+            "--storage",
+            temppath,
+            "--create",
+            "--root-offsets-chunk-count",
+            "2"};
         ASSERT_EQ(0, main_impl(cout, cerr, create_args));
     }
     {
@@ -538,7 +660,7 @@ TEST(cli_tool, activate_secondary_defaults_to_ethereum_when_flag_omitted)
     // --activate-secondary (matching the --create default), so existing
     // operator scripts work unmodified. If you change this default, this
     // test should fail and force a deliberate choice.
-    char temppath[] = "cli_tool_test_XXXXXX";
+    char temppath[] = "cli_tool_tmp_test_XXXXXX";
     make_temp_pool(temppath);
     auto const untempfile =
         monad::make_scope_exit([&]() noexcept { unlink(temppath); });
@@ -547,7 +669,12 @@ TEST(cli_tool, activate_secondary_defaults_to_ethereum_when_flag_omitted)
         std::stringstream cout;
         std::stringstream cerr;
         std::string_view create_args[] = {
-            "monad-mpt", "--storage", temppath, "--create"};
+            "monad-mpt",
+            "--storage",
+            temppath,
+            "--create",
+            "--root-offsets-chunk-count",
+            "2"};
         ASSERT_EQ(0, main_impl(cout, cerr, create_args));
     }
     {
@@ -564,7 +691,7 @@ TEST(cli_tool, activate_secondary_defaults_to_ethereum_when_flag_omitted)
 
 TEST(cli_tool, deactivate_secondary_clears_active_flag)
 {
-    char temppath[] = "cli_tool_test_XXXXXX";
+    char temppath[] = "cli_tool_tmp_test_XXXXXX";
     make_temp_pool(temppath);
     auto const untempfile =
         monad::make_scope_exit([&]() noexcept { unlink(temppath); });
@@ -573,7 +700,12 @@ TEST(cli_tool, deactivate_secondary_clears_active_flag)
         std::stringstream cout;
         std::stringstream cerr;
         std::string_view create_args[] = {
-            "monad-mpt", "--storage", temppath, "--create"};
+            "monad-mpt",
+            "--storage",
+            temppath,
+            "--create",
+            "--root-offsets-chunk-count",
+            "2"};
         ASSERT_EQ(0, main_impl(cout, cerr, create_args));
     }
     {
@@ -601,7 +733,7 @@ TEST(cli_tool, deactivate_secondary_clears_active_flag)
 
 TEST(cli_tool, promote_secondary_flips_primary_ring_idx)
 {
-    char temppath[] = "cli_tool_test_XXXXXX";
+    char temppath[] = "cli_tool_tmp_test_XXXXXX";
     make_temp_pool(temppath);
     auto const untempfile =
         monad::make_scope_exit([&]() noexcept { unlink(temppath); });
@@ -610,7 +742,12 @@ TEST(cli_tool, promote_secondary_flips_primary_ring_idx)
         std::stringstream cout;
         std::stringstream cerr;
         std::string_view create_args[] = {
-            "monad-mpt", "--storage", temppath, "--create"};
+            "monad-mpt",
+            "--storage",
+            temppath,
+            "--create",
+            "--root-offsets-chunk-count",
+            "2"};
         ASSERT_EQ(0, main_impl(cout, cerr, create_args));
     }
     {
@@ -638,7 +775,7 @@ TEST(cli_tool, promote_secondary_flips_primary_ring_idx)
 
 TEST(cli_tool, activate_secondary_on_already_active_is_rejected)
 {
-    char temppath[] = "cli_tool_test_XXXXXX";
+    char temppath[] = "cli_tool_tmp_test_XXXXXX";
     make_temp_pool(temppath);
     auto const untempfile =
         monad::make_scope_exit([&]() noexcept { unlink(temppath); });
@@ -647,7 +784,12 @@ TEST(cli_tool, activate_secondary_on_already_active_is_rejected)
         std::stringstream cout;
         std::stringstream cerr;
         std::string_view create_args[] = {
-            "monad-mpt", "--storage", temppath, "--create"};
+            "monad-mpt",
+            "--storage",
+            temppath,
+            "--create",
+            "--root-offsets-chunk-count",
+            "2"};
         ASSERT_EQ(0, main_impl(cout, cerr, create_args));
     }
     {
@@ -668,7 +810,7 @@ TEST(cli_tool, activate_secondary_on_already_active_is_rejected)
 
 TEST(cli_tool, deactivate_secondary_on_inactive_is_rejected)
 {
-    char temppath[] = "cli_tool_test_XXXXXX";
+    char temppath[] = "cli_tool_tmp_test_XXXXXX";
     make_temp_pool(temppath);
     auto const untempfile =
         monad::make_scope_exit([&]() noexcept { unlink(temppath); });
@@ -677,7 +819,12 @@ TEST(cli_tool, deactivate_secondary_on_inactive_is_rejected)
         std::stringstream cout;
         std::stringstream cerr;
         std::string_view create_args[] = {
-            "monad-mpt", "--storage", temppath, "--create"};
+            "monad-mpt",
+            "--storage",
+            temppath,
+            "--create",
+            "--root-offsets-chunk-count",
+            "2"};
         ASSERT_EQ(0, main_impl(cout, cerr, create_args));
     }
     std::stringstream cout;
@@ -692,7 +839,6 @@ struct config
 {
     size_t chunks_to_fill;
     size_t chunks_max;
-    bool interleave_multiple_sources{false};
 };
 
 template <config Config>
@@ -705,11 +851,14 @@ struct cli_tool_fixture
 {
     void run_test()
     {
+        // These tests deliberately do not pass --root-offsets-chunk-count, so
+        // they are the only remaining coverage of the CLI's production default
+        // of 16 (+1 for db_metadata). Adding the flag here would make this 17 a
+        // silent lie and undersize the restore target.
         constexpr unsigned default_num_cnv_chunks = 17;
 
-        char temppath1[] = "cli_tool_test_XXXXXX";
-        char dbpath2a[] = "cli_tool_test_XXXXXX";
-        char dbpath2b[] = "cli_tool_test_XXXXXX";
+        char temppath1[] = "cli_tool_tmp_test_XXXXXX";
+        char dbpath2a[] = "cli_tool_tmp_test_XXXXXX";
         auto fd = mkstemp(temppath1);
         if (-1 == fd) {
             abort();
@@ -720,18 +869,12 @@ struct cli_tool_fixture
             abort();
         }
         ::close(fd);
-        fd = mkstemp(dbpath2b);
-        if (-1 == fd) {
-            abort();
-        }
-        ::close(fd);
         auto const untempfile = monad::make_scope_exit([&]() noexcept {
             unlink(temppath1);
             unlink(dbpath2a);
-            unlink(dbpath2b);
         });
         auto const dbpath1 =
-            this->state()->pool.devices().front().current_path().string();
+            this->state()->pool.device().current_path().string();
         std::cout << "DB path: " << dbpath1 << std::endl;
         {
             std::cout << "archiving to file: " << temppath1 << std::endl;
@@ -747,44 +890,18 @@ struct cli_tool_fixture
                 std::string::npos,
                 cout.str().find("Database has been archived to"));
         }
-        std::vector<std::filesystem::path> dbpath2;
-        if (Config.interleave_multiple_sources) {
-            if (-1 == truncate(
-                          dbpath2a,
-                          (default_num_cnv_chunks + Config.chunks_max / 2) *
-                                  MONAD_ASYNC_NAMESPACE::AsyncIO::
-                                      MONAD_IO_BUFFERS_WRITE_SIZE +
-                              24576)) {
-                abort();
-            }
-            if (-1 == truncate(
-                          dbpath2b,
-                          (default_num_cnv_chunks + Config.chunks_max / 2) *
-                                  MONAD_ASYNC_NAMESPACE::AsyncIO::
-                                      MONAD_IO_BUFFERS_WRITE_SIZE +
-                              24576)) {
-                abort();
-            }
-            dbpath2.push_back(dbpath2a);
-            dbpath2.push_back(dbpath2b);
+        if (-1 == truncate(
+                      dbpath2a,
+                      (default_num_cnv_chunks + Config.chunks_max) *
+                              MONAD_ASYNC_NAMESPACE::AsyncIO::
+                                  MONAD_IO_BUFFERS_WRITE_SIZE +
+                          24576)) {
+            abort();
         }
-        else {
-            if (-1 == truncate(
-                          dbpath2a,
-                          (default_num_cnv_chunks + Config.chunks_max) *
-                                  MONAD_ASYNC_NAMESPACE::AsyncIO::
-                                      MONAD_IO_BUFFERS_WRITE_SIZE +
-                              24576)) {
-                abort();
-            }
-            dbpath2.push_back(dbpath2a);
-        }
+        std::filesystem::path const dbpath2{dbpath2a};
         {
-            std::cout << "restoring from file " << temppath1 << " to";
-            for (auto const &i : dbpath2) {
-                std::cout << " " << i;
-            }
-            std::cout << std::endl;
+            std::cout << "restoring from file " << temppath1 << " to "
+                      << dbpath2 << std::endl;
             std::stringstream cout;
             std::stringstream cerr;
             std::vector<std::string_view> args{
@@ -793,11 +910,9 @@ struct cli_tool_fixture
                 "23",
                 "--yes",
                 "--restore",
-                temppath1};
-            for (auto const &i : dbpath2) {
-                args.push_back("--storage");
-                args.push_back(i.native());
-            }
+                temppath1,
+                "--storage",
+                dbpath2.native()};
             int const retcode = std::async(std::launch::async, [&] {
                                     return main_impl(cout, cerr, args);
                                 }).get();
@@ -848,120 +963,6 @@ struct cli_tool_fixture
                     aux.metadata_ctx().db_history_max_version());
             }).get();
         }
-        if (Config.interleave_multiple_sources) {
-            /* Also test archiving from a multiple source pool restoring into a
-             single source pool, and see if the contents migrate properly.
-             */
-            char temppath2[] = "cli_tool_test_XXXXXX";
-            char dbpath3[] = "cli_tool_test_XXXXXX";
-            auto fd = mkstemp(temppath2);
-            if (-1 == fd) {
-                abort();
-            }
-            ::close(fd);
-            fd = mkstemp(dbpath3);
-            if (-1 == fd) {
-                abort();
-            }
-            if (-1 == ftruncate(
-                          fd,
-                          (default_num_cnv_chunks + Config.chunks_max) *
-                                  MONAD_ASYNC_NAMESPACE::AsyncIO::
-                                      MONAD_IO_BUFFERS_WRITE_SIZE +
-                              24576)) {
-                abort();
-            }
-            ::close(fd);
-            auto const untempfile2 = monad::make_scope_exit([&]() noexcept {
-                unlink(temppath2);
-                unlink(dbpath3);
-            });
-            {
-                std::cout << "archiving to file: " << temppath2 << std::endl;
-                std::stringstream cout;
-                std::stringstream cerr;
-                std::vector<std::string_view> args{
-                    "monad-mpt", "--archive", temppath2};
-                for (auto const &i : dbpath2) {
-                    args.push_back("--storage");
-                    args.push_back(i.native());
-                }
-                int const retcode = std::async(std::launch::async, [&] {
-                                        return main_impl(cout, cerr, args);
-                                    }).get();
-                ASSERT_EQ(retcode, 0);
-                EXPECT_NE(
-                    std::string::npos,
-                    cout.str().find("Database has been archived to"));
-            }
-            {
-                std::cout << "restoring from file " << temppath2 << " to "
-                          << dbpath3 << std::endl;
-                std::stringstream cout;
-                std::stringstream cerr;
-                std::string_view args[] = {
-                    "monad-mpt",
-                    "--storage",
-                    dbpath3,
-                    "--chunk-capacity",
-                    "23",
-                    "--yes",
-                    "--restore",
-                    temppath2};
-                int const retcode = std::async(std::launch::async, [&] {
-                                        return main_impl(cout, cerr, args);
-                                    }).get();
-                std::cout << cerr.str() << std::endl;
-                std::cout << cout.str() << std::endl;
-                ASSERT_EQ(retcode, 0);
-                EXPECT_NE(
-                    std::string::npos,
-                    cout.str().find("Database has been restored from"));
-            }
-            {
-                std::cout << "checking restored file has correct contents"
-                          << std::endl;
-
-                std::async(std::launch::async, [&] {
-                    monad::async::storage_pool pool({{dbpath3}});
-                    monad::io::Ring testring;
-                    monad::io::Buffers testrwbuf =
-                        monad::io::make_buffers_for_read_only(
-                            testring,
-                            1,
-                            monad::async::AsyncIO::MONAD_IO_BUFFERS_READ_SIZE);
-                    monad::async::AsyncIO testio(pool, testrwbuf);
-                    monad::mpt::UpdateAux const aux{testio};
-                    monad::mpt::Node::SharedPtr const root_ptr{
-                        read_node_blocking(
-                            aux,
-                            aux.metadata_ctx().get_latest_root_offset(),
-                            aux.metadata_ctx().db_history_max_version(),
-                            monad::mpt::timeline_id::primary)};
-                    monad::mpt::NodeCursor const root(root_ptr);
-
-                    for (auto const &key : this->state()->keys) {
-                        auto const ret = monad::mpt::find_blocking(
-                            aux,
-                            root,
-                            key.first,
-                            aux.metadata_ctx().db_history_max_version(),
-                            monad::mpt::timeline_id::primary);
-                        EXPECT_EQ(ret.second, monad::mpt::find_result::success);
-                    }
-                    EXPECT_EQ(
-                        this->state()
-                            ->aux.metadata_ctx()
-                            .db_history_min_valid_version(),
-                        aux.metadata_ctx().db_history_min_valid_version());
-                    EXPECT_EQ(
-                        this->state()
-                            ->aux.metadata_ctx()
-                            .db_history_max_version(),
-                        aux.metadata_ctx().db_history_max_version());
-                }).get();
-            }
-        }
     }
 };
 
@@ -992,14 +993,17 @@ TEST_F(cli_tool_restore_preserves_kind, restore_preserves_state_machine_kind)
     constexpr auto synthetic_kind =
         static_cast<monad::mpt::state_machine_kind>(uint8_t{3});
 
-    auto const dbpath1 =
-        this->state()->pool.devices().front().current_path().string();
+    auto const dbpath1 = this->state()->pool.device().current_path().string();
     this->state()->aux.metadata_ctx().set_state_machine_kind(
         monad::mpt::timeline_id::primary, synthetic_kind);
 
+    // These tests deliberately do not pass --root-offsets-chunk-count, so they
+    // are the only remaining coverage of the CLI's production default of 16 (+1
+    // for db_metadata). Adding the flag here would make this 17 a silent lie
+    // and undersize the restore target.
     constexpr unsigned default_num_cnv_chunks = 17;
-    char archivepath[] = "cli_tool_test_XXXXXX";
-    char dbpath2[] = "cli_tool_test_XXXXXX";
+    char archivepath[] = "cli_tool_tmp_test_XXXXXX";
+    char dbpath2[] = "cli_tool_tmp_test_XXXXXX";
     {
         auto const fd = mkstemp(archivepath);
         ASSERT_NE(fd, -1);
@@ -1071,7 +1075,7 @@ TEST_F(cli_tool_restore_preserves_kind, restore_preserves_state_machine_kind)
 // target database intact; --restore would otherwise truncate it first.
 TEST(cli_tool, restore_with_state_machine_rejected)
 {
-    char temppath[] = "cli_tool_test_XXXXXX";
+    char temppath[] = "cli_tool_tmp_test_XXXXXX";
     make_temp_pool(temppath);
     auto const untempfile =
         monad::make_scope_exit([&]() noexcept { unlink(temppath); });
@@ -1121,7 +1125,7 @@ TEST(cli_tool, archives_restores_with_secondary_active)
 
     auto const src_dbname = create_temp_file(8);
     auto const dst_dbname = create_temp_file(8);
-    char arc_path[] = "cli_tool_test_XXXXXX";
+    char arc_path[] = "cli_tool_tmp_test_XXXXXX";
     int const arc_fd = ::mkstemp(arc_path);
     ASSERT_NE(arc_fd, -1);
     ::close(arc_fd);
@@ -1140,7 +1144,7 @@ TEST(cli_tool, archives_restores_with_secondary_active)
         OnDiskDbConfig const config{
             .compaction = true,
             .sq_thread_cpu = std::nullopt,
-            .dbname_paths = {src_dbname},
+            .dbname_path = src_dbname,
             .fixed_history_length = MPT_TEST_HISTORY_LENGTH};
         Db db{std::make_unique<StateMachineAlwaysMerkle>(), config};
 
@@ -1206,7 +1210,7 @@ TEST(cli_tool, archives_restores_with_secondary_active)
             .append = true,
             .compaction = true,
             .sq_thread_cpu = std::nullopt,
-            .dbname_paths = {dst_dbname},
+            .dbname_path = dst_dbname,
             .fixed_history_length = MPT_TEST_HISTORY_LENGTH};
         Db db{std::make_unique<StateMachineAlwaysMerkle>(), config};
         ASSERT_TRUE(db.timeline_active(timeline_id::secondary));
@@ -1244,7 +1248,7 @@ TEST(cli_tool, archives_restores_after_promote_and_deactivate)
 
     auto const src_dbname = create_temp_file(8);
     auto const dst_dbname = create_temp_file(8);
-    char arc_path[] = "cli_tool_test_XXXXXX";
+    char arc_path[] = "cli_tool_tmp_test_XXXXXX";
     int const arc_fd = ::mkstemp(arc_path);
     ASSERT_NE(arc_fd, -1);
     ::close(arc_fd);
@@ -1262,7 +1266,7 @@ TEST(cli_tool, archives_restores_after_promote_and_deactivate)
     OnDiskDbConfig const config{
         .compaction = true,
         .sq_thread_cpu = std::nullopt,
-        .dbname_paths = {src_dbname},
+        .dbname_path = src_dbname,
         .fixed_history_length = MPT_TEST_HISTORY_LENGTH};
 
     {
@@ -1336,7 +1340,7 @@ TEST(cli_tool, archives_restores_after_promote_and_deactivate)
             .append = true,
             .compaction = true,
             .sq_thread_cpu = std::nullopt,
-            .dbname_paths = {dst_dbname},
+            .dbname_path = dst_dbname,
             .fixed_history_length = MPT_TEST_HISTORY_LENGTH};
         Db const db{
             std::make_unique<StateMachineAlwaysMerkle>(), restored_config};
@@ -1366,24 +1370,11 @@ TEST_F(cli_tool_one_chunk_too_many, one_chunk_too_many)
     run_test();
 }
 
-struct cli_tool_non_one_one_chunk_ids
-    : public cli_tool_fixture<config{
-          .chunks_to_fill = 4,
-          .chunks_max = 6,
-          .interleave_multiple_sources = true}>
-{
-};
-
-TEST_F(cli_tool_non_one_one_chunk_ids, cli_tool_non_one_one_chunk_ids)
-{
-    run_test();
-}
-
 // --upgrade on a pool created with --create and thus already on MONAD008.
 // Must be idempotent: exit 0, print "DB is on version MONAD008".
 TEST(cli_tool, upgrade_idempotent_on_current_pool)
 {
-    char temppath[] = "cli_tool_test_XXXXXX";
+    char temppath[] = "cli_tool_tmp_test_XXXXXX";
     auto const fd = mkstemp(temppath);
     if (-1 == fd) {
         abort();
@@ -1399,7 +1390,12 @@ TEST(cli_tool, upgrade_idempotent_on_current_pool)
         std::stringstream cout;
         std::stringstream cerr;
         std::string_view args[] = {
-            "monad-mpt", "--storage", temppath, "--create"};
+            "monad-mpt",
+            "--storage",
+            temppath,
+            "--create",
+            "--root-offsets-chunk-count",
+            "2"};
         ASSERT_EQ(0, main_impl(cout, cerr, args));
     }
     {
@@ -1418,7 +1414,7 @@ TEST(cli_tool, upgrade_idempotent_on_current_pool)
 // because cli_ops_group enforces require_option(0, 1).
 TEST(cli_tool, upgrade_rejects_combined_mutation)
 {
-    char temppath[] = "cli_tool_test_XXXXXX";
+    char temppath[] = "cli_tool_tmp_test_XXXXXX";
     auto const fd = mkstemp(temppath);
     if (-1 == fd) {
         abort();
@@ -1433,7 +1429,13 @@ TEST(cli_tool, upgrade_rejects_combined_mutation)
     std::stringstream cout;
     std::stringstream cerr;
     std::string_view args[] = {
-        "monad-mpt", "--storage", temppath, "--upgrade", "--create"};
+        "monad-mpt",
+        "--storage",
+        temppath,
+        "--upgrade",
+        "--create",
+        "--root-offsets-chunk-count",
+        "2"};
     int const retcode = main_impl(cout, cerr, args);
     ASSERT_NE(0, retcode);
     EXPECT_TRUE(cerr.str().starts_with("FATAL:"));
@@ -1450,7 +1452,7 @@ TEST(cli_tool, upgrade_migrates_monad007_pool)
     static constexpr size_t MONAD007_DB_METADATA_SIZE = 528512;
     static constexpr size_t MONAD007_LIST_TRIPLE_OFFSET = 528488;
 
-    char temppath[] = "cli_tool_test_XXXXXX";
+    char temppath[] = "cli_tool_tmp_test_XXXXXX";
     auto const fd = mkstemp(temppath);
     if (-1 == fd) {
         abort();
@@ -1467,7 +1469,12 @@ TEST(cli_tool, upgrade_migrates_monad007_pool)
         std::stringstream cout;
         std::stringstream cerr;
         std::string_view args[] = {
-            "monad-mpt", "--storage", temppath, "--create"};
+            "monad-mpt",
+            "--storage",
+            temppath,
+            "--create",
+            "--root-offsets-chunk-count",
+            "2"};
         ASSERT_EQ(0, main_impl(cout, cerr, args));
     }
 
@@ -1485,10 +1492,10 @@ TEST(cli_tool, upgrade_migrates_monad007_pool)
     // check.
     uint64_t const test_history_length = 9999;
     {
-        std::vector<std::filesystem::path> paths{temppath};
+        std::filesystem::path const paths{temppath};
         MONAD_ASYNC_NAMESPACE::storage_pool::creation_flags const flags;
         MONAD_ASYNC_NAMESPACE::storage_pool pool{
-            std::span{paths},
+            paths,
             MONAD_ASYNC_NAMESPACE::storage_pool::mode::open_existing,
             flags};
         // chunk_info_count stored on disk must equal io->chunk_count(),
@@ -1497,7 +1504,7 @@ TEST(cli_tool, upgrade_migrates_monad007_pool)
         // chunk_info[] flexible array is sized to match.
         uint32_t const chunk_count = static_cast<uint32_t>(
             pool.chunks(MONAD_ASYNC_NAMESPACE::storage_pool::seq));
-        auto &cnv_chunk =
+        auto cnv_chunk =
             pool.chunk(MONAD_ASYNC_NAMESPACE::storage_pool::cnv, 0);
         auto const [write_fd, base_offset] = cnv_chunk.write_fd(0);
         off_t const half_capacity = // NOLINT(misc-include-cleaner)
@@ -1551,11 +1558,11 @@ TEST(cli_tool, upgrade_migrates_monad007_pool)
     // Reopen read-only; magic must now be MONAD008 and history_length
     // must survive at its new offset.
     {
-        std::vector<std::filesystem::path> paths{temppath};
+        std::filesystem::path const paths{temppath};
         MONAD_ASYNC_NAMESPACE::storage_pool::creation_flags flags;
         flags.open_read_only = true;
         MONAD_ASYNC_NAMESPACE::storage_pool pool{
-            std::span{paths},
+            paths,
             MONAD_ASYNC_NAMESPACE::storage_pool::mode::open_existing,
             flags};
         monad::io::Ring ring;
@@ -1581,7 +1588,7 @@ TEST(cli_tool, upgrade_migrates_monad007_pool)
 TEST(cli_tool, upgrade_monad007_secondary_ring_uses_null_chunk_sentinel)
 {
     using monad::mpt::detail::db_metadata;
-    char temppath[] = "cli_tool_test_XXXXXX";
+    char temppath[] = "cli_tool_tmp_test_XXXXXX";
     make_temp_pool(temppath);
     auto const untempfile =
         monad::make_scope_exit([&]() noexcept { unlink(temppath); });
@@ -1596,7 +1603,7 @@ TEST(cli_tool, upgrade_monad007_secondary_ring_uses_null_chunk_sentinel)
     }
 
     monad::mpt::AsyncIOContext io_ctx{monad::mpt::ReadOnlyOnDiskDbConfig{
-        .dbname_paths = {std::filesystem::path{temppath}}}};
+        .dbname_path = {std::filesystem::path{temppath}}}};
     monad::mpt::DbMetadataContext const ctx{io_ctx.io};
     auto const *const m = ctx.main();
     ASSERT_EQ(
@@ -1627,7 +1634,7 @@ TEST(cli_tool, upgrade_monad007_secondary_ring_uses_null_chunk_sentinel)
 TEST(cli_tool, activate_secondary_on_migrated_pool_preserves_metadata)
 {
     using monad::mpt::detail::db_metadata;
-    char temppath[] = "cli_tool_test_XXXXXX";
+    char temppath[] = "cli_tool_tmp_test_XXXXXX";
     make_temp_pool(temppath);
     auto const untempfile =
         monad::make_scope_exit([&]() noexcept { unlink(temppath); });
@@ -1642,10 +1649,10 @@ TEST(cli_tool, activate_secondary_on_migrated_pool_preserves_metadata)
     }
 
     {
-        std::vector<std::filesystem::path> paths{temppath};
+        std::filesystem::path const paths{temppath};
         MONAD_ASYNC_NAMESPACE::storage_pool::creation_flags const flags;
         MONAD_ASYNC_NAMESPACE::storage_pool pool{
-            std::span{paths},
+            paths,
             MONAD_ASYNC_NAMESPACE::storage_pool::mode::open_existing,
             flags};
         monad::io::Ring ring1;
@@ -1679,7 +1686,7 @@ TEST(cli_tool, activate_secondary_on_migrated_pool_preserves_metadata)
     }
 
     monad::mpt::AsyncIOContext io_ctx{monad::mpt::ReadOnlyOnDiskDbConfig{
-        .dbname_paths = {std::filesystem::path{temppath}}}};
+        .dbname_path = {std::filesystem::path{temppath}}}};
     monad::mpt::DbMetadataContext const ctx{io_ctx.io};
     EXPECT_EQ(
         0,
@@ -1696,7 +1703,7 @@ TEST(cli_tool, activate_secondary_on_migrated_pool_preserves_metadata)
 // 0xff-wiping) the metadata chunk.
 TEST(cli_tool, ring_referencing_db_metadata_chunk_aborts)
 {
-    char temppath[] = "cli_tool_test_XXXXXX";
+    char temppath[] = "cli_tool_tmp_test_XXXXXX";
     make_temp_pool(temppath);
     auto const untempfile =
         monad::make_scope_exit([&]() noexcept { unlink(temppath); });
@@ -1704,20 +1711,25 @@ TEST(cli_tool, ring_referencing_db_metadata_chunk_aborts)
         std::stringstream cout;
         std::stringstream cerr;
         std::string_view args[] = {
-            "monad-mpt", "--storage", temppath, "--create"};
+            "monad-mpt",
+            "--storage",
+            temppath,
+            "--create",
+            "--root-offsets-chunk-count",
+            "2"};
         ASSERT_EQ(0, main_impl(cout, cerr, args)) << cerr.str();
     }
 
     // Point primary root_offsets ring slot 0 at cnv chunk 0 on both metadata
     // copies. cnv_chunks[0].cnv_chunk_id sits at byte 52 of db_metadata.
     {
-        std::vector<std::filesystem::path> paths{temppath};
+        std::filesystem::path const paths{temppath};
         MONAD_ASYNC_NAMESPACE::storage_pool::creation_flags const flags;
         MONAD_ASYNC_NAMESPACE::storage_pool pool{
-            std::span{paths},
+            paths,
             MONAD_ASYNC_NAMESPACE::storage_pool::mode::open_existing,
             flags};
-        auto &cnv_chunk =
+        auto cnv_chunk =
             pool.chunk(MONAD_ASYNC_NAMESPACE::storage_pool::cnv, 0);
         auto const [write_fd, base_offset] = cnv_chunk.write_fd(0);
         auto const half_capacity = static_cast<off_t>(cnv_chunk.capacity() / 2);
@@ -1735,7 +1747,7 @@ TEST(cli_tool, ring_referencing_db_metadata_chunk_aborts)
     }
 
     monad::mpt::AsyncIOContext io_ctx{monad::mpt::ReadOnlyOnDiskDbConfig{
-        .dbname_paths = {std::filesystem::path{temppath}}}};
+        .dbname_path = {std::filesystem::path{temppath}}}};
     ASSERT_DEATH(
         { monad::mpt::DbMetadataContext const ctx{io_ctx.io}; },
         "db_metadata chunk");
@@ -1747,7 +1759,7 @@ TEST(cli_tool, ring_referencing_db_metadata_chunk_aborts)
 TEST(cli_tool, repair_normalizes_zeroed_secondary_ring)
 {
     using monad::mpt::detail::db_metadata;
-    char temppath[] = "cli_tool_test_XXXXXX";
+    char temppath[] = "cli_tool_tmp_test_XXXXXX";
     make_temp_pool(temppath);
     auto const untempfile =
         monad::make_scope_exit([&]() noexcept { unlink(temppath); });
@@ -1755,7 +1767,12 @@ TEST(cli_tool, repair_normalizes_zeroed_secondary_ring)
         std::stringstream cout;
         std::stringstream cerr;
         std::string_view args[] = {
-            "monad-mpt", "--storage", temppath, "--create"};
+            "monad-mpt",
+            "--storage",
+            temppath,
+            "--create",
+            "--root-offsets-chunk-count",
+            "2"};
         ASSERT_EQ(0, main_impl(cout, cerr, args)) << cerr.str();
     }
 
@@ -1764,13 +1781,13 @@ TEST(cli_tool, repair_normalizes_zeroed_secondary_ring)
     // storage_ cnv_chunks[0].cnv_chunk_id@28) on both metadata copies.
     static constexpr off_t SECONDARY_CNV_CHUNK0_ID_OFFSET = 432 + 28;
     {
-        std::vector<std::filesystem::path> paths{temppath};
+        std::filesystem::path const paths{temppath};
         MONAD_ASYNC_NAMESPACE::storage_pool::creation_flags const flags;
         MONAD_ASYNC_NAMESPACE::storage_pool pool{
-            std::span{paths},
+            paths,
             MONAD_ASYNC_NAMESPACE::storage_pool::mode::open_existing,
             flags};
-        auto &cnv_chunk =
+        auto cnv_chunk =
             pool.chunk(MONAD_ASYNC_NAMESPACE::storage_pool::cnv, 0);
         auto const [write_fd, base_offset] = cnv_chunk.write_fd(0);
         auto const half_capacity = static_cast<off_t>(cnv_chunk.capacity() / 2);
@@ -1788,12 +1805,10 @@ TEST(cli_tool, repair_normalizes_zeroed_secondary_ring)
         ASSERT_EQ(0, ::fsync(write_fd));
     }
 
-    std::vector<std::filesystem::path> paths{temppath};
+    std::filesystem::path const paths{temppath};
     MONAD_ASYNC_NAMESPACE::storage_pool::creation_flags const flags;
     MONAD_ASYNC_NAMESPACE::storage_pool pool{
-        std::span{paths},
-        MONAD_ASYNC_NAMESPACE::storage_pool::mode::open_existing,
-        flags};
+        paths, MONAD_ASYNC_NAMESPACE::storage_pool::mode::open_existing, flags};
     monad::io::Ring ring1;
     monad::io::Ring ring2;
     monad::io::Buffers buffers =
@@ -1831,7 +1846,7 @@ TEST(cli_tool, repair_normalizes_zeroed_secondary_ring)
 // opens writable, and reports nothing to do.
 TEST(cli_tool, repair_cli_noop_on_healthy_pool)
 {
-    char temppath[] = "cli_tool_test_XXXXXX";
+    char temppath[] = "cli_tool_tmp_test_XXXXXX";
     make_temp_pool(temppath);
     auto const untempfile =
         monad::make_scope_exit([&]() noexcept { unlink(temppath); });
@@ -1839,7 +1854,12 @@ TEST(cli_tool, repair_cli_noop_on_healthy_pool)
         std::stringstream cout;
         std::stringstream cerr;
         std::string_view args[] = {
-            "monad-mpt", "--storage", temppath, "--create"};
+            "monad-mpt",
+            "--storage",
+            temppath,
+            "--create",
+            "--root-offsets-chunk-count",
+            "2"};
         ASSERT_EQ(0, main_impl(cout, cerr, args)) << cerr.str();
     }
     {
@@ -1857,7 +1877,7 @@ TEST(cli_tool, repair_cli_noop_on_healthy_pool)
 TEST(cli_tool, repair_refuses_active_secondary)
 {
     using monad::mpt::detail::db_metadata;
-    char temppath[] = "cli_tool_test_XXXXXX";
+    char temppath[] = "cli_tool_tmp_test_XXXXXX";
     make_temp_pool(temppath);
     auto const untempfile =
         monad::make_scope_exit([&]() noexcept { unlink(temppath); });
@@ -1865,16 +1885,19 @@ TEST(cli_tool, repair_refuses_active_secondary)
         std::stringstream cout;
         std::stringstream cerr;
         std::string_view args[] = {
-            "monad-mpt", "--storage", temppath, "--create"};
+            "monad-mpt",
+            "--storage",
+            temppath,
+            "--create",
+            "--root-offsets-chunk-count",
+            "2"};
         ASSERT_EQ(0, main_impl(cout, cerr, args)) << cerr.str();
     }
 
-    std::vector<std::filesystem::path> paths{temppath};
+    std::filesystem::path const paths{temppath};
     MONAD_ASYNC_NAMESPACE::storage_pool::creation_flags const flags;
     MONAD_ASYNC_NAMESPACE::storage_pool pool{
-        std::span{paths},
-        MONAD_ASYNC_NAMESPACE::storage_pool::mode::open_existing,
-        flags};
+        paths, MONAD_ASYNC_NAMESPACE::storage_pool::mode::open_existing, flags};
     monad::io::Ring ring1;
     monad::io::Ring ring2;
     monad::io::Buffers buffers =
@@ -1914,7 +1937,7 @@ TEST(cli_tool, repair_refuses_active_secondary)
 // secondary-lifecycle ops), so scripts can tell repair was refused.
 TEST(cli_tool, repair_cli_refuses_active_secondary)
 {
-    char temppath[] = "cli_tool_test_XXXXXX";
+    char temppath[] = "cli_tool_tmp_test_XXXXXX";
     make_temp_pool(temppath);
     auto const untempfile =
         monad::make_scope_exit([&]() noexcept { unlink(temppath); });
@@ -1922,7 +1945,12 @@ TEST(cli_tool, repair_cli_refuses_active_secondary)
         std::stringstream cout;
         std::stringstream cerr;
         std::string_view args[] = {
-            "monad-mpt", "--storage", temppath, "--create"};
+            "monad-mpt",
+            "--storage",
+            temppath,
+            "--create",
+            "--root-offsets-chunk-count",
+            "2"};
         ASSERT_EQ(0, main_impl(cout, cerr, args)) << cerr.str();
     }
     {
@@ -1950,7 +1978,7 @@ TEST(cli_tool, repair_cli_refuses_active_secondary)
 TEST(cli_tool, activate_refuses_unrepaired_pool_then_repair_enables_activation)
 {
     static constexpr off_t SECONDARY_CNV_CHUNK0_ID_OFFSET = 432 + 28;
-    char temppath[] = "cli_tool_test_XXXXXX";
+    char temppath[] = "cli_tool_tmp_test_XXXXXX";
     make_temp_pool(temppath);
     auto const untempfile =
         monad::make_scope_exit([&]() noexcept { unlink(temppath); });
@@ -1958,19 +1986,24 @@ TEST(cli_tool, activate_refuses_unrepaired_pool_then_repair_enables_activation)
         std::stringstream cout;
         std::stringstream cerr;
         std::string_view args[] = {
-            "monad-mpt", "--storage", temppath, "--create"};
+            "monad-mpt",
+            "--storage",
+            temppath,
+            "--create",
+            "--root-offsets-chunk-count",
+            "2"};
         ASSERT_EQ(0, main_impl(cout, cerr, args)) << cerr.str();
     }
 
     // Simulate the pre-fix migration artifact on the inactive secondary ring.
     {
-        std::vector<std::filesystem::path> paths{temppath};
+        std::filesystem::path const paths{temppath};
         MONAD_ASYNC_NAMESPACE::storage_pool::creation_flags const flags;
         MONAD_ASYNC_NAMESPACE::storage_pool pool{
-            std::span{paths},
+            paths,
             MONAD_ASYNC_NAMESPACE::storage_pool::mode::open_existing,
             flags};
-        auto &cnv_chunk =
+        auto cnv_chunk =
             pool.chunk(MONAD_ASYNC_NAMESPACE::storage_pool::cnv, 0);
         auto const [write_fd, base_offset] = cnv_chunk.write_fd(0);
         auto const half_capacity = static_cast<off_t>(cnv_chunk.capacity() / 2);
@@ -2031,7 +2064,7 @@ TEST(cli_tool, upgrade_heals_dirty_monad007_copy)
     static constexpr size_t MONAD007_DB_METADATA_SIZE = 528512;
     static constexpr size_t MONAD007_LIST_TRIPLE_OFFSET = 528488;
 
-    char temppath[] = "cli_tool_test_XXXXXX";
+    char temppath[] = "cli_tool_tmp_test_XXXXXX";
     auto const fd = mkstemp(temppath);
     if (-1 == fd) {
         abort();
@@ -2047,7 +2080,12 @@ TEST(cli_tool, upgrade_heals_dirty_monad007_copy)
         std::stringstream cout;
         std::stringstream cerr;
         std::string_view args[] = {
-            "monad-mpt", "--storage", temppath, "--create"};
+            "monad-mpt",
+            "--storage",
+            temppath,
+            "--create",
+            "--root-offsets-chunk-count",
+            "2"};
         ASSERT_EQ(0, main_impl(cout, cerr, args));
     }
 
@@ -2055,15 +2093,15 @@ TEST(cli_tool, upgrade_heals_dirty_monad007_copy)
     uint64_t const corrupt_history_length = 0xDEADBEEFULL;
 
     {
-        std::vector<std::filesystem::path> paths{temppath};
+        std::filesystem::path const paths{temppath};
         MONAD_ASYNC_NAMESPACE::storage_pool::creation_flags const flags;
         MONAD_ASYNC_NAMESPACE::storage_pool pool{
-            std::span{paths},
+            paths,
             MONAD_ASYNC_NAMESPACE::storage_pool::mode::open_existing,
             flags};
         uint32_t const chunk_count = static_cast<uint32_t>(
             pool.chunks(MONAD_ASYNC_NAMESPACE::storage_pool::seq));
-        auto &cnv_chunk =
+        auto cnv_chunk =
             pool.chunk(MONAD_ASYNC_NAMESPACE::storage_pool::cnv, 0);
         auto const [write_fd, base_offset] = cnv_chunk.write_fd(0);
         off_t const half_capacity = // NOLINT(misc-include-cleaner)
@@ -2137,11 +2175,11 @@ TEST(cli_tool, upgrade_heals_dirty_monad007_copy)
     }
 
     {
-        std::vector<std::filesystem::path> paths{temppath};
+        std::filesystem::path const paths{temppath};
         MONAD_ASYNC_NAMESPACE::storage_pool::creation_flags flags;
         flags.open_read_only = true;
         MONAD_ASYNC_NAMESPACE::storage_pool pool{
-            std::span{paths},
+            paths,
             MONAD_ASYNC_NAMESPACE::storage_pool::mode::open_existing,
             flags};
         monad::io::Ring ring;
@@ -2175,4 +2213,349 @@ TEST(cli_tool, upgrade_requires_storage)
     int const retcode = main_impl(cout, cerr, args);
     ASSERT_NE(0, retcode);
     EXPECT_TRUE(cerr.str().starts_with("FATAL:"));
+}
+
+// The whole feature through the tool, on exactly the state lvextend leaves:
+// a database written, closed, and its only device made larger.
+TEST(cli_tool, grow_takes_up_an_extended_device)
+{
+    char path0[] = "cli_tool_tmp_ext0_XXXXXX";
+    make_temp_pool(path0);
+    auto const untempfile =
+        monad::make_scope_exit([&]() noexcept { unlink(path0); });
+
+    {
+        std::stringstream cout;
+        std::stringstream cerr;
+        std::string_view args[] = {
+            "monad-mpt",
+            "--storage",
+            path0,
+            "--create",
+            "--root-offsets-chunk-count",
+            "2",
+            "--chunk-capacity",
+            "24"};
+        ASSERT_EQ(0, main_impl(cout, cerr, args));
+    }
+
+    monad::byte_string const key =
+        monad::byte_string(32, static_cast<uint8_t>(0x3c));
+    monad::byte_string const value =
+        monad::byte_string(64, static_cast<uint8_t>(0xc3));
+    {
+        monad::mpt::OnDiskDbConfig const config{
+            .dbname_path = path0,
+            .fixed_history_length = MPT_TEST_HISTORY_LENGTH,
+            .chunk_capacity = 24};
+        monad::mpt::Db db{std::make_unique<StateMachineAlwaysMerkle>(), config};
+        upsert_one(db, key, value, nullptr);
+    }
+
+    uint64_t free_before = 0;
+    size_t chunks_before = 0;
+    {
+        MONAD_ASYNC_NAMESPACE::storage_pool pool{path0};
+        chunks_before = pool.chunks(MONAD_ASYNC_NAMESPACE::storage_pool::seq);
+        monad::io::Ring ring;
+        auto buffers = monad::io::make_buffers_for_read_only(
+            ring,
+            1,
+            MONAD_ASYNC_NAMESPACE::AsyncIO::MONAD_IO_BUFFERS_READ_SIZE);
+        MONAD_ASYNC_NAMESPACE::AsyncIO io{pool, buffers};
+        monad::mpt::UpdateAux const aux{io};
+        free_before = aux.metadata_ctx().get_lower_bound_free_space();
+    }
+
+    ASSERT_EQ(0, ::truncate(path0, 10ULL * 1024 * 1024 * 1024));
+
+    {
+        std::stringstream cout;
+        std::stringstream cerr;
+        std::string_view args[] = {
+            "monad-mpt", "--storage", path0, "--grow", "--yes"};
+        int const retcode = std::async(std::launch::async, [&] {
+                                return main_impl(cout, cerr, args);
+                            }).get();
+        ASSERT_EQ(0, retcode) << cerr.str();
+        EXPECT_NE(std::string::npos, cout.str().find("was extended in place"));
+    }
+
+    // The relocation moved the bytes-used array; a read of a pre-grow key
+    // cannot tell whether the entries survived, because the nodes have not
+    // moved. Allocating again is what would land on a chunk the pool wrongly
+    // believes empty, so upsert onto the grown metadata first.
+    monad::byte_string const key_after =
+        monad::byte_string(32, static_cast<uint8_t>(0x5a));
+    monad::byte_string const value_after =
+        monad::byte_string(96, static_cast<uint8_t>(0xa5));
+    {
+        // append, or the open resets the database it is meant to extend.
+        monad::mpt::OnDiskDbConfig const config{
+            .append = true,
+            .dbname_path = path0,
+            .fixed_history_length = MPT_TEST_HISTORY_LENGTH};
+        monad::mpt::Db db{std::make_unique<StateMachineAlwaysMerkle>(), config};
+        auto v0_root = db.load_root_for_version(0);
+        ASSERT_NE(v0_root, nullptr)
+            << "version 0's root is unreachable after the grow";
+        monad::mpt::UpdateList ul;
+        auto u = monad::mpt::make_update(
+            monad::mpt::NibblesView{key_after},
+            monad::byte_string_view{value_after});
+        ul.push_front(u);
+        db.upsert(std::move(v0_root), std::move(ul), 1);
+    }
+
+    std::async(std::launch::async, [&] {
+        MONAD_ASYNC_NAMESPACE::storage_pool pool{path0};
+        EXPECT_GT(
+            pool.chunks(MONAD_ASYNC_NAMESPACE::storage_pool::seq),
+            chunks_before);
+        monad::io::Ring ring;
+        auto buffers = monad::io::make_buffers_for_read_only(
+            ring,
+            1,
+            MONAD_ASYNC_NAMESPACE::AsyncIO::MONAD_IO_BUFFERS_READ_SIZE);
+        MONAD_ASYNC_NAMESPACE::AsyncIO io{pool, buffers};
+        monad::mpt::UpdateAux const aux{io};
+        EXPECT_GT(aux.metadata_ctx().get_lower_bound_free_space(), free_before);
+
+        monad::mpt::Node::SharedPtr const root_ptr{read_node_blocking(
+            aux,
+            aux.metadata_ctx().get_latest_root_offset(),
+            aux.metadata_ctx().db_history_max_version(),
+            monad::mpt::timeline_id::primary)};
+        monad::mpt::NodeCursor const root(root_ptr);
+        for (auto const &[label, k] :
+             {std::pair{"pre-grow", key}, std::pair{"post-grow", key_after}}) {
+            auto const ret = monad::mpt::find_blocking(
+                aux,
+                root,
+                monad::mpt::NibblesView{k},
+                aux.metadata_ctx().db_history_max_version(),
+                monad::mpt::timeline_id::primary);
+            EXPECT_EQ(ret.second, monad::mpt::find_result::success) << label;
+        }
+    }).get();
+}
+
+// A pool laid down before db_metadata carried device sizes records none, and
+// nothing else can say where an extend left the metadata, so the extend cannot
+// be taken up. Zeroing the array reproduces that pool exactly, since zero is
+// the not-recorded sentinel.
+TEST(cli_tool, grow_refuses_without_a_recorded_size)
+{
+    // The refusal below is reached through main_impl, which logs through
+    // quill: a forked death-test child inherits its queues but not its
+    // backend thread, and blocks forever on the first log line. Re-exec
+    // instead, which re-runs this body in the child up to the abort.
+    testing::FLAGS_gtest_death_test_style = "threadsafe";
+
+    char path0[] = "cli_tool_tmp_der0_XXXXXX";
+    make_temp_pool(path0);
+    auto const untempfile =
+        monad::make_scope_exit([&]() noexcept { unlink(path0); });
+    unlink_on_abort(path0);
+
+    {
+        std::stringstream cout;
+        std::stringstream cerr;
+        std::string_view args[] = {
+            "monad-mpt",
+            "--storage",
+            path0,
+            "--create",
+            "--root-offsets-chunk-count",
+            "2",
+            "--chunk-capacity",
+            "24"};
+        ASSERT_EQ(0, main_impl(cout, cerr, args));
+    }
+
+    MONAD_ASYNC_NAMESPACE::file_offset_t size_before = 0;
+    MONAD_ASYNC_NAMESPACE::file_offset_t half_capacity = 0;
+    size_t chunks_before = 0;
+    {
+        MONAD_ASYNC_NAMESPACE::storage_pool pool{path0};
+        chunks_before = pool.chunks(MONAD_ASYNC_NAMESPACE::storage_pool::seq);
+        size_before = pool.device().size_bytes();
+        half_capacity =
+            pool.chunk(MONAD_ASYNC_NAMESPACE::storage_pool::cnv, 0).capacity() /
+            2;
+    }
+
+    // Both metadata copies, so nothing heals the sentinel back.
+    {
+        int const fd = ::open(path0, O_RDWR);
+        ASSERT_NE(fd, -1);
+        auto const unfd =
+            monad::make_scope_exit([fd]() noexcept { ::close(fd); });
+        uint64_t const zero = 0;
+        for (unsigned which = 0; which < 2; which++) {
+            ASSERT_EQ(
+                ssize_t(sizeof(zero)),
+                ::pwrite(
+                    fd,
+                    &zero,
+                    sizeof(zero),
+                    static_cast<off_t>(
+                        which * half_capacity +
+                        offsetof(
+                            monad::mpt::detail::db_metadata,
+                            recorded_device_size))));
+        }
+        ASSERT_EQ(0, ::fsync(fd));
+
+        // Read back what is genuinely on disk: if the offset arithmetic were
+        // wrong the recorded size would survive and answer for itself, and the
+        // refusal below would never be reached.
+        for (unsigned which = 0; which < 2; which++) {
+            uint64_t readback = ~uint64_t{0};
+            ASSERT_EQ(
+                ssize_t(sizeof(readback)),
+                ::pread(
+                    fd,
+                    &readback,
+                    sizeof(readback),
+                    static_cast<off_t>(
+                        which * half_capacity +
+                        offsetof(
+                            monad::mpt::detail::db_metadata,
+                            recorded_device_size))));
+            ASSERT_EQ(readback, 0u)
+                << "copy " << which << " still records a device size";
+        }
+    }
+
+    ASSERT_EQ(0, ::truncate(path0, 10ULL * 1024 * 1024 * 1024));
+
+    {
+        std::stringstream cout;
+        std::stringstream cerr;
+        std::string_view args[] = {
+            "monad-mpt", "--storage", path0, "--grow", "--yes"};
+        ASSERT_DEATH(
+            { (void)main_impl(cout, cerr, args); },
+            "must be opened writable once before its device is extended");
+    }
+
+    // Refused before anything was written, so the extend can still be undone.
+    ASSERT_EQ(0, ::truncate(path0, static_cast<off_t>(size_before)));
+    std::async(std::launch::async, [&] {
+        MONAD_ASYNC_NAMESPACE::storage_pool const pool{path0};
+        EXPECT_EQ(
+            pool.chunks(MONAD_ASYNC_NAMESPACE::storage_pool::seq),
+            chunks_before);
+    }).get();
+}
+
+// A pool carrying no database is the shape a mistyped device argument takes,
+// and UpdateAux would initialise one onto it. The refusal has to come before
+// that, or the evidence is gone and an identical re-run -- what the help text
+// prescribes after an interrupted run -- reports success on the empty database
+// the first attempt created.
+TEST(cli_tool, grow_refuses_a_pool_without_a_database)
+{
+    using monad::mpt::detail::db_metadata;
+
+    char path0[] = "cli_tool_tmp_nodb0_XXXXXX";
+    make_temp_pool(path0);
+    auto const untempfile =
+        monad::make_scope_exit([&]() noexcept { unlink(path0); });
+    {
+        MONAD_ASYNC_NAMESPACE::storage_pool::creation_flags flags;
+        flags.set_chunk_capacity(24);
+        MONAD_ASYNC_NAMESPACE::storage_pool const pool{
+            std::filesystem::path{path0},
+            MONAD_ASYNC_NAMESPACE::storage_pool::mode::create_if_needed,
+            flags};
+    }
+    ASSERT_FALSE(device_carries_db_metadata(path0));
+
+    for (unsigned attempt = 0; attempt < 2; attempt++) {
+        std::stringstream cout;
+        std::stringstream cerr;
+        std::string_view args[] = {
+            "monad-mpt", "--storage", path0, "--grow", "--yes"};
+        EXPECT_EQ(1, main_impl(cout, cerr, args)) << "attempt " << attempt;
+        EXPECT_NE(cerr.str().find("holds no database"), std::string::npos)
+            << "attempt " << attempt << ": " << cerr.str();
+        EXPECT_FALSE(device_carries_db_metadata(path0))
+            << "attempt " << attempt << " initialised a database";
+    }
+}
+
+TEST(cli_tool, grow_argument_cross_checks)
+{
+    char path0[] = "cli_tool_tmp_axc0_XXXXXX";
+    make_temp_pool(path0);
+    auto const untempfile =
+        monad::make_scope_exit([&]() noexcept { unlink(path0); });
+    {
+        std::stringstream cout;
+        std::stringstream cerr;
+        std::string_view args[] = {
+            "monad-mpt",
+            "--storage",
+            path0,
+            "--create",
+            "--root-offsets-chunk-count",
+            "2",
+            "--chunk-capacity",
+            "24"};
+        ASSERT_EQ(0, main_impl(cout, cerr, args));
+    }
+    // A mistyped path is reported, not turned into an abort inside the pool.
+    {
+        std::stringstream cout;
+        std::stringstream cerr;
+        std::string_view args[] = {
+            "monad-mpt", "--storage", "/nonexistent-device", "--grow", "--yes"};
+        EXPECT_NE(0, main_impl(cout, cerr, args));
+        EXPECT_NE(std::string::npos, cerr.str().find("cannot examine"));
+    }
+    // Mutually exclusive with the other mutating operations.
+    {
+        std::stringstream cout;
+        std::stringstream cerr;
+        std::string_view args[] = {
+            "monad-mpt", "--storage", path0, "--grow", "--truncate", "--yes"};
+        EXPECT_NE(0, main_impl(cout, cerr, args));
+    }
+    // --restore sits outside the exclusive group and sets truncate_database,
+    // so it needs its own refusal or it would destroy the pool.
+    {
+        std::stringstream cout;
+        std::stringstream cerr;
+        std::string_view args[] = {
+            "monad-mpt",
+            "--storage",
+            path0,
+            "--grow",
+            "--restore",
+            "/nonexistent-archive",
+            "--yes"};
+        EXPECT_NE(0, main_impl(cout, cerr, args));
+        EXPECT_NE(
+            std::string::npos,
+            cerr.str().find("cannot be combined with --restore"));
+    }
+    // --archive sits outside the exclusive group too and shares the guard.
+    {
+        std::stringstream cout;
+        std::stringstream cerr;
+        std::string_view args[] = {
+            "monad-mpt",
+            "--storage",
+            path0,
+            "--grow",
+            "--archive",
+            "/nonexistent-archive-dest",
+            "--yes"};
+        EXPECT_NE(0, main_impl(cout, cerr, args));
+        EXPECT_NE(
+            std::string::npos,
+            cerr.str().find("cannot be combined with --restore"));
+    }
 }

@@ -38,7 +38,6 @@
 #include <cstring>
 #include <filesystem>
 #include <memory>
-#include <span>
 #include <stop_token>
 #include <string>
 #include <thread>
@@ -239,15 +238,15 @@ TEST(update_aux_test, configurable_root_offset_chunks)
             4,
             monad::async::AsyncIO::MONAD_IO_BUFFERS_READ_SIZE,
             monad::async::AsyncIO::MONAD_IO_BUFFERS_WRITE_SIZE);
+    // Default chunk capacity: the root offset ring capacity asserted below
+    // is derived from it.
     monad::async::storage_pool::creation_flags flags;
     flags.num_cnv_chunks = 5;
     {
         // Create storage pool with 5 cnv chunks: 1 for metadata, 4 for
         // ring_a at init (ring_b has 0 chunks until secondary activates).
         monad::async::storage_pool pool(
-            std::span{&filename, 1},
-            monad::async::storage_pool::mode::truncate,
-            flags);
+            filename, monad::async::storage_pool::mode::truncate, flags);
         EXPECT_EQ(pool.chunks(monad::async::storage_pool::cnv), 5);
 
         monad::async::AsyncIO testio(pool, testbuf);
@@ -263,9 +262,7 @@ TEST(update_aux_test, configurable_root_offset_chunks)
     {
         // reopen storage_pool
         monad::async::storage_pool pool(
-            std::span{&filename, 1},
-            monad::async::storage_pool::mode::open_existing,
-            flags);
+            filename, monad::async::storage_pool::mode::open_existing, flags);
         EXPECT_EQ(pool.chunks(monad::async::storage_pool::cnv), 5);
         monad::async::AsyncIO testio(pool, testbuf);
         monad::mpt::UpdateAux const aux(testio);
@@ -305,12 +302,11 @@ TEST(update_aux_test, legacy_zero_num_cnv_chunks_footer)
             monad::async::AsyncIO::MONAD_IO_BUFFERS_READ_SIZE,
             monad::async::AsyncIO::MONAD_IO_BUFFERS_WRITE_SIZE);
     monad::async::storage_pool::creation_flags flags;
+    flags.chunk_capacity = 24;
     flags.num_cnv_chunks = 0; // legacy footer
     {
         monad::async::storage_pool pool(
-            std::span{&filename, 1},
-            monad::async::storage_pool::mode::truncate,
-            flags);
+            filename, monad::async::storage_pool::mode::truncate, flags);
         EXPECT_EQ(pool.chunks(monad::async::storage_pool::cnv), 3);
 
         monad::async::AsyncIO testio(pool, testbuf);
@@ -323,9 +319,7 @@ TEST(update_aux_test, legacy_zero_num_cnv_chunks_footer)
     {
         // Reopen exercises map_ring_a_storage — the path that underflowed.
         monad::async::storage_pool pool(
-            std::span{&filename, 1},
-            monad::async::storage_pool::mode::open_existing,
-            flags);
+            filename, monad::async::storage_pool::mode::open_existing, flags);
         EXPECT_EQ(pool.chunks(monad::async::storage_pool::cnv), 3);
         monad::async::AsyncIO testio(pool, testbuf);
         monad::mpt::UpdateAux const aux(testio);
@@ -452,18 +446,14 @@ TEST(update_aux_test, state_machine_kind_persists_across_reopen)
         monad::async::AsyncIO::MONAD_IO_BUFFERS_WRITE_SIZE);
     {
         monad::async::storage_pool pool(
-            std::span{&filename, 1},
-            monad::async::storage_pool::mode::truncate,
-            flags);
+            filename, monad::async::storage_pool::mode::truncate, flags);
         monad::async::AsyncIO testio(pool, testbuf);
         monad::mpt::UpdateAux aux(testio);
         aux.metadata_ctx().set_state_machine_kind(timeline_id::primary, kind);
     }
     {
         monad::async::storage_pool pool(
-            std::span{&filename, 1},
-            monad::async::storage_pool::mode::open_existing,
-            flags);
+            filename, monad::async::storage_pool::mode::open_existing, flags);
         monad::async::AsyncIO testio(pool, testbuf);
         monad::mpt::UpdateAux const aux(testio);
         EXPECT_EQ(
@@ -497,6 +487,7 @@ TEST(update_aux_test, migrates_monad007_layout_to_monad008)
     static constexpr size_t MONAD007_LIST_TRIPLE_OFFSET = 528488;
 
     monad::async::storage_pool::creation_flags flags;
+    flags.chunk_capacity = 24;
     flags.allow_migration = true;
     monad::async::storage_pool pool(
         monad::async::use_anonymous_inode_tag{}, flags);
@@ -514,11 +505,14 @@ TEST(update_aux_test, migrates_monad007_layout_to_monad008)
     uint32_t const test_cnv_chunk_id_1 = 2;
     uint32_t const test_free_list_begin = 5;
     uint32_t const test_free_list_end = 7;
-    uint32_t const test_chunk_count = static_cast<uint32_t>(
-        pool.chunks(monad::async::storage_pool::seq) +
-        pool.chunks(monad::async::storage_pool::cnv));
+    // chunk_info[] indexes sequential chunks only (see
+    // DbMetadataContext::reconcile_chunk_count_), so the synthetic buffer's
+    // chunk_info_count must match the pool's seq chunk count exactly, not
+    // seq + cnv.
+    uint32_t const test_chunk_count =
+        static_cast<uint32_t>(pool.chunks(monad::async::storage_pool::seq));
 
-    auto &cnv_chunk = pool.chunk(monad::async::storage_pool::cnv, 0);
+    auto cnv_chunk = pool.chunk(monad::async::storage_pool::cnv, 0);
     auto const [write_fd, base_offset] = cnv_chunk.write_fd(0);
     auto const half_capacity = cnv_chunk.capacity() / 2;
 
@@ -702,6 +696,7 @@ TEST(update_aux_test, migrates_monad007_layout_to_monad008)
 TEST(update_aux_test, migrates_monad007_resumes_after_partial_migration)
 {
     monad::async::storage_pool::creation_flags flags;
+    flags.chunk_capacity = 24;
     flags.allow_migration = true;
     monad::async::storage_pool pool(
         monad::async::use_anonymous_inode_tag{}, flags);
@@ -805,7 +800,7 @@ TEST(update_aux_death_test, aborts_on_monad007_without_allow_migration)
     monad::async::storage_pool pool(monad::async::use_anonymous_inode_tag{});
 
     // Write minimal MONAD007 magic to cnv chunk 0 (both copies).
-    auto &cnv_chunk = pool.chunk(monad::async::storage_pool::cnv, 0);
+    auto cnv_chunk = pool.chunk(monad::async::storage_pool::cnv, 0);
     auto const [write_fd, base_offset] = cnv_chunk.write_fd(0);
     auto const half_capacity = cnv_chunk.capacity() / 2;
 
@@ -1037,9 +1032,7 @@ TEST(update_aux_death_test, aborts_when_root_offsets_ring_exceeds_capacity)
         static_cast<uint32_t>(detail::db_metadata::root_offsets_ring_t::SIZE_) +
         1; // 33 -> ring_total 32
     monad::async::storage_pool pool(
-        std::span{&filename, 1},
-        monad::async::storage_pool::mode::truncate,
-        flags);
+        filename, monad::async::storage_pool::mode::truncate, flags);
     monad::async::AsyncIO testio(pool, testbuf);
 
     ASSERT_DEATH(
@@ -1372,6 +1365,7 @@ TEST(update_aux_test, promote_persists_across_reopen)
     MONAD_ASSERT(-1 != ::ftruncate(fd, 8UL << 30)); // 8GB
 
     monad::async::storage_pool::creation_flags flags;
+    flags.chunk_capacity = 24;
     flags.num_cnv_chunks = 5;
 
     chunk_offset_t const primary_before{1, 0};
@@ -1380,9 +1374,7 @@ TEST(update_aux_test, promote_persists_across_reopen)
     // Session 1: init pool, activate + push to both rings, promote.
     {
         monad::async::storage_pool pool(
-            std::span{&filename, 1},
-            monad::async::storage_pool::mode::truncate,
-            flags);
+            filename, monad::async::storage_pool::mode::truncate, flags);
         monad::io::Ring ring1;
         monad::io::Ring ring2;
         monad::io::Buffers testbuf =
@@ -1413,9 +1405,7 @@ TEST(update_aux_test, promote_persists_across_reopen)
     // Session 2: reopen. primary_ring_idx must survive.
     {
         monad::async::storage_pool pool(
-            std::span{&filename, 1},
-            monad::async::storage_pool::mode::open_existing,
-            flags);
+            filename, monad::async::storage_pool::mode::open_existing, flags);
         monad::io::Ring ring1;
         monad::io::Ring ring2;
         monad::io::Buffers testbuf =
@@ -1463,13 +1453,12 @@ TEST(update_aux_test, replay_completes_pending_promote_after_crash)
     MONAD_ASSERT(-1 != ::ftruncate(fd, 8UL << 30));
 
     monad::async::storage_pool::creation_flags flags;
+    flags.chunk_capacity = 24;
     flags.num_cnv_chunks = 5;
 
     {
         monad::async::storage_pool pool(
-            std::span{&filename, 1},
-            monad::async::storage_pool::mode::truncate,
-            flags);
+            filename, monad::async::storage_pool::mode::truncate, flags);
         monad::io::Ring ring1;
         monad::io::Ring ring2;
         monad::io::Buffers testbuf =
@@ -1509,9 +1498,7 @@ TEST(update_aux_test, replay_completes_pending_promote_after_crash)
 
     {
         monad::async::storage_pool pool(
-            std::span{&filename, 1},
-            monad::async::storage_pool::mode::open_existing,
-            flags);
+            filename, monad::async::storage_pool::mode::open_existing, flags);
         monad::io::Ring ring1;
         monad::io::Ring ring2;
         monad::io::Buffers testbuf =
@@ -1554,6 +1541,7 @@ TEST(update_aux_test, replay_completes_pending_activate_after_crash)
     MONAD_ASSERT(-1 != ::ftruncate(fd, 8UL << 30));
 
     monad::async::storage_pool::creation_flags flags;
+    flags.chunk_capacity = 24;
     flags.num_cnv_chunks = 5;
 
     // Session 1: init pool; stamp pending activate flag manually (as if a
@@ -1562,9 +1550,7 @@ TEST(update_aux_test, replay_completes_pending_activate_after_crash)
     uint32_t target_chunks = 0;
     {
         monad::async::storage_pool pool(
-            std::span{&filename, 1},
-            monad::async::storage_pool::mode::truncate,
-            flags);
+            filename, monad::async::storage_pool::mode::truncate, flags);
         monad::io::Ring ring1;
         monad::io::Ring ring2;
         monad::io::Buffers testbuf =
@@ -1601,9 +1587,7 @@ TEST(update_aux_test, replay_completes_pending_activate_after_crash)
     // Session 2: reopen. Replay must finish the activate.
     {
         monad::async::storage_pool pool(
-            std::span{&filename, 1},
-            monad::async::storage_pool::mode::open_existing,
-            flags);
+            filename, monad::async::storage_pool::mode::open_existing, flags);
         monad::io::Ring ring1;
         monad::io::Ring ring2;
         monad::io::Buffers testbuf =
@@ -1665,15 +1649,14 @@ TEST(update_aux_test, replay_is_noop_when_activate_already_committed)
     MONAD_ASSERT(-1 != ::ftruncate(fd, 8UL << 30));
 
     monad::async::storage_pool::creation_flags flags;
+    flags.chunk_capacity = 24;
     flags.num_cnv_chunks = 5;
 
     uint32_t target_chunks = 0;
 
     {
         monad::async::storage_pool pool(
-            std::span{&filename, 1},
-            monad::async::storage_pool::mode::truncate,
-            flags);
+            filename, monad::async::storage_pool::mode::truncate, flags);
         monad::io::Ring ring1;
         monad::io::Ring ring2;
         monad::io::Buffers testbuf =
@@ -1709,9 +1692,7 @@ TEST(update_aux_test, replay_is_noop_when_activate_already_committed)
 
     {
         monad::async::storage_pool pool(
-            std::span{&filename, 1},
-            monad::async::storage_pool::mode::open_existing,
-            flags);
+            filename, monad::async::storage_pool::mode::open_existing, flags);
         monad::io::Ring ring1;
         monad::io::Ring ring2;
         monad::io::Buffers testbuf =
@@ -1755,14 +1736,13 @@ TEST(update_aux_test, replay_completes_pending_deactivate_after_crash)
     MONAD_ASSERT(-1 != ::ftruncate(fd, 8UL << 30));
 
     monad::async::storage_pool::creation_flags flags;
+    flags.chunk_capacity = 24;
     flags.num_cnv_chunks = 5;
 
     uint32_t target_chunks = 0;
     {
         monad::async::storage_pool pool(
-            std::span{&filename, 1},
-            monad::async::storage_pool::mode::truncate,
-            flags);
+            filename, monad::async::storage_pool::mode::truncate, flags);
         monad::io::Ring ring1;
         monad::io::Ring ring2;
         monad::io::Buffers testbuf =
@@ -1796,9 +1776,7 @@ TEST(update_aux_test, replay_completes_pending_deactivate_after_crash)
 
     {
         monad::async::storage_pool pool(
-            std::span{&filename, 1},
-            monad::async::storage_pool::mode::open_existing,
-            flags);
+            filename, monad::async::storage_pool::mode::open_existing, flags);
         monad::io::Ring ring1;
         monad::io::Ring ring2;
         monad::io::Buffers testbuf =
@@ -1841,6 +1819,7 @@ TEST(update_aux_test, replay_completes_partial_cnv_chunks_move)
     MONAD_ASSERT(-1 != ::ftruncate(fd, 8UL << 30));
 
     monad::async::storage_pool::creation_flags flags;
+    flags.chunk_capacity = 24;
     flags.num_cnv_chunks = 5; // 4 ring chunks → activate shrinks to 2
 
     uint32_t target_chunks = 0;
@@ -1848,9 +1827,7 @@ TEST(update_aux_test, replay_completes_partial_cnv_chunks_move)
     uint32_t not_yet_moved_id = db_metadata::NULL_CHUNK;
     {
         monad::async::storage_pool pool(
-            std::span{&filename, 1},
-            monad::async::storage_pool::mode::truncate,
-            flags);
+            filename, monad::async::storage_pool::mode::truncate, flags);
         monad::io::Ring ring1;
         monad::io::Ring ring2;
         monad::io::Buffers testbuf =
@@ -1905,9 +1882,7 @@ TEST(update_aux_test, replay_completes_partial_cnv_chunks_move)
 
     {
         monad::async::storage_pool pool(
-            std::span{&filename, 1},
-            monad::async::storage_pool::mode::open_existing,
-            flags);
+            filename, monad::async::storage_pool::mode::open_existing, flags);
         monad::io::Ring ring1;
         monad::io::Ring ring2;
         monad::io::Buffers testbuf =
@@ -1970,15 +1945,14 @@ TEST(update_aux_test, replay_preserves_primary_low_positions)
     MONAD_ASSERT(-1 != ::ftruncate(fd, 8UL << 30));
 
     monad::async::storage_pool::creation_flags flags;
+    flags.chunk_capacity = 24;
     flags.num_cnv_chunks = 5;
 
     chunk_offset_t const pushed{7, 12345};
     uint32_t target_chunks = 0;
     {
         monad::async::storage_pool pool(
-            std::span{&filename, 1},
-            monad::async::storage_pool::mode::truncate,
-            flags);
+            filename, monad::async::storage_pool::mode::truncate, flags);
         monad::io::Ring ring1;
         monad::io::Ring ring2;
         monad::io::Buffers testbuf =
@@ -2009,9 +1983,7 @@ TEST(update_aux_test, replay_preserves_primary_low_positions)
 
     {
         monad::async::storage_pool pool(
-            std::span{&filename, 1},
-            monad::async::storage_pool::mode::open_existing,
-            flags);
+            filename, monad::async::storage_pool::mode::open_existing, flags);
         monad::io::Ring ring1;
         monad::io::Ring ring2;
         monad::io::Buffers testbuf =
@@ -2056,14 +2028,13 @@ TEST(update_aux_test, replay_handles_single_copy_pending_stamp)
     MONAD_ASSERT(-1 != ::ftruncate(fd, 8UL << 30));
 
     monad::async::storage_pool::creation_flags flags;
+    flags.chunk_capacity = 24;
     flags.num_cnv_chunks = 5;
 
     uint32_t target_chunks = 0;
     {
         monad::async::storage_pool pool(
-            std::span{&filename, 1},
-            monad::async::storage_pool::mode::truncate,
-            flags);
+            filename, monad::async::storage_pool::mode::truncate, flags);
         monad::io::Ring ring1;
         monad::io::Ring ring2;
         monad::io::Buffers testbuf =
@@ -2091,9 +2062,7 @@ TEST(update_aux_test, replay_handles_single_copy_pending_stamp)
 
     {
         monad::async::storage_pool pool(
-            std::span{&filename, 1},
-            monad::async::storage_pool::mode::open_existing,
-            flags);
+            filename, monad::async::storage_pool::mode::open_existing, flags);
         monad::io::Ring ring1;
         monad::io::Ring ring2;
         monad::io::Buffers testbuf =

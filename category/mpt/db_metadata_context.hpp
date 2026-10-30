@@ -36,6 +36,14 @@
 
 MONAD_MPT_NAMESPACE_BEGIN
 
+// chunk_offset_t storage in the db metadata is accessed through
+// std::atomic_ref (see the root_offsets accessors below). It lives in
+// cross-process shared memory, so require that view to be lock-free: a
+// lock-based fallback would use a per-process (hence non-shareable) lock
+// table and break cross-process atomicity.
+static_assert(std::atomic_ref<
+              MONAD_ASYNC_NAMESPACE::chunk_offset_t>::is_always_lock_free);
+
 // Owns mmap'd metadata regions for a single DB within a storage pool.
 // Handles the storage-level lifecycle: mmap, dirty recovery, magic validation,
 // new pool initialization of metadata and root_offsets storage, and munmap.
@@ -45,6 +53,7 @@ MONAD_MPT_NAMESPACE_BEGIN
 class DbMetadataContext
 {
     friend class UpdateAux;
+    friend struct test::AddDevicesTestAccess;
 
 public:
     // Each metadata_copy describes one of the two redundant db_metadata
@@ -477,7 +486,7 @@ private:
                 "metadata. If this pool was migrated by a pre-fix binary, run "
                 "'monad-mpt --repair'.",
                 n);
-            auto &chunk = io_->storage_pool().chunk(
+            auto chunk = io_->storage_pool().chunk(
                 MONAD_ASYNC_NAMESPACE::storage_pool::cnv, cnv_chunk_id);
             auto const fdr = chunk.read_fd();
             auto const fdw = chunk.write_fd(0);
@@ -592,6 +601,36 @@ private:
     // operation to completion before the constructor returns.
     void replay_pending_shrink_grow_();
 
+    // Inner body of the chunk_info[] growth which follows a mode::grow open.
+    // Idempotent under replay: a copy already at `target` is left alone.
+    // Expects the pending flag to already be stamped.
+    void grow_chunk_info_body_(uint32_t target_chunk_count);
+
+    // Called from the constructor after replay_pending_shrink_grow_. Compares
+    // chunk_info_count against the pool's seq chunk count and either does
+    // nothing, grows, or aborts naming monad-mpt --grow.
+    void reconcile_chunk_count_();
+
+    // Aborts if chunk_info[] cannot describe `target` chunks. Split out from
+    // the constructor so the limits can be unit tested without provisioning a
+    // multi-terabyte pool.
+    static void
+    check_chunk_info_fits_(size_t target, size_t metadata_mmap_size);
+
+    // Stamps the device's current size into
+    // db_metadata::recorded_device_size, making that its recorded size,
+    // which monad-mpt later reads back as the previous size of a device grown
+    // in place. A no-op on a read-only open. On the open which performs a grow,
+    // the storage layer has already relocated the metadata by the time this
+    // runs, so the recorded size it advances past has served its purpose.
+    void record_device_size_();
+
+    // Logical metadata bytes described by `m` itself, as opposed to
+    // db_map_size_, which is derived from the pool. The two differ while a
+    // grow is in flight, so healing must be sized from the clean source
+    // copy or it reads or writes past what that copy describes.
+    size_t db_map_size_of_(detail::db_metadata const *m) const noexcept;
+
     MONAD_ASYNC_NAMESPACE::AsyncIO *io_{nullptr};
     metadata_copy copies_[2];
     // db_map_size_ is the logical bytes of live metadata (header +
@@ -599,9 +638,10 @@ private:
     // (cnv chunk 0 half-capacity). The latter is always >= the former
     // and >= MONAD007_DB_METADATA_SIZE + chunk_info[], so migration
     // from a MONAD007 pool can read and relocate chunk_info[] without
-    // remapping. Use metadata_mmap_size_ for mmap/munmap and
-    // db_map_size_ for msync/db_copy to avoid syncing megabytes of
-    // dead bytes beyond the logical metadata.
+    // remapping. Use metadata_mmap_size_ for mmap/munmap and db_map_size_
+    // for msync, to avoid syncing megabytes of dead bytes beyond the logical
+    // metadata; a copy-to-copy db_copy is sized by db_map_size_of_ instead,
+    // as a copy can describe fewer chunks than the pool does mid-grow.
     size_t db_map_size_{0};
     size_t metadata_mmap_size_{0};
     bool is_new_pool_{false};

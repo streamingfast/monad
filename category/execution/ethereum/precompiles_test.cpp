@@ -14,9 +14,11 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include <category/core/address.hpp>
+#include <category/core/byte_string.hpp>
 #include <category/core/hex.hpp>
 #include <category/execution/ethereum/precompiles.hpp>
 #include <category/execution/ethereum/state2/block_state.hpp>
+#include <category/execution/ethereum/state3/state.hpp>
 #include <category/execution/ethereum/trace/call_tracer.hpp>
 #include <category/vm/evm/traits.hpp>
 #include <monad/test/traits_test.hpp>
@@ -144,15 +146,11 @@ namespace
                 "0000000000000300000000000000000000000000000001"})
             .value();
 
-    struct evmc_some_error
-    {
-    };
-
     struct test_case
     {
         std::string name;
-        evmc::bytes input;
-        std::variant<evmc::bytes, evmc_some_error, evmc_status_code> expected;
+        byte_string input;
+        std::variant<byte_string, evmc_status_code> expected;
         int64_t gas;
         std::optional<int64_t> gas_offset;
     };
@@ -168,7 +166,7 @@ namespace
         }
         else {
             MONAD_ASSERT(j.contains("ExpectedError"));
-            t.expected = evmc_some_error{};
+            t.expected = evmc_status_code::EVMC_PRECOMPILE_FAILURE;
         }
 
         // Expected-to-fail tests don't have a Gas field, so we assign them the
@@ -211,7 +209,7 @@ namespace
     static test_case const ECRECOVER_TEST_CASES[] = {
         {.name = "ecrecover_unrecoverable_key_enough_gas",
          .input = ECRECOVER_UNRECOVERABLE_KEY_INPUT,
-         .expected = evmc::bytes{},
+         .expected = byte_string{},
          .gas = 3'000,
          .gas_offset = 3'000},
         {.name = "ecrecover_unrecoverable_key_insufficient_gas",
@@ -232,66 +230,66 @@ namespace
 
     static test_case const SHA256_TEST_CASES[] = {
         {.name = "sha256_empty_enough_gas",
-         .input = evmc::bytes{},
+         .input = byte_string{},
          .expected = SHA256_NULL_HASH,
          .gas = 60,
          .gas_offset = 40},
         {.name = "sha256_empty_insufficient_gas",
-         .input = evmc::bytes{},
+         .input = byte_string{},
          .expected = evmc_status_code::EVMC_OUT_OF_GAS,
          .gas = 60,
          .gas_offset = -1},
         {.name = "sha256_message_enough_gas",
-         .input = evmc::bytes{reinterpret_cast<uint8_t const *>("lol"), 3},
+         .input = byte_string{reinterpret_cast<uint8_t const *>("lol"), 3},
          .expected = SHA256_LOL_HASH,
          .gas = 72,
          .gas_offset = 1},
         {.name = "sha256_message_insufficient_gas",
-         .input = evmc::bytes{reinterpret_cast<uint8_t const *>("lol"), 3},
+         .input = byte_string{reinterpret_cast<uint8_t const *>("lol"), 3},
          .expected = evmc_status_code::EVMC_OUT_OF_GAS,
          .gas = 72,
          .gas_offset = -1}};
 
     static test_case const RIPEMD160_TEST_CASES[] = {
         {.name = "ripemd160_empty_enough_gas",
-         .input = evmc::bytes{},
+         .input = byte_string{},
          .expected = RIPEMD160_NULL_HASH,
          .gas = 600,
          .gas_offset = 1},
         {.name = "ripemd160_empty_insufficient_gas",
-         .input = evmc::bytes{},
+         .input = byte_string{},
          .expected = evmc_status_code::EVMC_OUT_OF_GAS,
          .gas = 600,
          .gas_offset = -1},
         {.name = "ripemd160_message_enough_gas",
-         .input = evmc::bytes{reinterpret_cast<uint8_t const *>("lol"), 3},
+         .input = byte_string{reinterpret_cast<uint8_t const *>("lol"), 3},
          .expected = RIPEMD160_LOL_HASH,
          .gas = 720,
          .gas_offset = 1},
         {.name = "ripemd160_message_insufficient_gas",
-         .input = evmc::bytes{reinterpret_cast<uint8_t const *>("lol"), 3},
+         .input = byte_string{reinterpret_cast<uint8_t const *>("lol"), 3},
          .expected = evmc_status_code::EVMC_OUT_OF_GAS,
          .gas = 720,
          .gas_offset = -1}};
 
     static test_case const IDENTITY_TEST_CASES[] = {
         {.name = "identity_empty_enough_gas",
-         .input = evmc::bytes{},
-         .expected = evmc::bytes{},
+         .input = byte_string{},
+         .expected = byte_string{},
          .gas = 15,
          .gas_offset = 1},
         {.name = "identity_empty_insufficient_gas",
-         .input = evmc::bytes{},
+         .input = byte_string{},
          .expected = evmc_status_code::EVMC_OUT_OF_GAS,
          .gas = 15,
          .gas_offset = -1},
         {.name = "identity_nonempty_enough_gas",
-         .input = evmc::bytes{reinterpret_cast<uint8_t const *>("dead"), 4},
-         .expected = evmc::bytes{reinterpret_cast<uint8_t const *>("dead"), 4},
+         .input = byte_string{reinterpret_cast<uint8_t const *>("dead"), 4},
+         .expected = byte_string{reinterpret_cast<uint8_t const *>("dead"), 4},
          .gas = 18,
          .gas_offset = 1},
         {.name = "identity_nonempty_insufficient_gas",
-         .input = evmc::bytes{reinterpret_cast<uint8_t const *>("dead"), 4},
+         .input = byte_string{reinterpret_cast<uint8_t const *>("dead"), 4},
          .expected = evmc_status_code::EVMC_OUT_OF_GAS,
          .gas = 18,
          .gas_offset = -1}};
@@ -342,7 +340,7 @@ namespace
                         .value();
 
                 if (auto const *expected_value =
-                        std::get_if<evmc::bytes>(&test_case.expected)) {
+                        std::get_if<byte_string>(&test_case.expected)) {
                     EXPECT_EQ(
                         result.status_code, evmc_status_code::EVMC_SUCCESS)
                         << suite_name << " test case " << test_case.name;
@@ -362,17 +360,10 @@ namespace
                     }
                 }
                 else {
-                    EXPECT_NE(
-                        result.status_code, evmc_status_code::EVMC_SUCCESS)
+                    EXPECT_EQ(
+                        result.status_code,
+                        std::get<evmc_status_code>(test_case.expected))
                         << suite_name << " test case " << test_case.name;
-
-                    // expecting a specific error code
-                    if (auto const *expected_error_code =
-                            std::get_if<evmc_status_code>(
-                                &test_case.expected)) {
-                        EXPECT_EQ(result.status_code, *expected_error_code)
-                            << suite_name << " test case " << test_case.name;
-                    }
 
                     EXPECT_EQ(result.gas_left, 0)
                         << suite_name << " test case " << test_case.name
@@ -523,8 +514,11 @@ TYPED_TEST(TraitsTest, blake2f)
         if constexpr (is_monad_trait_v<typename TestFixture::Trait>) {
             if constexpr (TestFixture::Trait::monad_rev() >= MONAD_SEVEN) {
                 // MONAD_SEVEN doubles the price of blake2F
-                tests = transform_test_cases(
-                    tests, [](auto &test) { test.gas *= 2; });
+                tests = transform_test_cases(tests, [](auto &test) {
+                    if (test.gas != std::numeric_limits<int64_t>::max()) {
+                        test.gas *= 2;
+                    }
+                });
             }
         }
 
