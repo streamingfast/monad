@@ -28,6 +28,9 @@ function(monad_compile_options target)
   target_compile_options(
     ${target} PRIVATE $<$<AND:$<CXX_COMPILER_ID:GNU>,$<CONFIG:Release>>:-Wno-maybe-uninitialized>)
 
+  target_compile_options(
+    ${target} PRIVATE $<$<AND:$<CXX_COMPILER_ID:GNU>,$<CONFIG:Release>>:-Wno-array-bounds>)
+
   target_compile_options(${target} PRIVATE $<$<CONFIG:Debug>:-Og>)
 
   # Split DWARF: write debug info to separate .dwo files to reduce linker I/O.
