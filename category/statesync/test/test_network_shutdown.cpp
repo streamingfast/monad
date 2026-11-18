@@ -13,12 +13,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/async/config.hpp>
 #include <category/async/util.hpp>
 #include <category/core/assert.h>
-#include <category/core/basic_formatter.hpp>
 #include <category/execution/ethereum/db/trie_db.hpp>
+#include <category/execution/ethereum/db/util.hpp>
 #include <category/mpt/db.hpp>
 #include <category/mpt/ondisk_db_config.hpp>
+#include <category/statesync/statesync_messages.h>
 #include <category/statesync/statesync_server_network.hpp>
 #include <category/statesync/statesync_thread.hpp>
 
@@ -27,11 +29,16 @@
 #include <boost/scope_exit.hpp>
 
 #include <array>
+#include <cerrno>
 #include <chrono>
-#include <fcntl.h>
+#include <cstdint>
+#include <cstring>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <poll.h>
+#include <string>
+#include <string_view>
 #include <sys/eventfd.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -69,7 +76,7 @@ namespace
             // Initialize the on-disk DB format; the Db object is not needed
             // after this point.
             (void)monad::mpt::Db{
-                std::make_unique<monad::OnDiskMachine>(),
+                std::make_unique<monad::MonadOnDiskMachine>(),
                 monad::mpt::OnDiskDbConfig{
                     .append = false, .dbname_path = path}};
         }
@@ -82,6 +89,61 @@ namespace
             ::close(fd);
         }
     };
+
+    int listen_on(std::filesystem::path const &socket_path)
+    {
+        int const fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        MONAD_ASSERT(fd >= 0);
+        struct sockaddr_un addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sun_family = AF_UNIX;
+        // Truncation would bind a different path, so fail loudly instead.
+        MONAD_ASSERT(socket_path.native().size() < sizeof(addr.sun_path));
+        strncpy(addr.sun_path, socket_path.c_str(), sizeof(addr.sun_path) - 1);
+        MONAD_ASSERT(bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0);
+        MONAD_ASSERT(listen(fd, 1) == 0);
+        return fd;
+    }
+}
+
+// The production send path is what statesync_thread.cpp wires in; the other
+// statesync tests substitute their own. An upsert type it does not accept
+// aborts the serving process, in release builds too.
+TEST(StateSyncServerNetwork, send_upsert_accepts_every_upsert_type)
+{
+    std::filesystem::path const socket_path =
+        unique_socket_path("test_statesync_send_upsert");
+    std::filesystem::remove(socket_path);
+    BOOST_SCOPE_EXIT(&socket_path)
+    {
+        std::filesystem::remove(socket_path);
+    }
+    BOOST_SCOPE_EXIT_END
+
+    int const listen_fd = listen_on(socket_path);
+    BOOST_SCOPE_EXIT(&listen_fd)
+    {
+        close(listen_fd);
+    }
+    BOOST_SCOPE_EXIT_END
+
+    monad_statesync_server_network net{socket_path.c_str()};
+
+    constexpr std::array types{
+        SYNC_TYPE_UPSERT_CODE,
+        SYNC_TYPE_UPSERT_ACCOUNT,
+        SYNC_TYPE_UPSERT_STORAGE,
+        SYNC_TYPE_UPSERT_ACCOUNT_DELETE,
+        SYNC_TYPE_UPSERT_STORAGE_DELETE,
+        SYNC_TYPE_UPSERT_HEADER,
+        SYNC_TYPE_UPSERT_STORAGE_PAGE};
+    for (auto const type : types) {
+        monad::statesync_server_send_upsert(&net, type, nullptr, 0, nullptr, 0);
+    }
+
+    // One type byte plus a uint64 length per record, all still buffered:
+    // nothing reaches SEND_BATCH_SIZE.
+    EXPECT_EQ(net.obuf.size(), types.size() * (1 + sizeof(uint64_t)));
 }
 
 TEST(StateSyncThread, shutdown_via_jthread_stop_token)
@@ -221,4 +283,12 @@ TEST(StateSyncThread, shutdown_during_reconnect)
 
     sync_server->thread.request_stop();
     sync_server->thread.join();
+}
+
+TEST(StateSyncServerNetworkDeathTest, path_too_long_for_sun_path_aborts)
+{
+    std::string const path(sizeof(sockaddr_un::sun_path), 'x');
+    EXPECT_DEATH(
+        (void)monad_statesync_server_network{path.c_str()},
+        "statesync socket path is too long");
 }

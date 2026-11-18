@@ -53,7 +53,7 @@ TYPED_TEST(MonadTraitsTest, compute_gas_refund)
 {
     uint64_t const refund = compute_gas_refund<typename TestFixture::Trait>(
         Transaction{.gas_limit = 21'000}, 20'000, 1'000);
-    if constexpr (TestFixture::REV >= MONAD_ONE) {
+    if constexpr (TestFixture::Trait::charges_gas_limit()) {
         EXPECT_EQ(refund, 0);
     }
     else {
@@ -663,7 +663,7 @@ TYPED_TEST(MonadTraitsTest, reserve_checks_code_hash)
         EXPECT_FALSE(should_revert);
         EXPECT_FALSE(should_revert_cached);
     }
-    else if constexpr (traits::monad_rev() >= MONAD_EIGHT) {
+    else if constexpr (traits::reserve_balance_uses_recent_code_hash()) {
         EXPECT_FALSE(should_revert);
         EXPECT_FALSE(should_revert_cached);
     }
@@ -811,7 +811,7 @@ TYPED_TEST(MonadTraitsTest, reserve_checks_prefunded_init_selfdestruct)
         EXPECT_FALSE(should_revert);
         EXPECT_FALSE(should_revert_cached);
     }
-    else if constexpr (traits::monad_rev() >= MONAD_NINE) {
+    else if constexpr (traits::reserve_balance_skips_init_selfdestruct()) {
         EXPECT_FALSE(should_revert);
         EXPECT_FALSE(should_revert_cached);
     }

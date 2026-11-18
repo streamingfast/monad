@@ -18,11 +18,9 @@
 #include <category/core/address.hpp>
 #include <category/core/byte_string.hpp>
 #include <category/core/bytes.hpp>
-#include <category/execution/ethereum/chain/chain_config.h>
 #include <category/execution/ethereum/core/block.hpp>
 #include <category/execution/ethereum/db/trie_db.hpp>
 #include <category/execution/ethereum/db/util.hpp>
-#include <category/execution/monad/chain/monad_chain.hpp>
 #include <category/mpt/db.hpp>
 #include <category/statesync/statesync_protocol.hpp>
 
@@ -47,15 +45,9 @@ struct monad_statesync_client_context
 
     using StateDelta = std::pair<monad::Account, StorageDeltas>;
 
-    // Chain instance for revision lookups and determine whether the slot or
-    // page encoded db are canonical.
-    std::unique_ptr<monad::MonadChain const> chain;
-
+    // Single page-encoded timeline; asserted at construction.
     monad::mpt::Db db;
     monad::TrieDb tdb;
-
-    std::unique_ptr<monad::mpt::Db> secondary_db;
-    std::unique_ptr<monad::TrieDb> secondary_tdb;
 
     std::vector<std::pair<uint64_t, uint64_t>> progress;
     std::vector<std::unique_ptr<monad::StatesyncProtocol>> protocol;
@@ -66,13 +58,21 @@ struct monad_statesync_client_context
     ankerl::unordered_dense::segmented_set<monad::bytes32_t> seen_code;
     Map<monad::bytes32_t, monad::byte_string> code;
     Map<monad::Address, std::optional<StateDelta>> deltas;
+    // pages whose complete contents arrived since the last commit
+    Map<monad::Address,
+        ankerl::unordered_dense::segmented_set<monad::bytes32_t>>
+        covered_pages;
+    // slot deltas applied since the last commit, not records seen: a page
+    // record counts once per slot it carried
     uint64_t n_upserts;
+    // slot deltas held between commits; must be non-zero
+    uint64_t upserts_per_commit{1 << 20};
     monad_statesync_client *sync;
     void (*statesync_send_request)(
         struct monad_statesync_client *, struct monad_sync_request);
 
     monad_statesync_client_context(
-        monad_chain_config chain_config, std::filesystem::path dbname_path,
+        std::filesystem::path dbname_path,
         std::optional<unsigned> sq_thread_cpu, unsigned wr_buffers,
         monad_statesync_client *,
         void (*statesync_send_request)(

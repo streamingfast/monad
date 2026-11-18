@@ -15,6 +15,7 @@
 
 #pragma once
 
+#include <category/core/likely.h>
 #include <category/vm/compiler/ir/basic_blocks.hpp>
 #include <category/vm/compiler/ir/x86/types.hpp>
 #include <category/vm/compiler/ir/x86/virtual_stack.hpp>
@@ -22,10 +23,15 @@
 #include <category/vm/evm/traits.hpp>
 #include <category/vm/interpreter/intercode.hpp>
 #include <category/vm/runtime/detail.hpp>
+#include <category/vm/runtime/runtime.hpp>
 #include <category/vm/runtime/types.hpp>
 
 #include <asmjit/x86.h>
 #include <asmjit/x86/x86assembler.h>
+
+#include <format>
+#include <memory>
+#include <string_view>
 
 namespace monad::vm::compiler::native
 {
@@ -69,8 +75,7 @@ namespace monad::vm::compiler::native
         template <size_t N>
         struct RoSubdata
         {
-            static_assert(std::popcount(N) == 1);
-            static_assert(N <= 32);
+            static_assert(N == 2 || N == 4 || N % 8 == 0);
 
             using Data = std::array<uint8_t, N>;
 
@@ -97,6 +102,9 @@ namespace monad::vm::compiler::native
             asmjit::x86::Mem add_external_function(F);
 
             asmjit::x86::Mem add32(uint256_t const &);
+            asmjit::x86::Mem add96(
+                uint256_t const &, uint256_t const &, uint256_t const &,
+                int32_t line_offset);
             asmjit::x86::Mem add16(uint64_t, uint64_t);
             asmjit::x86::Mem add8(uint64_t);
             asmjit::x86::Mem add4(uint32_t);
@@ -115,6 +123,7 @@ namespace monad::vm::compiler::native
             RoSubdata<16> sub16_;
             RoSubdata<8> sub8_;
             RoSubdata<4> sub4_;
+            RoSubdata<96> sub96_;
         };
 
         using Gpq256 = std::array<asmjit::x86::Gpq, 4>;
@@ -230,7 +239,17 @@ namespace monad::vm::compiler::native
         void runtime_print_top2(std::string const &msg);
         void runtime_print_top1(std::string const &msg);
         void breakpoint();
-        void checked_debug_comment(std::string const &msg);
+
+        template <typename... Args>
+        void checked_debug_comment(
+            std::format_string<Args...> const fmt, Args const &...args)
+        {
+            if (MONAD_UNLIKELY(debug_logger_.file())) {
+                unchecked_debug_comment(
+                    fmt.get(), std::make_format_args(args...));
+            }
+        }
+
         void swap_general_regs(StackElem &, StackElem &);
         void swap_general_reg_indices(GeneralReg, uint8_t, uint8_t);
 
@@ -355,8 +374,8 @@ namespace monad::vm::compiler::native
         bool mulmod_opt();
         void mulmod(int64_t remaining_base_gas);
 
-        template <typename T, size_t N>
-        void array_leading_zeros(std::array<T, N> const &);
+        template <typename T>
+        void array_leading_zeros(std::array<T, 4> const &, Gpq256 const &);
         template <typename T, size_t N>
         void array_byte_width(std::array<T, N> const &);
 
@@ -587,6 +606,7 @@ namespace monad::vm::compiler::native
         ////////// Private debug functionality //////////
 
         void unchecked_debug_comment(std::string const &msg);
+        void unchecked_debug_comment(std::string_view, std::format_args);
 
         ////////// Private core emit functionality //////////
 
@@ -654,6 +674,10 @@ namespace monad::vm::compiler::native
         void mov_stack_elem_low64_to_gpq(StackElemRef, asmjit::x86::Gpq);
 
         void mov_literal_to_ymm(Literal const &, asmjit::x86::Ymm const &);
+        template <typename Word>
+        void mov_words_to_ymm(
+            std::array<Word, 4> const &, asmjit::x86::Ymm const &,
+            asmjit::x86::Xmm const &);
 
         void mov_stack_elem_to_avx_reg(StackElemRef);
         void mov_stack_elem_to_general_reg(StackElemRef);
@@ -939,6 +963,11 @@ namespace monad::vm::compiler::native
             StackElemRef shift, StackElemRef, std::tuple<LiveSet...> const &);
 
         template <ShiftType shift_type, typename... LiveSet>
+        StackElemRef shift_literal_by_non_literal(
+            StackElemRef shift, uint256_t const &,
+            std::tuple<LiveSet...> const &);
+
+        template <ShiftType shift_type, typename... LiveSet>
         StackElemRef shift_general_reg_by_non_literal(
             StackElemRef shift, StackElemRef, std::tuple<LiveSet...> const &);
 
@@ -1057,5 +1086,6 @@ namespace monad::vm::compiler::native
         std::vector<std::pair<asmjit::Label, std::string>> debug_messages_;
         uint32_t exponential_constant_fold_counter_;
         int64_t accumulated_static_work_;
+        std::unique_ptr<int32_t[]> final_stack_dep_counts_;
     };
 }

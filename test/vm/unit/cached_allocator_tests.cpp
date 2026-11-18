@@ -18,15 +18,28 @@
 
 #include <gtest/gtest.h>
 
-#include <cstdint>
+#include <cstddef>
 
 using namespace monad::vm::runtime;
+
+TEST(CachedAllocator, owner_keeps_its_allocator_cache_limit)
+{
+    EvmStackAllocator const allocator;
+    allocator.debug_clear_cache();
+    auto cached = EvmStackAllocator{EvmStackAllocator::alloc_size}.allocate();
+    auto uncached = EvmStackAllocator{0}.allocate();
+    uncached.reset();
+    EXPECT_TRUE(EvmStackAllocatorMeta::cache_list.empty());
+    cached.reset();
+    EXPECT_EQ(EvmStackAllocatorMeta::cache_list.size(), 1);
+    allocator.debug_clear_cache();
+}
 
 #ifdef MONAD_HAVE_ASAN
 TEST(CachedAllocator, free_cached_poisons_block)
 {
     EvmStackAllocator const allocator;
-    uint8_t *const p = allocator.aligned_alloc_cached();
+    std::byte *const p = allocator.aligned_alloc_cached();
     allocator.free_cached(p);
     ASSERT_TRUE(__asan_address_is_poisoned(p));
     ASSERT_TRUE(
