@@ -15,30 +15,35 @@
 
 #include <category/async/io.hpp>
 #include <category/core/assert.h>
-#include <category/core/basic_formatter.hpp>
 #include <category/core/byte_string.hpp>
 #include <category/core/config.hpp>
 #include <category/core/keccak.hpp>
+#include <category/core/likely.h>
 #include <category/core/log.hpp>
 #include <category/core/runtime/unaligned.hpp>
-#include <category/execution/ethereum/core/block.hpp>
+#include <category/crypto/keccak.h>
 #include <category/execution/ethereum/core/rlp/bytes_rlp.hpp>
 #include <category/execution/ethereum/db/util.hpp>
+#include <category/mpt/nibbles_view.hpp>
+#include <category/mpt/node.hpp>
+#include <category/mpt/node_cursor.hpp>
 #include <category/mpt/traverse.hpp>
+#include <category/mpt/util.hpp>
+#include <category/statesync/statesync_messages.h>
 #include <category/statesync/statesync_server.h>
 #include <category/statesync/statesync_server_context.hpp>
+#include <category/statesync/statesync_version.h>
 
 #include <quill/std/Chrono.h>
 
 #include <chrono>
-#include <fcntl.h>
-#include <mutex>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/un.h>
-#include <thread>
-#include <unistd.h>
 
 struct monad_statesync_server
 {
@@ -202,11 +207,14 @@ bool statesync_server_handle_request(
         uint64_t until;
         uint64_t *num_upserts;
         uint64_t *upsert_bytes;
+        // peer speaks 1.3 or newer, so storage pages go out verbatim
+        bool emit_page_records;
 
         Traverse(
             monad_statesync_server *const sync, NibblesView const prefix,
             uint64_t const from, uint64_t const until,
-            uint64_t *const num_upserts, uint64_t *const upsert_bytes)
+            uint64_t *const num_upserts, uint64_t *const upsert_bytes,
+            bool const emit_page_records)
             : nibble{INVALID_BRANCH}
             , depth{0}
             , sync{sync}
@@ -215,15 +223,8 @@ bool statesync_server_handle_request(
             , until{until}
             , num_upserts{num_upserts}
             , upsert_bytes{upsert_bytes}
+            , emit_page_records{emit_page_records}
         {
-        }
-
-        // When the server's primary is page-encoded, storage leaves hold
-        // encoded pages rather than single slots; we expand each page into
-        // slot-format upserts so v1 clients sync unchanged.
-        bool server_is_page_encoded() const
-        {
-            return sync->context->is_page_encoded();
         }
 
         virtual bool down(unsigned char const branch, Node const &node) override
@@ -274,11 +275,11 @@ bool statesync_server_handle_request(
                                              unsigned char const *const v1 =
                                                  nullptr,
                                              uint64_t const size1 = 0) {
-                    uint64_t const size2 = node.value().size();
+                    auto const value = node.value();
                     sync->statesync_server_send_upsert(
-                        sync->net, type, v1, size1, node.value().data(), size2);
+                        sync->net, type, v1, size1, value.data(), value.size());
                     ++(*num_upserts);
-                    *upsert_bytes += size1 + size2;
+                    *upsert_bytes += size1 + value.size();
                 };
 
                 if (nibble == CODE_NIBBLE) {
@@ -292,10 +293,16 @@ bool statesync_server_handle_request(
                     }
                     else {
                         MONAD_ASSERT(depth == (HASH_SIZE * 2));
-                        if (server_is_page_encoded()) {
-                            // Expand the page-encoded leaf into one slot-format
-                            // upsert per non-zero slot, so the wire stays
-                            // identical to a slot-encoded server.
+                        if (emit_page_records) {
+                            send_upsert(
+                                SYNC_TYPE_UPSERT_STORAGE_PAGE,
+                                reinterpret_cast<unsigned char const *>(&addr),
+                                sizeof(addr));
+                        }
+                        else {
+                            // A peer below 1.3 cannot decode page records:
+                            // expand the page into one slot-format upsert per
+                            // non-zero slot.
                             auto const decoded =
                                 decode_storage_page_leaf(node.value());
                             MONAD_ASSERT(decoded.has_value());
@@ -314,12 +321,6 @@ bool statesync_server_handle_request(
                                 ++(*num_upserts);
                                 *upsert_bytes += sizeof(addr) + entry.size();
                             }
-                        }
-                        else {
-                            send_upsert(
-                                SYNC_TYPE_UPSERT_STORAGE,
-                                reinterpret_cast<unsigned char *>(&addr),
-                                sizeof(addr));
                         }
                     }
                 }
@@ -439,7 +440,8 @@ bool statesync_server_handle_request(
         rq.from,
         rq.until,
         &num_upserts,
-        &upsert_bytes);
+        &upsert_bytes,
+        rq.version >= MONAD_STATESYNC_VERSION_1_3);
     if (!db.traverse(finalized_root, traverse, rq.target)) {
         LOG_INFO(
             "Request failed: traverse failed for target={} prefix={} "

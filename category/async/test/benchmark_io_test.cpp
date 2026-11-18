@@ -27,7 +27,6 @@
 
 #include <CLI/CLI.hpp>
 
-#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
@@ -155,12 +154,7 @@ struct shared_state_t
                     ret[n].second--;
                 }
             }
-            ret.erase(
-                std::remove_if(
-                    ret.begin(),
-                    ret.end(),
-                    [](auto const &x) { return x.second == 0; }),
-                ret.end());
+            std::erase_if(ret, [](auto const &x) { return x.second == 0; });
             return ret;
         }())
     {
@@ -526,7 +520,7 @@ set it to the desired size beforehand).
                 while (std::chrono::steady_clock::now() - begin <
                        std::chrono::seconds(duration_secs));
                 shared_state.done = true;
-                io.wait_until_done();
+                io.flush();
             }
             print_statistics();
         }

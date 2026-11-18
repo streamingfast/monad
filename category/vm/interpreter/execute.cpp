@@ -19,10 +19,9 @@
 #include <category/vm/interpreter/debug.hpp>
 #include <category/vm/interpreter/instruction_table.hpp>
 #include <category/vm/interpreter/intercode.hpp>
+#include <category/vm/interpreter/stack_top.hpp>
 #include <category/vm/interpreter/trampoline.hpp>
 #include <category/vm/runtime/types.hpp>
-
-#include <cstdint>
 
 namespace monad::vm::interpreter
 {
@@ -33,8 +32,8 @@ namespace monad::vm::interpreter
             void *, runtime::Context *ctx, Intercode const *analysis,
             uint256_t *stack_ptr, void *)
         {
-            auto *const stack_top = stack_ptr - 1;
-            auto const *const stack_bottom = stack_top;
+            StackTop const stack_top{stack_ptr};
+            auto const *const stack_bottom = stack_ptr;
             auto const *const instr_ptr = analysis->code();
             auto const gas_remaining = ctx->gas_remaining;
 
@@ -53,13 +52,10 @@ namespace monad::vm::interpreter
 
     template <Traits traits>
     void execute(
-        runtime::Context &ctx, Intercode const &analysis, uint8_t *stack_ptr)
+        runtime::Context &ctx, Intercode const &analysis,
+        uint256_t *const stack_ptr)
     {
-        trampoline(
-            ctx,
-            analysis,
-            reinterpret_cast<uint256_t *>(stack_ptr),
-            core_loop<traits>);
+        trampoline(ctx, analysis, stack_ptr, core_loop<traits>);
     }
 
     EXPLICIT_TRAITS(execute);

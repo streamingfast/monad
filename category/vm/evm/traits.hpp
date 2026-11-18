@@ -72,6 +72,7 @@ namespace monad
         // Feature flags
 
         { T::eip_1153_active() } -> std::same_as<bool>;
+        { T::eip_2935_active() } -> std::same_as<bool>;
         { T::eip_3198_active() } -> std::same_as<bool>;
         { T::eip_3855_active() } -> std::same_as<bool>;
         { T::eip_4399_active() } -> std::same_as<bool>;
@@ -86,6 +87,7 @@ namespace monad
         { T::eip_7951_active() } -> std::same_as<bool>;
         { T::eip_7981_active() } -> std::same_as<bool>;
         { T::mip_3_active() } -> std::same_as<bool>;
+        { T::mip_4_active() } -> std::same_as<bool>;
         { T::mip_8_active() } -> std::same_as<bool>;
         { T::mip_11_active() } -> std::same_as<bool>;
         { T::mip_12_active() } -> std::same_as<bool>;
@@ -93,6 +95,7 @@ namespace monad
         // If true, BLOBHASH/BLOBBASEFEE exist and return
         // stub data. Separate from eip_4844_active.
         { T::has_blob_opcodes() } -> std::same_as<bool>;
+        { T::charges_gas_limit() } -> std::same_as<bool>;
 
         // Constants
         { T::max_code_size() } -> std::same_as<size_t>;
@@ -121,6 +124,11 @@ namespace monad
         static consteval bool eip_1153_active() noexcept
         {
             return Rev >= MONAD_ETH_CANCUN;
+        }
+
+        static consteval bool eip_2935_active() noexcept
+        {
+            return Rev >= MONAD_ETH_PRAGUE;
         }
 
         static consteval bool eip_3198_active() noexcept
@@ -193,6 +201,11 @@ namespace monad
             return false;
         }
 
+        static consteval bool mip_4_active() noexcept
+        {
+            return false;
+        }
+
         static consteval bool mip_8_active() noexcept
         {
             return false;
@@ -216,6 +229,11 @@ namespace monad
         static consteval bool has_blob_opcodes() noexcept
         {
             return Rev >= MONAD_ETH_CANCUN;
+        }
+
+        static consteval bool charges_gas_limit() noexcept
+        {
+            return false;
         }
 
         static consteval size_t max_code_size() noexcept
@@ -295,6 +313,11 @@ namespace monad
             return evm_rev() >= MONAD_ETH_CANCUN;
         }
 
+        static consteval bool eip_2935_active() noexcept
+        {
+            return Rev >= MONAD_SIX;
+        }
+
         static consteval bool eip_3198_active() noexcept
         {
             return evm_rev() >= MONAD_ETH_LONDON;
@@ -369,10 +392,12 @@ namespace monad
 
         static consteval bool mip_3_active() noexcept
         {
-            if constexpr (Rev >= MONAD_NINE) {
-                return true;
-            }
-            return false;
+            return Rev >= MONAD_NINE;
+        }
+
+        static consteval bool mip_4_active() noexcept
+        {
+            return Rev >= MONAD_NINE;
         }
 
         static consteval bool mip_11_active() noexcept
@@ -388,6 +413,11 @@ namespace monad
         static consteval bool has_blob_opcodes() noexcept
         {
             return evm_rev() >= MONAD_ETH_CANCUN;
+        }
+
+        static consteval bool charges_gas_limit() noexcept
+        {
+            return Rev >= MONAD_ONE;
         }
 
         static consteval bool mip_8_active() noexcept
@@ -409,6 +439,28 @@ namespace monad
             }
 
             return 0;
+        }
+
+        static consteval uint8_t consensus_header_version() noexcept
+        {
+            if constexpr (Rev >= MONAD_FOUR) {
+                return 2;
+            }
+            if constexpr (Rev >= MONAD_THREE) {
+                return 1;
+            }
+
+            return 0;
+        }
+
+        static consteval bool reserve_balance_uses_recent_code_hash() noexcept
+        {
+            return Rev >= MONAD_EIGHT;
+        }
+
+        static consteval bool reserve_balance_skips_init_selfdestruct() noexcept
+        {
+            return Rev >= MONAD_NINE;
         }
 
         static consteval int64_t base_sstore_cost() noexcept

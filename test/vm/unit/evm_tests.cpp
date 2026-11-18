@@ -111,10 +111,8 @@ TYPED_TEST(VMTraitsTest, MLoadAtBoundMIP3)
 TYPED_TEST(VMTraitsTest, MStore8AtBoundMIP3)
 {
     auto memory_version = [] {
-        if constexpr (TestFixture::is_monad_trait()) {
-            if constexpr (TestFixture::Trait::monad_rev() >= MONAD_NINE) {
-                return runtime::Memory::Version::MIP3;
-            }
+        if constexpr (TestFixture::Trait::mip_3_active()) {
+            return runtime::Memory::Version::MIP3;
         }
         return runtime::Memory::Version::V1;
     }();
@@ -600,6 +598,28 @@ TYPED_TEST(VMTraitsTest, MinDeltaOutOfBound)
     // We expect native code size of `ncode2` to be smaller, because the last
     // basic block has min_delta < -1024, so will just jump to error label,
     // without basic block prologue/epilogue.
+    ASSERT_LT(*ncode2->code_size_estimate(), *ncode1->code_size_estimate());
+}
+
+TYPED_TEST(VMTraitsTest, StackRangeOutOfBound)
+{
+    CompilerConfig const config{
+        .max_code_size_offset = runtime::bin<32 * 1024>};
+
+    auto const compile = [&](size_t pushes) {
+        std::vector<uint8_t> bytecode{POP};
+        std::fill_n(std::back_inserter(bytecode), pushes, CODESIZE);
+        bytecode.push_back(JUMPDEST);
+        return this->vm_.compiler()
+            .template compile<typename TestFixture::Trait>(
+                make_shared_intercode(bytecode), config);
+    };
+
+    // With 1025 pushes, max_delta - min_delta exceeds 1024, so no stack size
+    // passes the block's checks and the block should just jump to the error
+    // label.
+    auto const ncode1 = compile(1024);
+    auto const ncode2 = compile(1025);
     ASSERT_LT(*ncode2->code_size_estimate(), *ncode1->code_size_estimate());
 }
 
