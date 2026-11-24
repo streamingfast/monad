@@ -13,19 +13,27 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/async/config.hpp>
+#include <category/async/util.hpp>
 #include <category/core/address.hpp>
 #include <category/core/assert.h>
+#include <category/core/byte_string.hpp>
+#include <category/core/bytes.hpp>
 #include <category/core/config.hpp>
 #include <category/core/keccak.hpp>
 #include <category/core/log.hpp>
 #include <category/core/runtime/unaligned.hpp>
+#include <category/execution/ethereum/core/account.hpp>
 #include <category/execution/ethereum/core/rlp/block_rlp.hpp>
 #include <category/execution/ethereum/db/test/commit_simple.hpp>
 #include <category/execution/ethereum/db/trie_db.hpp>
 #include <category/execution/ethereum/db/util.hpp>
 #include <category/execution/ethereum/state2/state_deltas.hpp>
+#include <category/execution/ethereum/types/incarnation.hpp>
+#include <category/mpt/db.hpp>
 #include <category/mpt/db_metadata_context.hpp>
 #include <category/mpt/detail/timeline.hpp>
+#include <category/mpt/ondisk_db_config.hpp>
 #include <category/mpt/state_machine_kind.hpp>
 #include <category/mpt/trie.hpp>
 #include <category/statesync/statesync_client.h>
@@ -38,12 +46,18 @@
 #include <ankerl/unordered_dense.h>
 
 #include <cstdint>
+#include <cstring>
 #include <deque>
+#include <filesystem>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <stdio.h>
+#include <stdlib.h>
 #include <sys/sysinfo.h>
+#include <unistd.h>
+#include <utility>
 
 using namespace monad;
 using namespace monad::mpt;
@@ -203,7 +217,7 @@ namespace
         MONAD_ASSERT(orig.has_value());
         StateDeltas::accessor it;
         bytes32_t const end{state.storage[addr].end++};
-        bool success = deltas.emplace(
+        bool const success = deltas.emplace(
             it,
             Address{addr},
             StateDelta{
@@ -255,15 +269,7 @@ namespace
         update_storage(deltas, state, db, n, true);
     }
 
-    std::unique_ptr<OnDiskMachine> make_on_disk_machine(bool const page_encoded)
-    {
-        if (page_encoded) {
-            return std::make_unique<MonadOnDiskMachine>();
-        }
-        return std::make_unique<OnDiskMachine>();
-    }
-
-    std::filesystem::path tmp_dbname(bool const page_encoded)
+    std::filesystem::path tmp_dbname()
     {
         std::filesystem::path dbname(
             MONAD_ASYNC_NAMESPACE::working_temporary_directory() /
@@ -276,40 +282,34 @@ namespace
         ::close(fd);
         char const *const path = dbname.c_str();
         mpt::Db db{
-            make_on_disk_machine(page_encoded),
+            std::make_unique<MonadOnDiskMachine>(),
             mpt::OnDiskDbConfig{.append = false, .dbname_path = path}};
         monad::mpt::test::DbAccessor::aux(db)
             .metadata_ctx()
             .set_state_machine_kind(
-                timeline_id::primary,
-                page_encoded ? state_machine_kind::monad
-                             : state_machine_kind::ethereum);
+                timeline_id::primary, state_machine_kind::monad);
         return dbname;
     }
 
-    void run_fuzz(
-        monad_chain_config const chain, bool const page_encoded,
-        std::span<uint8_t const> raw)
+    void run_fuzz(std::span<uint8_t const> raw)
     {
-        std::filesystem::path const cdbname{tmp_dbname(page_encoded)};
-        char const *const cdbname_str = cdbname.c_str();
+        std::filesystem::path const cdbname{tmp_dbname()};
         monad_statesync_client client;
         monad_statesync_client_context *const cctx =
             monad_statesync_client_context_create(
-                chain,
-                cdbname_str,
+                cdbname.c_str(),
                 static_cast<unsigned>(get_nprocs() - 1),
                 &client,
                 &statesync_send_request);
-        std::filesystem::path sdbname{tmp_dbname(page_encoded)};
+        std::filesystem::path const sdbname{tmp_dbname()};
         mpt::Db sdb{
-            make_on_disk_machine(page_encoded),
+            std::make_unique<MonadOnDiskMachine>(),
             OnDiskDbConfig{.append = true, .dbname_path = sdbname}};
         TrieDb stdb{sdb};
         std::unique_ptr<monad_statesync_server_context> sctx =
             std::make_unique<monad_statesync_server_context>(stdb);
         mpt::AsyncIOContext io_ctx{
-            ReadOnlyOnDiskDbConfig{.dbname_path{sdbname}}};
+            ReadOnlyOnDiskDbConfig{.dbname_path = sdbname}};
         mpt::Db ro{io_ctx};
         sctx->ro = &ro;
         monad_statesync_server_network net{
@@ -364,6 +364,8 @@ namespace
             case 5:
                 remove_storage(deltas, state, stdb, n);
                 break;
+            default:
+                MONAD_ABORT();
             }
             client.mask = raw.size() < sizeof(uint64_t)
                               ? std::numeric_limits<uint64_t>::max()
@@ -410,11 +412,7 @@ LLVMFuzzerTestOneInput(uint8_t const *const data, size_t const size)
 
     init_root_logger(quill::LogLevel::Error);
 
-    // Fuzz both encodings each input, until slot encoding is retired:
-    // MONAD_TESTNET is pre-mip_8 (slot), MONAD_DEVNET is mip_8-active (page).
-    std::span<uint8_t const> const raw{data, size};
-    run_fuzz(CHAIN_CONFIG_MONAD_TESTNET, false, raw);
-    run_fuzz(CHAIN_CONFIG_MONAD_DEVNET, true, raw);
+    run_fuzz(std::span<uint8_t const>{data, size});
 
     return 0;
 }

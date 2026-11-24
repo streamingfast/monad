@@ -239,7 +239,7 @@ namespace monad::vm::utils
 
         if (config.verbose) {
             std::cerr << "// done\n";
-            show_opcodes(opcodes);
+            std::cerr << show_opcodes(opcodes);
         }
 
         return opcodes;
@@ -302,7 +302,7 @@ namespace monad::vm::utils
                                 MONAD_ASSERT(d >= 0);
                                 size_t const n = static_cast<size_t>(d);
                                 if (n == 0) {
-                                    eb.push0();
+                                    eb.push(imm);
                                 }
                                 else {
                                     eb.push(n, imm);

@@ -13,51 +13,60 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/async/config.hpp>
 #include <category/async/util.hpp>
+#include <category/core/address.hpp>
 #include <category/core/assert.h>
-#include <category/core/basic_formatter.hpp>
 #include <category/core/byte_string.hpp>
 #include <category/core/bytes.hpp>
 #include <category/core/hex.hpp>
+#include <category/core/keccak.hpp>
 #include <category/execution/ethereum/chain/ethereum_mainnet.hpp>
 #include <category/execution/ethereum/chain/genesis_state.hpp>
-#include <category/execution/ethereum/core/fmt/bytes_fmt.hpp>
-#include <category/execution/ethereum/core/receipt.hpp>
+#include <category/execution/ethereum/core/account.hpp>
 #include <category/execution/ethereum/core/rlp/block_rlp.hpp>
 #include <category/execution/ethereum/core/rlp/bytes_rlp.hpp>
-#include <category/execution/ethereum/core/transaction.hpp>
-#include <category/execution/ethereum/core/withdrawal.hpp>
 #include <category/execution/ethereum/db/state_machine_init.hpp>
+#include <category/execution/ethereum/db/test/commit_simple.hpp>
 #include <category/execution/ethereum/db/trie_db.hpp>
 #include <category/execution/ethereum/db/util.hpp>
 #include <category/execution/ethereum/rlp/encode2.hpp>
-#include <category/execution/ethereum/trace/call_frame.hpp>
+#include <category/execution/ethereum/state2/state_deltas.hpp>
 #include <category/execution/ethereum/types/incarnation.hpp>
-#include <category/execution/monad/chain/chain_factory.hpp>
-#include <category/execution/monad/db/commit_block_migration.hpp>
 #include <category/execution/monad/db/state_machine_init.hpp>
 #include <category/execution/monad/db/storage_page.hpp>
+#include <category/mpt/db.hpp>
 #include <category/mpt/db_metadata_context.hpp>
 #include <category/mpt/detail/timeline.hpp>
+#include <category/mpt/nibbles_view.hpp>
 #include <category/mpt/ondisk_db_config.hpp>
 #include <category/mpt/state_machine_kind.hpp>
 #include <category/mpt/trie.hpp>
+#include <category/mpt/util.hpp>
 #include <category/statesync/statesync_client.h>
 #include <category/statesync/statesync_client_context.hpp>
+#include <category/statesync/statesync_messages.h>
+#include <category/statesync/statesync_protocol.hpp>
 #include <category/statesync/statesync_server.h>
 #include <category/statesync/statesync_server_context.hpp>
 #include <category/statesync/statesync_version.h>
-#include <category/vm/evm/monad/revision.h>
-#include <category/vm/evm/switch_traits.hpp>
-#include <category/vm/evm/traits.hpp>
+#include <category/vm/code.hpp>
 #include <test_resource_data.h>
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <deque>
 #include <filesystem>
-#include <fstream>
+#include <memory>
+#include <optional>
+#include <stdlib.h>
 #include <sys/sysinfo.h>
+#include <unistd.h>
+#include <utility>
+#include <vector>
 
 using namespace monad;
 using namespace monad::mpt;
@@ -67,7 +76,7 @@ namespace monad::mpt::test
 {
     // Friend-of-Db accessor: lets the temp-db helper stamp the persisted
     // state_machine_kind on a fresh pool, simulating what monad-mpt --create
-    // --state-machine ethereum does in production.
+    // --state-machine monad does in production.
     struct DbAccessor
     {
         static UpdateAux &aux(Db &db)
@@ -106,16 +115,16 @@ namespace
             ::ftruncate(fd, static_cast<off_t>(8ULL * 1024 * 1024 * 1024)));
         ::close(fd);
         char const *const path = dbname.c_str();
-        // Stamp the kind so a later open via Db(OnDiskDbConfig const&) — which
-        // monad_statesync_client_context uses internally — finds a valid kind.
+        // Stamp the kind so a later open via Db(OnDiskDbConfig const&), which
+        // monad_statesync_client_context uses internally, finds a valid kind.
         mpt::Db db{
-            std::make_unique<OnDiskMachine>(),
+            std::make_unique<MonadOnDiskMachine>(),
             mpt::OnDiskDbConfig{
                 .append = false, .dbname_path = path, .chunk_capacity = 24}};
         monad::mpt::test::DbAccessor::aux(db)
             .metadata_ctx()
             .set_state_machine_kind(
-                timeline_id::primary, state_machine_kind::ethereum);
+                timeline_id::primary, state_machine_kind::monad);
         return dbname;
     }
 
@@ -175,34 +184,9 @@ namespace
         }
     }
 
-    // single-timeline server, dual-timeline client
-    template <bool MIP_8_ACTIVE>
-    struct StateSyncFixtureT : public ::testing::Test
+    // Page-encoded server and client, each a single timeline.
+    struct StateSyncFixture : public ::testing::Test
     {
-        static std::unique_ptr<OnDiskMachine> make_server_machine()
-        {
-            if constexpr (MIP_8_ACTIVE) { // if mip_8_is_active, we make server
-                                          // primary db page encoded
-                return std::make_unique<MonadOnDiskMachine>();
-            }
-            else {
-                return std::make_unique<OnDiskMachine>();
-            }
-        }
-
-        struct RevisionConfig
-        {
-            monad_chain_config chain_config;
-            uint64_t timestamp;
-        };
-
-        // This is THE single place to update when a chain's mip8 activation
-        // timestamp changes or MONAD_NEXT is promoted to a concrete revision.
-        // Pre-mip8: testnet at timestamp 0 maps to MONAD_ZERO (slot canonical).
-        static constexpr RevisionConfig PRE_MIP8{CHAIN_CONFIG_MONAD_TESTNET, 0};
-        // Post-mip8: devnet currently maps to MONAD_NEXT for any timestamp
-        static constexpr RevisionConfig POST_MIP8{CHAIN_CONFIG_MONAD_DEVNET, 0};
-
         std::filesystem::path cdbname;
         monad_statesync_client client;
         monad_statesync_client_context *cctx;
@@ -212,17 +196,14 @@ namespace
         monad_statesync_server_context sctx;
         mpt::AsyncIOContext io_ctx;
         mpt::Db ro;
-        RevisionConfig const revision_config;
         monad_statesync_server_network net;
         monad_statesync_server *server{};
 
-        static constexpr bool mip_8_is_active = MIP_8_ACTIVE;
-
-        StateSyncFixtureT()
+        StateSyncFixture()
             : cdbname{tmp_dbname()}
             , cctx{nullptr}
             , sdbname{tmp_dbname()}
-            , sdb{make_server_machine(),
+            , sdb{std::make_unique<MonadOnDiskMachine>(),
                   OnDiskDbConfig{
                       .append = true,
                       .dbname_path = sdbname,
@@ -231,25 +212,12 @@ namespace
             , sctx{stdb}
             , io_ctx{mpt::ReadOnlyOnDiskDbConfig{.dbname_path = sdbname}}
             , ro{io_ctx}
-            , revision_config{MIP_8_ACTIVE ? POST_MIP8 : PRE_MIP8}
         {
-            MONAD_ASSERT(MIP_8_ACTIVE == stdb.is_page_encoded());
+            MONAD_ASSERT(stdb.is_page_encoded());
             sctx.ro = &ro;
-            // The client context now requires a secondary timeline to
-            // already be active on the client db.
-            mpt::Db primary{
-                std::make_unique<OnDiskMachine>(),
-                OnDiskDbConfig{
-                    .append = true,
-                    .dbname_path = cdbname,
-                    .chunk_capacity = 24}};
-            [[maybe_unused]] mpt::Db secondary =
-                primary.activate_secondary_timeline(
-                    std::make_unique<MonadOnDiskMachine>());
-            MONAD_ASSERT(primary.timeline_active(mpt::timeline_id::secondary));
         }
 
-        void init()
+        void init(uint32_t const peer_version = monad_statesync_version())
         {
             // Production C ABI (monad_statesync_client_context_create) does
             // this; tests that bypass the C ABI and call the C++ ctor
@@ -257,7 +225,6 @@ namespace
             monad::register_ethereum_state_machines();
             monad::register_monad_state_machines();
             cctx = new monad_statesync_client_context{
-                revision_config.chain_config,
                 {cdbname},
                 std::make_optional(static_cast<unsigned>(get_nprocs() - 1)),
                 4,
@@ -265,8 +232,7 @@ namespace
                 &statesync_send_request};
             net = {.client = &client, .cctx = cctx};
             for (size_t i = 0; i < monad_statesync_client_prefixes(); ++i) {
-                monad_statesync_client_handle_new_peer(
-                    cctx, i, monad_statesync_version());
+                monad_statesync_client_handle_new_peer(cctx, i, peer_version);
             }
             server = monad_statesync_server_create(
                 &sctx,
@@ -283,13 +249,7 @@ namespace
             }
         }
 
-        monad_revision get_monad_revision() const
-        {
-            return make_monad_chain(revision_config.chain_config)
-                ->get_monad_revision(revision_config.timestamp);
-        }
-
-        ~StateSyncFixtureT()
+        ~StateSyncFixture()
         {
             monad_statesync_client_context_destroy(cctx);
             monad_statesync_server_destroy(server);
@@ -297,176 +257,71 @@ namespace
             std::filesystem::remove(sdbname);
         }
     };
-
-    // Slot-encoded server primary for pre-mip8 fork.
-    using StateSyncFixture = StateSyncFixtureT<false>;
-    // Page-encoded server primary for post-mip8 fork
-    using PageServerStateSyncFixture = StateSyncFixtureT<true>;
-
-    template <typename TFixture>
-    struct StateSyncTestBothForks : public TFixture
-    {
-    };
-
-    using StateSyncTestTypes =
-        ::testing::Types<StateSyncFixture, PageServerStateSyncFixture>;
-    TYPED_TEST_SUITE(StateSyncTestBothForks, StateSyncTestTypes);
-
-    // Trait-aware dispatch wrapper for commit_block
-    void commit_block_dispatch(
-        monad::Db &primary, monad::Db *const secondary,
-        monad_revision const rev, bytes32_t const &block_id,
-        BlockHeader const &header, StateDeltas const &deltas,
-        BlockCommitAncillaries const &anc)
-    {
-        SWITCH_MONAD_TRAITS(
-            commit_block, primary, secondary, block_id, header, deltas, anc);
-        MONAD_ASSERT(false);
-    }
-
-    // Commit one block proposal through the production commit_block path, which
-    // stamps the canonical state_root (slot pre-mip8, page post-mip8) into the
-    // header(s)
-    bytes32_t commit_simple_revision_aware(
-        monad::Db &primary, monad::Db *const secondary,
-        monad_revision const rev, StateDeltas const &deltas, Code const &code,
-        BlockHeader const &header, std::vector<Receipt> const &receipts = {},
-        std::vector<std::vector<CallFrame>> const &call_frames = {},
-        std::vector<Address> const &senders = {},
-        std::vector<Transaction> const &txns = {},
-        std::vector<BlockHeader> const &ommers = {},
-        std::optional<std::vector<Withdrawal>> const &withdrawals =
-            std::nullopt)
-    {
-        bytes32_t const block_id =
-            header.number ? bytes32_t{header.number} : NULL_HASH_BLAKE3;
-        BlockCommitAncillaries const anc{
-            .code = code,
-            .receipts = receipts,
-            .transactions = txns,
-            .senders = senders,
-            .call_frames = call_frames,
-            .ommers = ommers,
-            .withdrawals = withdrawals};
-        commit_block_dispatch(
-            primary, secondary, rev, block_id, header, deltas, anc);
-        return block_id;
-    }
-
-    // Like commit_simple_revision_aware, then finalize and reposition both
-    // timelines (the finalized-block analogue of commit_sequential).
-    void commit_sequential_revision_aware(
-        monad::Db &primary, monad::Db *const secondary,
-        monad_revision const rev, StateDeltas const &deltas, Code const &code,
-        BlockHeader const &header, std::vector<Receipt> const &receipts = {},
-        std::vector<std::vector<CallFrame>> const &call_frames = {},
-        std::vector<Address> const &senders = {},
-        std::vector<Transaction> const &txns = {},
-        std::vector<BlockHeader> const &ommers = {},
-        std::optional<std::vector<Withdrawal>> const &withdrawals =
-            std::nullopt)
-    {
-        bytes32_t const block_id = commit_simple_revision_aware(
-            primary,
-            secondary,
-            rev,
-            deltas,
-            code,
-            header,
-            receipts,
-            call_frames,
-            senders,
-            txns,
-            ommers,
-            withdrawals);
-        primary.finalize(header.number, block_id);
-        primary.set_block_and_prefix(header.number);
-        if (secondary != nullptr) {
-            secondary->finalize(header.number, block_id);
-            secondary->set_block_and_prefix(header.number);
-        }
-    }
 }
 
-// single timeline server -> slot and page-encoded dual db client
-TYPED_TEST(StateSyncTestBothForks, sync_from_latest)
+TEST_F(StateSyncFixture, sync_from_latest)
 {
     constexpr auto N = 1'000'000;
     bytes32_t parent_hash{NULL_HASH};
     {
         mpt::Db db{
-            std::make_unique<OnDiskMachine>(),
+            std::make_unique<MonadOnDiskMachine>(),
             OnDiskDbConfig{
                 .append = true,
                 .dbname_path = this->cdbname,
                 .chunk_capacity = 24}};
         TrieDb tdb{db};
-        // In dual-db set up, both primary and secondary should stay in
-        // lockstep.
-        {
-            auto db2 = db.open_secondary_timeline(
-                std::make_unique<MonadOnDiskMachine>());
-            MONAD_ASSERT(db2.has_value());
-            TrieDb tdb2{*db2};
-            ASSERT_TRUE(tdb2.is_page_encoded());
-            uint64_t const block_number = N - 257;
-            load_header(
-                db.load_root_for_version(block_number),
-                db,
-                BlockHeader{.number = block_number});
-            load_header(
-                db2->load_root_for_version(block_number),
-                *db2,
-                BlockHeader{.number = block_number});
-            for (size_t i = N - 256; i < N; ++i) {
-                BlockHeader const hdr{.parent_hash = parent_hash, .number = i};
-                tdb.set_block_and_prefix(i - 1);
-                tdb2.set_block_and_prefix(i - 1);
-                // Pre-fork (slot canonical): dual-write so both client dbs'
-                // headers carry the same slot state_root.
-                commit_sequential_revision_aware(
-                    tdb,
-                    &tdb2,
-                    this->get_monad_revision(),
-                    StateDeltas({}),
-                    {},
-                    hdr);
-                parent_hash = to_bytes(
-                    keccak256(rlp::encode_block_header(tdb.read_eth_header())));
-            }
-            // Block N: dual-write so both client dbs carry the canonical
-            // header
-            commit_sequential_revision_aware(
-                tdb,
-                &tdb2,
-                this->get_monad_revision(),
-                init_deltas(),
-                init_code(),
-                BlockHeader{.number = N});
-            // a pending proposal at N+1 (not finalized)
-            commit_simple_revision_aware(
-                tdb,
-                &tdb2,
-                this->get_monad_revision(),
-                StateDeltas({}),
-                {},
-                BlockHeader{.number = N + 1});
+        uint64_t const block_number = N - 257;
+        load_header(
+            db.load_root_for_version(block_number),
+            db,
+            BlockHeader{.number = block_number});
+        for (size_t i = N - 256; i < N; ++i) {
+            BlockHeader const hdr{.parent_hash = parent_hash, .number = i};
+            tdb.set_block_and_prefix(i - 1);
+            commit_sequential(tdb, StateDeltas({}), {}, hdr);
+            parent_hash = to_bytes(
+                keccak256(rlp::encode_block_header(tdb.read_eth_header())));
         }
-        this->init();
+        load_db(tdb, N);
+        // a pending proposal at N+1 (not finalized)
+        commit_simple(
+            tdb,
+            StateDeltas({}),
+            {},
+            bytes32_t{N + 1},
+            BlockHeader{.number = N + 1});
+        init();
     }
-    // Canonical root of the load_db state: slot-encoded pre-mip8, page-encoded
-    // post-mip8.
     handle_target(
-        this->cctx,
+        cctx,
         BlockHeader{
             .parent_hash = parent_hash,
             .state_root =
-                this->mip_8_is_active
-                    ? 0x3438aff12a8d7d87cfae57d462e250c2dd03b5b06a5fa50a2eb3c8d397877e79_bytes32
-                    : 0xb9eda41f4a719d9f2ae332e3954de18bceeeba2248a44110878949384b184888_bytes32,
+                0x3438aff12a8d7d87cfae57d462e250c2dd03b5b06a5fa50a2eb3c8d397877e79_bytes32,
             .number = N});
-    EXPECT_TRUE(monad_statesync_client_has_reached_target(this->cctx));
-    EXPECT_TRUE(monad_statesync_client_finalize(this->cctx));
+    EXPECT_TRUE(monad_statesync_client_has_reached_target(cctx));
+    EXPECT_TRUE(monad_statesync_client_finalize(cctx));
+}
+
+// V2 is the version deployed peers run, so it is the one the old-stream gate
+// has to be tested against.
+TEST_F(StateSyncFixture, deployed_peer_selects_v1_protocol)
+{
+    init(MONAD_STATESYNC_VERSION_1_2);
+    handle_target(
+        cctx, BlockHeader{.state_root = stdb.state_root(), .number = 1});
+    ASSERT_FALSE(client.rqs.empty());
+    EXPECT_EQ(client.rqs.front().version, MONAD_STATESYNC_VERSION_1_2);
+}
+
+TEST_F(StateSyncFixture, request_carries_requester_version)
+{
+    init();
+    handle_target(
+        cctx, BlockHeader{.state_root = stdb.state_root(), .number = 1});
+    ASSERT_FALSE(client.rqs.empty());
+    EXPECT_EQ(client.rqs.front().version, MONAD_STATESYNC_VERSION_1_3);
 }
 
 TEST_F(StateSyncFixture, sync_from_empty)
@@ -495,7 +350,7 @@ TEST_F(StateSyncFixture, sync_from_empty)
     BlockHeader const tgrt{
         .parent_hash = parent_hash,
         .state_root =
-            0xb9eda41f4a719d9f2ae332e3954de18bceeeba2248a44110878949384b184888_bytes32,
+            0x3438aff12a8d7d87cfae57d462e250c2dd03b5b06a5fa50a2eb3c8d397877e79_bytes32,
         .number = N};
     handle_target(cctx, tgrt);
     run();
@@ -503,7 +358,7 @@ TEST_F(StateSyncFixture, sync_from_empty)
     EXPECT_TRUE(monad_statesync_client_finalize(cctx));
 
     mpt::Db cdb{
-        std::make_unique<OnDiskMachine>(),
+        std::make_unique<MonadOnDiskMachine>(),
         mpt::OnDiskDbConfig{
             .append = true, .dbname_path = cdbname, .chunk_capacity = 24}};
     TrieDb ctdb{cdb};
@@ -534,24 +389,17 @@ TEST_F(StateSyncFixture, sync_from_empty)
     EXPECT_EQ(hdr.value(), tgrt);
 }
 
-// single timeline server -> slot and page-encoded dual db client
-TYPED_TEST(StateSyncTestBothForks, sync_from_some)
+TEST_F(StateSyncFixture, sync_from_some)
 {
     {
         mpt::Db db{
-            std::make_unique<OnDiskMachine>(),
+            std::make_unique<MonadOnDiskMachine>(),
             OnDiskDbConfig{
                 .append = true,
                 .dbname_path = this->cdbname,
                 .chunk_capacity = 24}};
         TrieDb tdb{db};
-        auto db2_opt =
-            db.open_secondary_timeline(std::make_unique<MonadOnDiskMachine>());
-        MONAD_ASSERT(db2_opt.has_value());
-        TrieDb tdb2{db2_opt.value()};
-        ASSERT_TRUE(tdb2.is_page_encoded());
         load_genesis_state(GENESIS_STATE, tdb);
-        load_genesis_state(GENESIS_STATE, tdb2);
         // commit some proposal to client db
         commit_simple(
             tdb,
@@ -559,36 +407,26 @@ TYPED_TEST(StateSyncTestBothForks, sync_from_some)
             {},
             NULL_HASH_BLAKE3,
             BlockHeader{.number = 1});
-        commit_simple(
-            tdb2,
-            StateDeltas({}),
-            {},
-            NULL_HASH_BLAKE3,
-            BlockHeader{.number = 1});
-        EXPECT_TRUE(db2_opt->load_root_for_version(0) != nullptr);
-        load_genesis_state(GENESIS_STATE, this->stdb);
-        this->init();
+        load_genesis_state(GENESIS_STATE, stdb);
+        init();
     }
 
-    ASSERT_TRUE(this->stdb.get_root() != nullptr);
-    auto const res = this->sdb.find(
-        this->stdb.get_root(), concat(FINALIZED_NIBBLE, BLOCKHEADER_NIBBLE), 0);
+    ASSERT_TRUE(stdb.get_root() != nullptr);
+    auto const res = sdb.find(
+        stdb.get_root(), concat(FINALIZED_NIBBLE, BLOCKHEADER_NIBBLE), 0);
     ASSERT_TRUE(res.has_value() && res.value().is_valid());
-    // Commit a server block, then capture its committed header. The committed
-    // state_root is slot pre-mip8 / page post-mip8.
+    // Commit a server block, then capture its committed header.
     bytes32_t parent_hash = to_bytes(keccak256(res.value().node->value()));
     auto const commit_server_block_update_parent_hash =
         [&](StateDeltas const &deltas,
             Code const &code,
             uint64_t const number) {
-            commit_sequential_revision_aware(
-                this->sctx,
-                nullptr,
-                this->get_monad_revision(),
+            commit_sequential(
+                sctx,
                 deltas,
                 code,
                 BlockHeader{.parent_hash = parent_hash, .number = number});
-            BlockHeader const committed = this->stdb.read_eth_header();
+            BlockHeader const committed = stdb.read_eth_header();
             parent_hash =
                 to_bytes(keccak256(rlp::encode_block_header(committed)));
             return committed;
@@ -601,13 +439,13 @@ TYPED_TEST(StateSyncTestBothForks, sync_from_some)
     constexpr auto ADDR3 = 0x5353535353535353535353535353535353535353_address;
 
     // delete existing account ADDR1
-    auto const acct1 = this->stdb.read_account(ADDR1);
+    auto const acct1 = stdb.read_account(ADDR1);
     MONAD_ASSERT(acct1.has_value());
     auto const hdr1 = commit_server_block_update_parent_hash(
         StateDeltas({{ADDR1, {.account = {acct1, std::nullopt}}}}), Code{}, 1);
 
     // new storage to existing account ADDR2
-    auto acct2 = this->stdb.read_account(ADDR2);
+    auto acct2 = stdb.read_account(ADDR2);
     auto const hdr2 = commit_server_block_update_parent_hash(
         StateDeltas(
             {{ADDR2,
@@ -645,7 +483,7 @@ TYPED_TEST(StateSyncTestBothForks, sync_from_some)
         3);
 
     // delete storage in account ADDR2
-    acct2 = this->stdb.read_account(ADDR2);
+    acct2 = stdb.read_account(ADDR2);
     auto const hdr4 = commit_server_block_update_parent_hash(
         StateDeltas(
             {{ADDR2,
@@ -658,7 +496,7 @@ TYPED_TEST(StateSyncTestBothForks, sync_from_some)
         4);
 
     // account incarnation for ADDR2
-    auto const old = this->stdb.read_account(ADDR2);
+    auto const old = stdb.read_account(ADDR2);
     acct2 = old;
     acct2->incarnation = Incarnation{5, 0};
     auto const hdr5 = commit_server_block_update_parent_hash(
@@ -673,33 +511,33 @@ TYPED_TEST(StateSyncTestBothForks, sync_from_some)
         5);
 
     // delete smart contract at ADDR3
-    auto const acct3 = this->stdb.read_account(ADDR3);
+    auto const acct3 = stdb.read_account(ADDR3);
     MONAD_ASSERT(acct3.has_value());
     auto const hdr6 = commit_server_block_update_parent_hash(
         StateDeltas({{ADDR3, {.account = {acct3, std::nullopt}}}}), Code{}, 6);
 
-    handle_target(this->cctx, hdr1);
-    this->run();
+    handle_target(cctx, hdr1);
+    run();
 
-    handle_target(this->cctx, hdr2);
-    this->run();
+    handle_target(cctx, hdr2);
+    run();
 
-    handle_target(this->cctx, hdr3);
-    this->run();
+    handle_target(cctx, hdr3);
+    run();
 
-    handle_target(this->cctx, hdr4);
-    this->run();
+    handle_target(cctx, hdr4);
+    run();
 
-    handle_target(this->cctx, hdr5);
-    this->run();
+    handle_target(cctx, hdr5);
+    run();
 
-    handle_target(this->cctx, hdr6);
-    this->run();
+    handle_target(cctx, hdr6);
+    run();
 
-    EXPECT_TRUE(monad_statesync_client_finalize(this->cctx));
+    EXPECT_TRUE(monad_statesync_client_finalize(cctx));
 
     // find transaction trie
-    mpt::RODb cdb{ReadOnlyOnDiskDbConfig{.dbname_path = this->cdbname}};
+    mpt::RODb const cdb{ReadOnlyOnDiskDbConfig{.dbname_path = this->cdbname}};
     for (auto const nibble :
          {RECEIPT_NIBBLE,
           TRANSACTION_NIBBLE,
@@ -713,41 +551,35 @@ TYPED_TEST(StateSyncTestBothForks, sync_from_some)
     }
 }
 
-TYPED_TEST(StateSyncTestBothForks, deletion_proposal)
+TEST_F(StateSyncFixture, deletion_proposal)
 {
     {
         mpt::Db db{
-            std::make_unique<OnDiskMachine>(),
+            std::make_unique<MonadOnDiskMachine>(),
             OnDiskDbConfig{
                 .append = true,
                 .dbname_path = this->cdbname,
                 .chunk_capacity = 24}};
         TrieDb tdb{db};
-        auto db2_opt =
-            db.open_secondary_timeline(std::make_unique<MonadOnDiskMachine>());
-        MONAD_ASSERT(db2_opt.has_value());
-        TrieDb tdb2{db2_opt.value()};
-        ASSERT_TRUE(tdb2.is_page_encoded());
         load_genesis_state(GENESIS_STATE, tdb);
-        load_genesis_state(GENESIS_STATE, tdb2);
 
-        load_genesis_state(GENESIS_STATE, this->stdb);
-        this->init();
+        load_genesis_state(GENESIS_STATE, stdb);
+        init();
     }
-    ASSERT_TRUE(this->stdb.get_root() != nullptr);
-    auto const res = this->sdb.find(
-        this->stdb.get_root(), concat(FINALIZED_NIBBLE, BLOCKHEADER_NIBBLE), 0);
+    ASSERT_TRUE(stdb.get_root() != nullptr);
+    auto const res = sdb.find(
+        stdb.get_root(), concat(FINALIZED_NIBBLE, BLOCKHEADER_NIBBLE), 0);
     ASSERT_TRUE(res.has_value() && res.value().is_valid());
     // delete ADDR1 on one fork
     {
         constexpr auto ADDR1 =
             0x000d836201318ec6899a67540690382780743280_address;
-        auto const acct = this->sctx.read_account(ADDR1);
+        auto const acct = sctx.read_account(ADDR1);
         ASSERT_TRUE(acct.has_value());
         StateDeltas deltas{{ADDR1, {.account = {acct, std::nullopt}}}};
-        this->sctx.set_block_and_prefix(0);
+        sctx.set_block_and_prefix(0);
         commit_simple(
-            this->sctx,
+            sctx,
             StateDeltas(std::move(deltas)),
             Code{},
             bytes32_t{1},
@@ -757,30 +589,30 @@ TYPED_TEST(StateSyncTestBothForks, deletion_proposal)
     {
         constexpr auto ADDR2 =
             0x001762430ea9c3a26e5749afdb70da5f78ddbb8c_address;
-        auto const acct = this->sctx.read_account(ADDR2);
+        auto const acct = sctx.read_account(ADDR2);
         ASSERT_TRUE(acct.has_value());
         StateDeltas deltas{{ADDR2, {.account = {acct, std::nullopt}}}};
-        this->sctx.set_block_and_prefix(0);
+        sctx.set_block_and_prefix(0);
         commit_simple(
-            this->sctx,
+            sctx,
             StateDeltas(std::move(deltas)),
             Code{},
             bytes32_t{2},
             BlockHeader{.number = 1});
     }
-    this->sctx.finalize(1, bytes32_t{2});
+    sctx.finalize(1, bytes32_t{2});
 
-    this->sctx.set_block_and_prefix(1, bytes32_t{1});
-    auto const bad_header = this->sctx.read_eth_header();
+    sctx.set_block_and_prefix(1, bytes32_t{1});
+    auto const bad_header = sctx.read_eth_header();
 
-    this->sctx.set_block_and_prefix(1, bytes32_t{2});
-    auto const finalized_header = this->sctx.read_eth_header();
+    sctx.set_block_and_prefix(1, bytes32_t{2});
+    auto const finalized_header = sctx.read_eth_header();
 
     EXPECT_NE(finalized_header.state_root, bad_header.state_root);
-    handle_target(this->cctx, finalized_header);
-    this->run();
+    handle_target(cctx, finalized_header);
+    run();
 
-    EXPECT_TRUE(monad_statesync_client_finalize(this->cctx));
+    EXPECT_TRUE(monad_statesync_client_finalize(cctx));
 }
 
 TEST_F(StateSyncFixture, sync_one_account)
@@ -821,127 +653,11 @@ TEST_F(StateSyncFixture, sync_one_account)
     EXPECT_TRUE(monad_statesync_client_finalize(cctx));
 }
 
-// Pre-fork dual-timeline server -> dual-timeline client
-TEST_F(StateSyncFixture, pre_fork_dual_timeline_server_to_dual_db_client)
+// Multi-slot pages: several slots share each server page leaf, and the client
+// must rebuild the same pages.
+TEST_F(StateSyncFixture, sync_multi_slot_pages)
 {
-    mpt::Db secondary_sdb =
-        sdb.activate_secondary_timeline(std::make_unique<MonadOnDiskMachine>());
-    TrieDb secondary_stdb{secondary_sdb};
-    ASSERT_TRUE(secondary_stdb.is_page_encoded());
-
     init();
-    uint64_t const timestamp = revision_config.timestamp;
-    monad_revision const rev = cctx->chain->get_monad_revision(timestamp);
-
-    // ADDR_A holds five slots: three share one page_key, two share another, so
-    // the page secondary holds genuine multi-slot pages. The server dual-writes
-    // every block to both its slot primary and page secondary via commit_block;
-    // the client in turn receives slot-encoded upserts and dual-writes them to
-    // its own slot Db1 and page Db2. The test compares the two page tries at
-    // the end.
-    constexpr auto N = 1'000'000;
-    bytes32_t parent_hash{NULL_HASH};
-    load_header(
-        sdb.load_root_for_version(N - 257),
-        sdb,
-        BlockHeader{.number = N - 257});
-    load_header(
-        secondary_sdb.load_root_for_version(N - 257),
-        secondary_sdb,
-        BlockHeader{.number = N - 257});
-    for (size_t i = N - 256; i < N; ++i) {
-        stdb.set_block_and_prefix(i - 1);
-        secondary_stdb.set_block_and_prefix(i - 1);
-        commit_sequential_revision_aware(
-            stdb,
-            &secondary_stdb,
-            rev,
-            {},
-            Code{},
-            BlockHeader{
-                .parent_hash = parent_hash,
-                .number = i,
-                .timestamp = timestamp});
-        EXPECT_EQ(
-            stdb.read_eth_header().state_root,
-            secondary_stdb.read_eth_header().state_root);
-        parent_hash = to_bytes(
-            keccak256(rlp::encode_block_header(stdb.read_eth_header())));
-    }
-
-    // Slots 0x00, 0x01, 0x7f all map to page_key 0 (low 7 bits are offset).
-    // Slots 0x80, 0x81 map to page_key 1.
-    constexpr auto slot_a = bytes32_t{uint64_t{0x00}};
-    constexpr auto slot_b = bytes32_t{uint64_t{0x01}};
-    constexpr auto slot_c = bytes32_t{uint64_t{0x7f}};
-    constexpr auto slot_d = bytes32_t{uint64_t{0x80}};
-    constexpr auto slot_e = bytes32_t{uint64_t{0x81}};
-    constexpr auto val_a =
-        0x00000000000000000000000000000000000000000000000000000000000000aa_bytes32;
-    constexpr auto val_b =
-        0x00000000000000000000000000000000000000000000000000000000000000bb_bytes32;
-    constexpr auto val_c =
-        0x00000000000000000000000000000000000000000000000000000000000000cc_bytes32;
-    constexpr auto val_d =
-        0x00000000000000000000000000000000000000000000000000000000000000dd_bytes32;
-    constexpr auto val_e =
-        0x00000000000000000000000000000000000000000000000000000000000000ee_bytes32;
-
-    ASSERT_EQ(compute_page_key(slot_a), compute_page_key(slot_b));
-    ASSERT_EQ(compute_page_key(slot_a), compute_page_key(slot_c));
-    ASSERT_EQ(compute_page_key(slot_d), compute_page_key(slot_e));
-    ASSERT_NE(compute_page_key(slot_a), compute_page_key(slot_d));
-
-    StateDeltas const storage_deltas{
-        {ADDR_A,
-         StateDelta{
-             .account = {std::nullopt, Account{.balance = 100}},
-             .storage = {
-                 {slot_a, {bytes32_t{}, val_a}},
-                 {slot_b, {bytes32_t{}, val_b}},
-                 {slot_c, {bytes32_t{}, val_c}},
-                 {slot_d, {bytes32_t{}, val_d}},
-                 {slot_e, {bytes32_t{}, val_e}}}}}};
-
-    // Dual-write the state block to both timelines
-    commit_sequential_revision_aware(
-        stdb,
-        &secondary_stdb,
-        rev,
-        storage_deltas,
-        Code{},
-        BlockHeader{.number = N, .timestamp = timestamp});
-
-    handle_target(
-        cctx,
-        BlockHeader{
-            .parent_hash = parent_hash,
-            .state_root = stdb.read_eth_header().state_root,
-            .number = N,
-            .timestamp = timestamp});
-    run();
-
-    EXPECT_TRUE(monad_statesync_client_finalize(cctx));
-
-    // both timelines db state root should match
-    cctx->tdb.set_block_and_prefix(N);
-    stdb.set_block_and_prefix(N);
-    EXPECT_EQ(stdb.state_root(), cctx->tdb.state_root());
-
-    cctx->secondary_tdb->set_block_and_prefix(N);
-    secondary_stdb.set_block_and_prefix(N);
-    EXPECT_EQ(secondary_stdb.state_root(), cctx->secondary_tdb->state_root());
-}
-
-TEST_F(
-    PageServerStateSyncFixture, post_fork_sync_page_primary_to_dual_db_client)
-{
-    ASSERT_TRUE(this->stdb.is_page_encoded());
-
-    this->init();
-    uint64_t const timestamp = this->revision_config.timestamp;
-    monad_revision const rev = this->cctx->chain->get_monad_revision(timestamp);
-    ASSERT_TRUE(mip_8_active(rev));
 
     // ADDR_A holds five slots: 0x00/0x01/0x7f share one page, 0x80/0x81 a
     // second page, so the server holds genuine multi-slot pages to expand.
@@ -974,16 +690,11 @@ TEST_F(
         BlockHeader{.number = N - 257});
     for (size_t i = N - 256; i < N; ++i) {
         stdb.set_block_and_prefix(i - 1);
-        commit_sequential_revision_aware(
+        commit_sequential(
             stdb,
-            nullptr,
-            rev,
-            {},
+            StateDeltas({}),
             Code{},
-            BlockHeader{
-                .parent_hash = parent_hash,
-                .number = i,
-                .timestamp = timestamp});
+            BlockHeader{.parent_hash = parent_hash, .number = i});
         parent_hash = to_bytes(
             keccak256(rlp::encode_block_header(stdb.read_eth_header())));
     }
@@ -999,30 +710,255 @@ TEST_F(
                  {slot_d, {bytes32_t{}, val_d}},
                  {slot_e, {bytes32_t{}, val_e}}}}}};
 
-    commit_sequential_revision_aware(
-        stdb,
-        nullptr,
-        rev,
-        storage_deltas,
-        Code{},
-        BlockHeader{.number = N, .timestamp = timestamp});
+    commit_sequential(stdb, storage_deltas, Code{}, BlockHeader{.number = N});
 
     handle_target(
         cctx,
         BlockHeader{
             .parent_hash = parent_hash,
             .state_root = stdb.state_root(),
-            .number = N,
-            .timestamp = timestamp});
+            .number = N});
     run();
 
     EXPECT_TRUE(monad_statesync_client_finalize(cctx));
 
-    // Post-fork the client's page secondary must match the page-encoded server
-    // primary.
+    // The client's page trie must match the server's.
     stdb.set_block_and_prefix(N);
-    cctx->secondary_tdb->set_block_and_prefix(N);
-    EXPECT_EQ(stdb.state_root(), cctx->secondary_tdb->state_root());
+    cctx->tdb.set_block_and_prefix(N);
+    EXPECT_EQ(stdb.state_root(), cctx->tdb.state_root());
+}
+
+// A page-encoded server sends each page leaf verbatim, so the client builds
+// the page from the record instead of reading it back to merge into.
+TEST_F(StateSyncFixture, page_records_skip_page_reads)
+{
+    init();
+
+    // 0x00/0x01/0x7f share one page, 0x80/0x81 a second.
+    constexpr auto slot_a = bytes32_t{uint64_t{0x00}};
+    constexpr auto slot_b = bytes32_t{uint64_t{0x01}};
+    constexpr auto slot_c = bytes32_t{uint64_t{0x7f}};
+    constexpr auto slot_d = bytes32_t{uint64_t{0x80}};
+    constexpr auto slot_e = bytes32_t{uint64_t{0x81}};
+    constexpr auto val_a =
+        0x00000000000000000000000000000000000000000000000000000000000000aa_bytes32;
+    constexpr auto val_b =
+        0x00000000000000000000000000000000000000000000000000000000000000bb_bytes32;
+    constexpr auto val_c =
+        0x00000000000000000000000000000000000000000000000000000000000000cc_bytes32;
+    constexpr auto val_d =
+        0x00000000000000000000000000000000000000000000000000000000000000dd_bytes32;
+    constexpr auto val_e =
+        0x00000000000000000000000000000000000000000000000000000000000000ee_bytes32;
+
+    ASSERT_EQ(compute_page_key(slot_a), compute_page_key(slot_c));
+    ASSERT_NE(compute_page_key(slot_a), compute_page_key(slot_d));
+
+    constexpr auto N = 1'000'000;
+    bytes32_t parent_hash{NULL_HASH};
+    load_header(
+        sdb.load_root_for_version(N - 257),
+        sdb,
+        BlockHeader{.number = N - 257});
+    for (size_t i = N - 256; i < N; ++i) {
+        stdb.set_block_and_prefix(i - 1);
+        commit_sequential(
+            stdb,
+            StateDeltas({}),
+            Code{},
+            BlockHeader{.parent_hash = parent_hash, .number = i});
+        parent_hash = to_bytes(
+            keccak256(rlp::encode_block_header(stdb.read_eth_header())));
+    }
+
+    StateDeltas const storage_deltas{
+        {ADDR_A,
+         StateDelta{
+             .account = {std::nullopt, Account{.balance = 100}},
+             .storage = {
+                 {slot_a, {bytes32_t{}, val_a}},
+                 {slot_b, {bytes32_t{}, val_b}},
+                 {slot_c, {bytes32_t{}, val_c}},
+                 {slot_d, {bytes32_t{}, val_d}},
+                 {slot_e, {bytes32_t{}, val_e}}}}}};
+
+    commit_sequential(stdb, storage_deltas, Code{}, BlockHeader{.number = N});
+
+    handle_target(
+        cctx,
+        BlockHeader{
+            .parent_hash = parent_hash,
+            .state_root = stdb.state_root(),
+            .number = N});
+    run();
+
+    uint64_t const page_reads = cctx->tdb.storage_read_count();
+
+    EXPECT_TRUE(monad_statesync_client_finalize(cctx));
+
+    stdb.set_block_and_prefix(N);
+    cctx->tdb.set_block_and_prefix(N);
+    EXPECT_EQ(stdb.state_root(), cctx->tdb.state_root());
+
+    // Both of ADDR_A's pages arrived whole, so neither was read back.
+    EXPECT_EQ(page_reads, 0);
+}
+
+// The mirror of page_records_skip_page_reads: a peer at V2, the version
+// deployed peers run, must get the old stream. A page record on that stream
+// would be an unknown record the client rejects, aborting the syncing node, so
+// the gate being stuck on is the direction that breaks deployed peers.
+TEST_F(StateSyncFixture, deployed_peer_falls_back_to_page_reads)
+{
+    init(MONAD_STATESYNC_VERSION_1_2);
+
+    constexpr auto slot_a = bytes32_t{uint64_t{0x00}};
+    constexpr auto slot_b = bytes32_t{uint64_t{0x01}};
+    constexpr auto slot_c = bytes32_t{uint64_t{0x7f}};
+    constexpr auto slot_d = bytes32_t{uint64_t{0x80}};
+    constexpr auto slot_e = bytes32_t{uint64_t{0x81}};
+    constexpr auto val_a =
+        0x00000000000000000000000000000000000000000000000000000000000000aa_bytes32;
+    constexpr auto val_b =
+        0x00000000000000000000000000000000000000000000000000000000000000bb_bytes32;
+    constexpr auto val_c =
+        0x00000000000000000000000000000000000000000000000000000000000000cc_bytes32;
+    constexpr auto val_d =
+        0x00000000000000000000000000000000000000000000000000000000000000dd_bytes32;
+    constexpr auto val_e =
+        0x00000000000000000000000000000000000000000000000000000000000000ee_bytes32;
+
+    constexpr auto N = 1'000'000;
+    bytes32_t parent_hash{NULL_HASH};
+    load_header(
+        sdb.load_root_for_version(N - 257),
+        sdb,
+        BlockHeader{.number = N - 257});
+    for (size_t i = N - 256; i < N; ++i) {
+        stdb.set_block_and_prefix(i - 1);
+        commit_sequential(
+            stdb,
+            StateDeltas({}),
+            Code{},
+            BlockHeader{.parent_hash = parent_hash, .number = i});
+        parent_hash = to_bytes(
+            keccak256(rlp::encode_block_header(stdb.read_eth_header())));
+    }
+
+    StateDeltas const storage_deltas{
+        {ADDR_A,
+         StateDelta{
+             .account = {std::nullopt, Account{.balance = 100}},
+             .storage = {
+                 {slot_a, {bytes32_t{}, val_a}},
+                 {slot_b, {bytes32_t{}, val_b}},
+                 {slot_c, {bytes32_t{}, val_c}},
+                 {slot_d, {bytes32_t{}, val_d}},
+                 {slot_e, {bytes32_t{}, val_e}}}}}};
+
+    commit_sequential(stdb, storage_deltas, Code{}, BlockHeader{.number = N});
+
+    handle_target(
+        cctx,
+        BlockHeader{
+            .parent_hash = parent_hash,
+            .state_root = stdb.state_root(),
+            .number = N});
+    ASSERT_FALSE(client.rqs.empty());
+    EXPECT_EQ(client.rqs.front().version, MONAD_STATESYNC_VERSION_1_2);
+    run();
+
+    uint64_t const page_reads = cctx->tdb.storage_read_count();
+
+    EXPECT_TRUE(monad_statesync_client_finalize(cctx));
+
+    stdb.set_block_and_prefix(N);
+    cctx->tdb.set_block_and_prefix(N);
+    EXPECT_EQ(stdb.state_root(), cctx->tdb.state_root());
+
+    // No coverage without page records: each of ADDR_A's two pages is read
+    // back once to merge into.
+    EXPECT_EQ(page_reads, 2);
+}
+
+// The commit window is the one thing that can interleave with page coverage:
+// with upserts_per_commit lowered, a commit lands between the two page records
+// of one account, so the first page is already on disk when the second is built
+// from an empty page. Nothing else in the tree sets upserts_per_commit, so this
+// interleaving is otherwise unexercised.
+TEST_F(StateSyncFixture, mid_stream_commits_preserve_pages)
+{
+    init();
+    // Low enough that a commit lands after every page record.
+    cctx->upserts_per_commit = 2;
+
+    constexpr auto N = 1'000'000;
+    bytes32_t parent_hash{NULL_HASH};
+    load_header(
+        sdb.load_root_for_version(N - 257),
+        sdb,
+        BlockHeader{.number = N - 257});
+    for (size_t i = N - 256; i < N; ++i) {
+        stdb.set_block_and_prefix(i - 1);
+        commit_sequential(
+            stdb,
+            StateDeltas({}),
+            Code{},
+            BlockHeader{.parent_hash = parent_hash, .number = i});
+        parent_hash = to_bytes(
+            keccak256(rlp::encode_block_header(stdb.read_eth_header())));
+    }
+
+    // Two pages per account: 0x00/0x01 on one, 0x80/0x81/0x82 on the next.
+    auto const two_page_storage = [](uint8_t const seed) {
+        return StateDelta{
+            .account = {std::nullopt, Account{.balance = 100}},
+            .storage = {
+                {bytes32_t{uint64_t{0x00}},
+                 {bytes32_t{}, bytes32_t{uint64_t{seed + 0u}}}},
+                {bytes32_t{uint64_t{0x01}},
+                 {bytes32_t{}, bytes32_t{uint64_t{seed + 1u}}}},
+                {bytes32_t{uint64_t{0x80}},
+                 {bytes32_t{}, bytes32_t{uint64_t{seed + 2u}}}},
+                {bytes32_t{uint64_t{0x81}},
+                 {bytes32_t{}, bytes32_t{uint64_t{seed + 3u}}}},
+                {bytes32_t{uint64_t{0x82}},
+                 {bytes32_t{}, bytes32_t{uint64_t{seed + 4u}}}}}};
+    };
+
+    ASSERT_EQ(
+        compute_page_key(bytes32_t{uint64_t{0x00}}),
+        compute_page_key(bytes32_t{uint64_t{0x01}}));
+    ASSERT_NE(
+        compute_page_key(bytes32_t{uint64_t{0x01}}),
+        compute_page_key(bytes32_t{uint64_t{0x80}}));
+
+    StateDeltas const storage_deltas{
+        {ADDR_A, two_page_storage(0xa0)},
+        {ADDR_B, two_page_storage(0xb0)},
+        {ADDR_C, two_page_storage(0xc0)}};
+
+    commit_sequential(stdb, storage_deltas, Code{}, BlockHeader{.number = N});
+
+    handle_target(
+        cctx,
+        BlockHeader{
+            .parent_hash = parent_hash,
+            .state_root = stdb.state_root(),
+            .number = N});
+    run();
+
+    uint64_t const page_reads = cctx->tdb.storage_read_count();
+
+    EXPECT_TRUE(monad_statesync_client_finalize(cctx));
+
+    stdb.set_block_and_prefix(N);
+    cctx->tdb.set_block_and_prefix(N);
+    EXPECT_EQ(stdb.state_root(), cctx->tdb.state_root());
+
+    // Coverage is granted before the commit that consumes it, so no page is
+    // read back even though commits land between records.
+    EXPECT_EQ(page_reads, 0);
 }
 
 TEST_F(StateSyncFixture, sync_empty)
@@ -1056,7 +992,7 @@ TEST_F(StateSyncFixture, sync_client_has_proposals)
     {
         // init client DB
         mpt::Db db{
-            std::make_unique<OnDiskMachine>(),
+            std::make_unique<MonadOnDiskMachine>(),
             OnDiskDbConfig{
                 .append = true, .dbname_path = cdbname, .chunk_capacity = 24}};
         TrieDb tdb{db};
@@ -1092,7 +1028,7 @@ TEST_F(StateSyncFixture, sync_client_has_proposals)
     BlockHeader const tgrt{
         .parent_hash = parent_hash,
         .state_root =
-            0xb9eda41f4a719d9f2ae332e3954de18bceeeba2248a44110878949384b184888_bytes32,
+            0x3438aff12a8d7d87cfae57d462e250c2dd03b5b06a5fa50a2eb3c8d397877e79_bytes32,
         .number = N};
     handle_target(cctx, tgrt);
     run();
@@ -1329,7 +1265,7 @@ TEST_F(StateSyncFixture, delete_storage_after_account_deletion)
     BlockHeader hdr{
         .parent_hash = parent_hash,
         .state_root =
-            0x92c33474d175fb59002e90f3625f9850b8305519318701e61f3fd8341d63983d_bytes32,
+            0xe0e21f93c7b5e5f90cf3b93142153f9fdf312fd54ac8b898afc23b399f6881c0_bytes32,
         .number = 1'000'000};
     commit_sequential(
         sctx,
@@ -1414,7 +1350,7 @@ TEST_F(StateSyncFixture, update_contract_twice)
         .incarnation = Incarnation{1, 0}};
 
     hdr.state_root =
-        0x3dda8f21af5ec3d4caea2b3b2bddd988e3f1ff1fbfdbaa87a6477bbfce356d26_bytes32;
+        0x9b578b1731c41625e45949119ddcd5255e588ba02e17ff3d8a5a3e1b15a84cf8_bytes32;
     hdr.number = 1;
     commit_sequential(
         sctx,
@@ -1436,7 +1372,7 @@ TEST_F(StateSyncFixture, update_contract_twice)
     hdr.parent_hash =
         to_bytes(keccak256(rlp::encode_block_header(stdb.read_eth_header())));
     hdr.state_root =
-        0xca4adc8c322ed636a12f74b72d88536795f70e74c8c9b6448ad57058a57664af_bytes32;
+        0x9234ef997132f63682a40f6b4c74cf5f839c8346eec2759f88220f84b1f55361_bytes32;
     hdr.number = 2;
     commit_sequential(
         sctx,
@@ -1685,7 +1621,7 @@ TEST_F(StateSyncFixture, validation_prefix_bytes_too_large)
     }
     init();
 
-    monad_sync_request rq{
+    monad_sync_request const rq{
         .prefix = 0,
         .prefix_bytes = 9, // exceeds maximum of 8 - INVALID
         .target = 99,
@@ -1716,7 +1652,7 @@ TEST_F(StateSyncFixture, validation_target_invalid)
     }
     init();
 
-    monad_sync_request rq{
+    monad_sync_request const rq{
         .prefix = 0,
         .prefix_bytes = 8,
         .target = INVALID_BLOCK_NUM, // invalid target
@@ -1746,7 +1682,7 @@ TEST_F(StateSyncFixture, validation_from_greater_than_until)
     }
     init();
 
-    monad_sync_request rq{
+    monad_sync_request const rq{
         .prefix = 0,
         .prefix_bytes = 8,
         .target = 99,
@@ -1776,7 +1712,7 @@ TEST_F(StateSyncFixture, validation_until_greater_than_target)
     }
     init();
 
-    monad_sync_request rq{
+    monad_sync_request const rq{
         .prefix = 0,
         .prefix_bytes = 8,
         .target = 99,
@@ -1806,7 +1742,7 @@ TEST_F(StateSyncFixture, validation_old_target_greater_than_target)
     }
     init();
 
-    monad_sync_request rq{
+    monad_sync_request const rq{
         .prefix = 0,
         .prefix_bytes = 8,
         .target = 50,
@@ -1821,10 +1757,10 @@ TEST_F(StateSyncFixture, validation_old_target_greater_than_target)
 
 TEST(ProtocolValidation, storage_deletion_rejects_oversized_key)
 {
-    StatesyncProtocolV1_2 proto;
+    StatesyncProtocolV1_2 const proto{MONAD_STATESYNC_VERSION_1_2};
 
-    Address a{0xdeadbeef};
-    byte_string oversized_key(33, 0xff);
+    Address const a{0xdeadbeef};
+    byte_string const oversized_key(33, 0xff);
 
     byte_string buf{};
     buf += to_byte_string_view(a.bytes);
@@ -1836,24 +1772,19 @@ TEST(ProtocolValidation, storage_deletion_rejects_oversized_key)
 
 TEST(ProtocolValidation, upserts_reject_trailing_bytes)
 {
-    StatesyncProtocolV1_2 proto;
+    StatesyncProtocolV1_2 const proto{MONAD_STATESYNC_VERSION_1_2};
 
     auto const dbname = tmp_dbname();
     {
-        monad::register_ethereum_state_machines();
+        monad::register_monad_state_machines();
         monad_statesync_client client;
         monad_statesync_client_context ctx{
-            CHAIN_CONFIG_MONAD_TESTNET,
-            {dbname},
-            std::nullopt,
-            4,
-            &client,
-            &statesync_send_request};
+            {dbname}, std::nullopt, 4, &client, &statesync_send_request};
 
-        Address a{0xdeadbeef};
-        Account acct{.balance = 1};
-        bytes32_t key{1};
-        bytes32_t val{2};
+        Address const a{0xdeadbeef};
+        Account const acct{.balance = 1};
+        bytes32_t const key{1};
+        bytes32_t const val{2};
 
         auto account_buf = encode_account_db(a, acct);
         account_buf.push_back(0xff);
@@ -1903,9 +1834,310 @@ TEST(ProtocolValidation, upserts_reject_trailing_bytes)
     std::filesystem::remove(dbname);
 }
 
+namespace
+{
+    // addr followed by the page leaf, as SYNC_TYPE_UPSERT_STORAGE_PAGE carries
+    // it; slots are given as (slot_key, value) so callers name real keys.
+    byte_string page_record(
+        Address const &addr,
+        std::vector<std::pair<bytes32_t, bytes32_t>> const &slots)
+    {
+        MONAD_ASSERT(!slots.empty());
+        auto const page_key = compute_page_key(slots.front().first);
+        storage_page_t page;
+        for (auto const &[slot_key, val] : slots) {
+            MONAD_ASSERT(compute_page_key(slot_key) == page_key);
+            page.set(compute_slot_offset(slot_key), val);
+        }
+        byte_string record{addr.bytes, sizeof(addr.bytes)};
+        record.append(encode_storage_page_db(page_key, page));
+        return record;
+    }
+
+    struct BareClient
+    {
+        std::filesystem::path dbname;
+        monad_statesync_client client;
+        monad_statesync_client_context ctx;
+
+        explicit BareClient(uint32_t const peer_version)
+            : dbname{tmp_dbname()}
+            , client{}
+            , ctx{{dbname}, std::nullopt, 4, &client, &statesync_send_request}
+        {
+            monad_statesync_client_handle_new_peer(&ctx, 0, peer_version);
+        }
+
+        ~BareClient()
+        {
+            std::filesystem::remove(dbname);
+        }
+    };
+}
+
+// A peer at V2, the version deployed peers run, has no
+// SYNC_TYPE_UPSERT_STORAGE_PAGE in its vocabulary. A server that sends one
+// anyway -- by mistake, or a hostile/mismatched peer -- must fail the record
+// rather than reach an assert, since this is unauthenticated wire input.
+TEST(ProtocolValidation, page_record_rejected_by_deployed_peer)
+{
+    monad::register_monad_state_machines();
+    BareClient c{MONAD_STATESYNC_VERSION_1_2};
+
+    auto const record = page_record(
+        ADDR_A, {{bytes32_t{uint64_t{0x00}}, bytes32_t{uint64_t{0xaa}}}});
+    EXPECT_FALSE(monad_statesync_client_handle_upsert(
+        &c.ctx,
+        0,
+        SYNC_TYPE_UPSERT_STORAGE_PAGE,
+        record.data(),
+        record.size()));
+}
+
+// The page leaf comes off the wire, so every way it can fail to decode has to
+// fail the record rather than abort: no address, no leaf, a truncated leaf,
+// trailing bytes past a well-formed one, and a page key compute_page_key cannot
+// produce, whose coverage no applied slot would ever map back to.
+TEST(ProtocolValidation, malformed_page_record_rejected)
+{
+    monad::register_monad_state_machines();
+    BareClient c{monad_statesync_version()};
+
+    auto const send = [&c](byte_string const &record) {
+        return monad_statesync_client_handle_upsert(
+            &c.ctx,
+            0,
+            SYNC_TYPE_UPSERT_STORAGE_PAGE,
+            record.data(),
+            record.size());
+    };
+
+    auto const record = page_record(
+        ADDR_A,
+        {{bytes32_t{uint64_t{0x00}}, bytes32_t{uint64_t{0xaa}}},
+         {bytes32_t{uint64_t{0x01}}, bytes32_t{uint64_t{0xbb}}}});
+    ASSERT_GT(record.size(), sizeof(Address) + 1);
+
+    EXPECT_FALSE(send(byte_string{ADDR_A.bytes, sizeof(ADDR_A.bytes) - 1}));
+    EXPECT_FALSE(send(byte_string{ADDR_A.bytes, sizeof(ADDR_A.bytes)}));
+    EXPECT_FALSE(send(record.substr(0, record.size() - 1)));
+
+    byte_string trailing{record};
+    trailing.push_back(0xff);
+    EXPECT_FALSE(send(trailing));
+
+    storage_page_t page;
+    page.set(0, bytes32_t{uint64_t{0xaa}});
+    byte_string non_canonical{ADDR_A.bytes, sizeof(ADDR_A.bytes)};
+    non_canonical.append(encode_storage_page_db(
+        0x0200000000000000000000000000000000000000000000000000000000000000_bytes32,
+        page));
+    EXPECT_FALSE(send(non_canonical));
+
+    EXPECT_FALSE(c.ctx.covered_pages.contains(ADDR_A));
+    EXPECT_TRUE(send(record));
+    EXPECT_TRUE(c.ctx.covered_pages.contains(ADDR_A));
+}
+
+// Both storage record types name their key with an unbounded RLP string, and
+// the decoder converts it with to_bytes, which asserts on more than 32 bytes.
+// A record built by hand -- page_record() derives its key with
+// compute_page_key and so cannot express this -- must be rejected instead.
+TEST(ProtocolValidation, oversized_storage_key_rejected)
+{
+    monad::register_monad_state_machines();
+    BareClient c{monad_statesync_version()};
+
+    auto const send =
+        [&c](monad_sync_type const type, byte_string const &record) {
+            return monad_statesync_client_handle_upsert(
+                &c.ctx, 0, type, record.data(), record.size());
+        };
+
+    byte_string const oversized(sizeof(bytes32_t) + 1, 0xff);
+    auto const prefixed = [](byte_string const &leaf) {
+        byte_string record{ADDR_A.bytes, sizeof(ADDR_A.bytes)};
+        record.append(leaf);
+        return record;
+    };
+
+    storage_page_t page;
+    page.set(0, bytes32_t{uint64_t{0xaa}});
+    EXPECT_FALSE(send(
+        SYNC_TYPE_UPSERT_STORAGE_PAGE,
+        prefixed(rlp::encode_list2(
+            rlp::encode_string2(oversized),
+            rlp::encode_string2(encode_storage_page(page))))));
+
+    bytes32_t const val{uint64_t{0xaa}};
+    EXPECT_FALSE(send(
+        SYNC_TYPE_UPSERT_STORAGE,
+        prefixed(rlp::encode_list2(
+            rlp::encode_string2(oversized),
+            rlp::encode_bytes32_compact(val)))));
+    EXPECT_FALSE(send(
+        SYNC_TYPE_UPSERT_STORAGE,
+        prefixed(rlp::encode_list2(
+            rlp::encode_bytes32_compact(val),
+            rlp::encode_string2(oversized)))));
+
+    EXPECT_FALSE(c.ctx.covered_pages.contains(ADDR_A));
+    EXPECT_TRUE(c.ctx.deltas.empty());
+    EXPECT_TRUE(c.ctx.buffered.empty());
+}
+
+// An empty page decodes fine but carries no slot, so accepting it would grant
+// coverage that no slot backs. A slot-granular delete on that page in the same
+// commit window would then rebuild it from empty and delete the whole page
+// entry, dropping every slot held on disk for it.
+TEST(ProtocolValidation, empty_page_record_rejected)
+{
+    monad::register_monad_state_machines();
+    BareClient c{monad_statesync_version()};
+
+    byte_string record{ADDR_A.bytes, sizeof(ADDR_A.bytes)};
+    record.append(encode_storage_page_db(bytes32_t{}, storage_page_t{}));
+
+    EXPECT_FALSE(monad_statesync_client_handle_upsert(
+        &c.ctx,
+        0,
+        SYNC_TYPE_UPSERT_STORAGE_PAGE,
+        record.data(),
+        record.size()));
+    EXPECT_FALSE(c.ctx.covered_pages.contains(ADDR_A));
+}
+
+// The commit window bounds slot deltas held, not records seen: a page record
+// carrying n slots advances it by n, and the window closes on reaching the
+// threshold rather than on an exact multiple of it, which a record worth more
+// than one delta can step over.
+TEST(ProtocolValidation, commit_window_counts_page_slots)
+{
+    monad::register_monad_state_machines();
+    BareClient c{monad_statesync_version()};
+
+    c.ctx.upserts_per_commit = 3;
+
+    auto const send = [&c](byte_string const &record) {
+        return monad_statesync_client_handle_upsert(
+            &c.ctx,
+            0,
+            SYNC_TYPE_UPSERT_STORAGE_PAGE,
+            record.data(),
+            record.size());
+    };
+
+    ASSERT_TRUE(send(page_record(
+        ADDR_A,
+        {{bytes32_t{uint64_t{0x00}}, bytes32_t{uint64_t{0xaa}}},
+         {bytes32_t{uint64_t{0x01}}, bytes32_t{uint64_t{0xbb}}}})));
+    EXPECT_EQ(c.ctx.n_upserts, 2);
+    EXPECT_TRUE(c.ctx.covered_pages.contains(ADDR_A));
+
+    ASSERT_TRUE(send(page_record(
+        ADDR_A,
+        {{bytes32_t{uint64_t{0x80}}, bytes32_t{uint64_t{0xcc}}},
+         {bytes32_t{uint64_t{0x81}}, bytes32_t{uint64_t{0xdd}}}})));
+    EXPECT_EQ(c.ctx.n_upserts, 0);
+    EXPECT_FALSE(c.ctx.covered_pages.contains(ADDR_A));
+}
+
+// Coverage is only ever valid for the delta set it was granted against, so it
+// must not survive the commit that flushes those deltas. Without the clear, a
+// later storage delete on a covered page rebuilds it from scratch and drops
+// every slot the delete did not mention.
+TEST(ProtocolValidation, coverage_does_not_survive_commit)
+{
+    monad::register_monad_state_machines();
+    BareClient c{monad_statesync_version()};
+
+    auto const record = page_record(
+        ADDR_A, {{bytes32_t{uint64_t{0x00}}, bytes32_t{uint64_t{0xaa}}}});
+    ASSERT_TRUE(monad_statesync_client_handle_upsert(
+        &c.ctx,
+        0,
+        SYNC_TYPE_UPSERT_STORAGE_PAGE,
+        record.data(),
+        record.size()));
+    ASSERT_TRUE(c.ctx.covered_pages.contains(ADDR_A));
+
+    c.ctx.commit();
+    EXPECT_FALSE(c.ctx.covered_pages.contains(ADDR_A));
+}
+
+// Deleting an account voids its pending storage without committing, so the
+// coverage granted against those slots must go with them -- otherwise a later
+// partial page for the same account is built from scratch and loses the rest.
+TEST(ProtocolValidation, coverage_dropped_when_account_deleted)
+{
+    monad::register_monad_state_machines();
+    BareClient c{monad_statesync_version()};
+
+    auto const record = page_record(
+        ADDR_A, {{bytes32_t{uint64_t{0x00}}, bytes32_t{uint64_t{0xaa}}}});
+    ASSERT_TRUE(monad_statesync_client_handle_upsert(
+        &c.ctx,
+        0,
+        SYNC_TYPE_UPSERT_STORAGE_PAGE,
+        record.data(),
+        record.size()));
+    ASSERT_TRUE(c.ctx.covered_pages.contains(ADDR_A));
+
+    ASSERT_TRUE(monad_statesync_client_handle_upsert(
+        &c.ctx,
+        0,
+        SYNC_TYPE_UPSERT_ACCOUNT_DELETE,
+        ADDR_A.bytes,
+        sizeof(ADDR_A.bytes)));
+    EXPECT_FALSE(c.ctx.covered_pages.contains(ADDR_A));
+}
+
+// The one commit that can land inside a page record: storage_update commits on
+// an incarnation conflict, before any of this page's slots are recorded. Since
+// that commit clears covered_pages, coverage has to be granted after the slot
+// loop, not before it.
+TEST(ProtocolValidation, coverage_granted_after_incarnation_commit)
+{
+    monad::register_monad_state_machines();
+    BareClient c{monad_statesync_version()};
+
+    auto const account = encode_account_db(ADDR_A, Account{.balance = 100});
+    ASSERT_TRUE(monad_statesync_client_handle_upsert(
+        &c.ctx, 0, SYNC_TYPE_UPSERT_ACCOUNT, account.data(), account.size()));
+    c.ctx.commit();
+
+    // With the account on disk, the delete becomes a pending nullopt delta,
+    // which is what makes the next non-zero slot commit.
+    ASSERT_TRUE(monad_statesync_client_handle_upsert(
+        &c.ctx,
+        0,
+        SYNC_TYPE_UPSERT_ACCOUNT_DELETE,
+        ADDR_A.bytes,
+        sizeof(ADDR_A.bytes)));
+    ASSERT_TRUE(c.ctx.deltas.contains(ADDR_A));
+    ASSERT_FALSE(c.ctx.deltas.at(ADDR_A).has_value());
+
+    auto const record = page_record(
+        ADDR_A,
+        {{bytes32_t{uint64_t{0x00}}, bytes32_t{uint64_t{0xaa}}},
+         {bytes32_t{uint64_t{0x01}}, bytes32_t{uint64_t{0xbb}}}});
+    ASSERT_TRUE(monad_statesync_client_handle_upsert(
+        &c.ctx,
+        0,
+        SYNC_TYPE_UPSERT_STORAGE_PAGE,
+        record.data(),
+        record.size()));
+
+    // The commit happened while applying the first slot, so it cleared nothing
+    // this record contributed.
+    EXPECT_FALSE(c.ctx.deltas.contains(ADDR_A));
+    EXPECT_TRUE(c.ctx.covered_pages.contains(ADDR_A));
+}
+
 TEST(StatesyncVersion, wire_encoding)
 {
     EXPECT_EQ(MONAD_STATESYNC_VERSION_1_2, 0x00010002u);
+    EXPECT_EQ(MONAD_STATESYNC_VERSION_1_3, 0x00010003u);
 }
 
 TEST(StatesyncVersion, compatibility_range)
@@ -1913,6 +2145,7 @@ TEST(StatesyncVersion, compatibility_range)
     EXPECT_EQ(monad_statesync_version(), MONAD_STATESYNC_VERSION);
     EXPECT_TRUE(monad_statesync_client_compatible(MONAD_STATESYNC_VERSION_MIN));
     EXPECT_TRUE(monad_statesync_client_compatible(MONAD_STATESYNC_VERSION_1_2));
+    EXPECT_TRUE(monad_statesync_client_compatible(MONAD_STATESYNC_VERSION_1_3));
     // 0x00010001 is v1, which peers no longer speak.
     EXPECT_FALSE(
         monad_statesync_client_compatible(MONAD_STATESYNC_VERSION_MIN - 1));

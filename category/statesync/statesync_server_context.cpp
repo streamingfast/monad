@@ -13,21 +13,32 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <category/core/address.hpp>
 #include <category/core/assert.h>
-#include <category/core/basic_formatter.hpp>
-#include <category/core/byte_string.hpp>
+#include <category/core/bytes.hpp>
 #include <category/core/config.hpp>
+#include <category/core/likely.h>
 #include <category/core/log.hpp>
+#include <category/execution/ethereum/core/block.hpp>
 #include <category/execution/ethereum/core/fmt/address_fmt.hpp>
 #include <category/execution/ethereum/core/fmt/bytes_fmt.hpp>
-#include <category/execution/ethereum/core/rlp/bytes_rlp.hpp>
+#include <category/execution/ethereum/db/commit_builder.hpp>
 #include <category/execution/ethereum/db/trie_db.hpp>
-#include <category/mpt/db.hpp>
+#include <category/execution/ethereum/state2/state_deltas.hpp>
+#include <category/execution/monad/db/storage_page.hpp>
+#include <category/mpt/util.hpp>
 #include <category/statesync/statesync_server_context.hpp>
+#include <category/vm/code.hpp>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <deque>
+#include <functional>
 #include <mutex>
+#include <optional>
+#include <utility>
+#include <vector>
 
 using namespace monad;
 using namespace monad::mpt;
@@ -93,14 +104,9 @@ void on_finalize(
     ctx.deletions.write(block_number, it->deletions);
 
     // gc proposals of older blocks than finalized block
-    proposals.erase(
-        std::remove_if(
-            proposals.begin(),
-            proposals.end(),
-            [block_number](ProposedDeletions const &p) {
-                return p.block_number <= block_number;
-            }),
-        proposals.end());
+    std::erase_if(proposals, [block_number](ProposedDeletions const &p) {
+        return p.block_number <= block_number;
+    });
 }
 
 MONAD_ANONYMOUS_NAMESPACE_END
@@ -217,6 +223,9 @@ monad_statesync_server_context::monad_statesync_server_context(TrieDb &rw)
     : rw{rw}
     , ro{nullptr}
 {
+    // The server traversal expands page leaves into slot-format upserts and
+    // has no slot-encoded path.
+    MONAD_ASSERT(rw.is_page_encoded());
 }
 
 bool monad_statesync_server_context::is_page_encoded() const

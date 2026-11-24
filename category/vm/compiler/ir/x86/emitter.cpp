@@ -52,10 +52,12 @@
 #include <functional>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <unordered_map>
 #include <utility>
@@ -286,7 +288,7 @@ namespace monad::vm::compiler::native
     template <size_t N>
     size_t Emitter::RoSubdata<N>::DataHash::operator()(Data const &x) const
     {
-        static_assert((N != 1) && (std::popcount(N) == 1));
+        static_assert(N == 2 || N == 4 || N % 8 == 0);
         if constexpr (N == 2) {
             uint16_t d;
             std::memcpy(&d, x.data(), N);
@@ -353,6 +355,35 @@ namespace monad::vm::compiler::native
         }
         int32_t const offset = it->second;
         return x86::qword_ptr(label_, offset);
+    }
+
+    // The three values are stored contiguously, so that a load may span
+    // two of them, starting `line_offset` bytes into a 64 byte cache line.
+    asmjit::x86::Mem Emitter::RoData::add96(
+        uint256_t const &x0, uint256_t const &x1, uint256_t const &x2,
+        int32_t const line_offset)
+    {
+        // The bound in `add32`, with room for a padding chunk and all three
+        if (MONAD_UNLIKELY(data_.size() >= (1 << 26) - 3)) {
+            throw Nativecode::SizeEstimateOutOfBounds{estimate_size()};
+        }
+
+        std::array<uint8_t, 96> a;
+        store_le(a.data(), x0);
+        store_le(a.data() + 32, x1);
+        store_le(a.data() + 64, x2);
+        auto const [it, is_new] = sub96_.offmap.try_emplace(a);
+        if (is_new) {
+            if (((static_cast<int32_t>(data_.size()) << 5) & 63) !=
+                line_offset) {
+                data_.emplace_back();
+            }
+            it->second = static_cast<int32_t>(data_.size()) << 5;
+            data_.push_back(x0);
+            data_.push_back(x1);
+            data_.push_back(x2);
+        }
+        return x86::qword_ptr(label_, it->second);
     }
 
     asmjit::x86::Mem
@@ -610,6 +641,8 @@ namespace monad::vm::compiler::native
         , rodata_{as_.newNamedLabel("ROD")}
         , exponential_constant_fold_counter_{0}
         , accumulated_static_work_{0}
+        , final_stack_dep_counts_{
+              std::make_unique_for_overwrite<int32_t[]>(1024)}
     {
 #ifdef MONAD_VM_TESTING
         as_.addDiagnosticOptions(kValidateAssembler);
@@ -699,7 +732,7 @@ namespace monad::vm::compiler::native
                 ro_section_name,
                 ro_section_name_len,
                 asmjit::SectionFlags::kReadOnly,
-                32,
+                64,
                 ro_section_index);
             as_.section(ro_section);
 
@@ -941,13 +974,6 @@ namespace monad::vm::compiler::native
         as_.int3();
     }
 
-    void Emitter::checked_debug_comment(std::string const &msg)
-    {
-        if (debug_logger_.file()) {
-            unchecked_debug_comment(msg);
-        }
-    }
-
     void Emitter::swap_general_regs(StackElem &x, StackElem &y)
     {
         MONAD_ASSERT(x.general_reg().has_value());
@@ -1015,9 +1041,7 @@ namespace monad::vm::compiler::native
 
     bool Emitter::begin_new_block(basic_blocks::Block const &b)
     {
-        if (debug_logger_.file()) {
-            unchecked_debug_comment(std::format("{}", b));
-        }
+        checked_debug_comment("  0x{:02x}:", b.offset);
         if (keep_stack_in_next_block_) {
             stack_.continue_block(b);
         }
@@ -1315,7 +1339,8 @@ namespace monad::vm::compiler::native
 
         auto const min_delta = stack_.min_delta();
         auto const max_delta = stack_.max_delta();
-        if (min_delta < -1024 || max_delta > 1024) {
+        if (max_delta - min_delta > 1024) {
+            // No stack size passes both of the checks below.
             as_.jmp(error_label_);
             return false;
         }
@@ -1428,9 +1453,20 @@ namespace monad::vm::compiler::native
         //
         // Such a dependency means that `d` is occupying a final stack offset
         // to which stack element `e` needs to be located before leaving the
-        // basic block. The below map `dep_counts` is used to count the number
-        // of dependencies of all the stack elements on the stack.
-        std::unordered_map<StackElem *, int32_t> dep_counts;
+        // basic block. `dep_count(e)` is the number of dependencies of stack
+        // element `e`, stored in `final_stack_dep_counts_` at the lowest stack
+        // index of `e`. The vector `elems` holds the stack elements in stack
+        // index order, which keeps the emitted code independent of heap
+        // addresses.
+        auto const n = static_cast<size_t>(top_index - min_delta) + 1;
+        MONAD_DEBUG_ASSERT(n <= 1024);
+        std::fill_n(final_stack_dep_counts_.get(), n, 0);
+        auto const dep_count = [&](StackElem const *e) -> int32_t & {
+            return final_stack_dep_counts_[static_cast<size_t>(
+                *e->stack_indices().begin() - min_delta)];
+        };
+        std::vector<StackElem *> elems;
+        elems.reserve(n);
         for (int32_t i = min_delta; i <= top_index; ++i) {
             auto const d = stack_.get(i);
 
@@ -1442,7 +1478,7 @@ namespace monad::vm::compiler::native
                 // Already visited
                 continue;
             }
-            dep_counts.insert({d.get(), 0}); // No override
+            elems.push_back(d.get());
             if (!d->stack_offset().has_value()) {
                 continue;
             }
@@ -1457,24 +1493,36 @@ namespace monad::vm::compiler::native
             if (d->avx_reg().has_value()) {
                 continue;
             }
-            ++dep_counts[e];
+            ++dep_count(e);
         }
 
         // The `non_dep` vector contains all the stack elements without
         // dependencies.
         std::vector<StackElem *> non_dep;
-        for (auto const &[e, c] : dep_counts) {
-            if (c == 0) {
+        for (StackElem *const e : elems) {
+            if (dep_count(e) == 0) {
                 non_dep.push_back(e);
             }
         }
 
+        // A 256-bit load of words stored from general registers stalls store
+        // forwarding, so if there is a free AVX register, then we use it to
+        // put such stack elements in `yx1` word by word.
+        auto const temp_x = [&]() -> std::optional<x86::Xmm> {
+            if (!stack_.has_free_avx_reg()) {
+                return std::nullopt;
+            }
+            auto [t, _, spill] = stack_.alloc_avx_reg();
+            MONAD_DEBUG_ASSERT(!spill);
+            return avx_reg_to_xmm(*t->avx_reg());
+        }();
+
         // Write all the stack elements without dependencies. Suppose stack
         // element `e` depends on stack element `d` and `d` does not have
         // any dependencies, i.e. is element of `non_dep`. After writing `d`
-        // to its final stack offsets, we decrease `dep_counts[e]`, because
+        // to its final stack offsets, we decrease `dep_count(e)`, because
         // it is now safe to write `e` to the stack offset which was occupied
-        // by `d`. Insert `e` into `non_dep` if `dep_counts[e]` becomes zero.
+        // by `d`. Insert `e` into `non_dep` if `dep_count(e)` becomes zero.
         while (!non_dep.empty()) {
             StackElem *d = non_dep.back();
             non_dep.pop_back();
@@ -1493,10 +1541,25 @@ namespace monad::vm::compiler::native
             if (!d->avx_reg()) {
                 // Put stack element d in the `yx1` AVX register.
                 if (d->stack_offset()) {
-                    as_.vmovaps(yx1, stack_offset_to_mem(*d->stack_offset()));
+                    if (temp_x &&
+                        d->stack_offset()->moved_from == PrevLoc::GprReg) {
+                        mov_words_to_ymm(
+                            stack_offset_to_mem256(*d->stack_offset()),
+                            yx1,
+                            *temp_x);
+                    }
+                    else {
+                        as_.vmovaps(
+                            yx1, stack_offset_to_mem(*d->stack_offset()));
+                    }
                 }
                 else if (d->literal()) {
                     mov_literal_to_ymm(*d->literal(), yx1);
+                }
+                else if (temp_x && is.size() > 1) {
+                    MONAD_DEBUG_ASSERT(d->general_reg().has_value());
+                    mov_words_to_ymm(
+                        general_reg_to_gpq256(*d->general_reg()), yx1, *temp_x);
                 }
                 else {
                     MONAD_DEBUG_ASSERT(d->general_reg().has_value());
@@ -1533,8 +1596,8 @@ namespace monad::vm::compiler::native
                 if (e == d) {
                     continue;
                 }
-                MONAD_DEBUG_ASSERT(dep_counts[e] > 0);
-                if (--dep_counts[e] == 0) {
+                MONAD_DEBUG_ASSERT(dep_count(e) > 0);
+                if (--dep_count(e) == 0) {
                     non_dep.push_back(e);
                 }
             }
@@ -1561,7 +1624,8 @@ namespace monad::vm::compiler::native
 
         // Write the remaining stack elements in cycles to their final stack
         // offsets.
-        for (auto const [e, ec] : dep_counts) {
+        for (StackElem *const e : elems) {
+            auto const ec = dep_count(e);
             MONAD_DEBUG_ASSERT(ec >= 0);
             if (ec == 0) {
                 // Since stack element e as no dependencies, it has
@@ -1573,10 +1637,10 @@ namespace monad::vm::compiler::native
             cycle.reserve(2);
             StackElem *d = e;
             do {
-                MONAD_DEBUG_ASSERT(dep_counts[d] == 1);
+                MONAD_DEBUG_ASSERT(dep_count(d) == 1);
                 MONAD_DEBUG_ASSERT(!d->avx_reg().has_value());
                 MONAD_DEBUG_ASSERT(d->stack_offset().has_value());
-                dep_counts[d] = 0;
+                dep_count(d) = 0;
                 cycle.push_back(d);
                 MONAD_DEBUG_ASSERT(
                     d->stack_offset()->offset <= stack_.top_index());
@@ -1652,6 +1716,12 @@ namespace monad::vm::compiler::native
             debug_logger_.log(line.c_str());
             debug_logger_.log("\n");
         }
+    }
+
+    void Emitter::unchecked_debug_comment(
+        std::string_view const fmt, std::format_args const args)
+    {
+        unchecked_debug_comment(std::vformat(fmt, args));
     }
 
     // Does not update eflags
@@ -1987,6 +2057,19 @@ namespace monad::vm::compiler::native
         }
     }
 
+    template <typename Word>
+    void Emitter::mov_words_to_ymm(
+        std::array<Word, 4> const &words, x86::Ymm const &y,
+        x86::Xmm const &temp)
+    {
+        MONAD_DEBUG_ASSERT(y.id() != temp.id());
+        as_.vmovq(y.xmm(), words[0]);
+        as_.vmovq(temp, words[2]);
+        as_.vpinsrq(y.xmm(), y.xmm(), words[1], 1);
+        as_.vpinsrq(temp, temp, words[3], 1);
+        as_.vinserti128(y, y, temp, 1);
+    }
+
     void Emitter::mov_stack_elem_to_avx_reg(StackElemRef elem)
     {
         if (elem->avx_reg()) {
@@ -2079,18 +2162,12 @@ namespace monad::vm::compiler::native
         MONAD_DEBUG_ASSERT(elem->general_reg().has_value());
         Gpq256 const &gpq = general_reg_to_gpq256(*elem->general_reg());
         auto const reserv0 = insert_avx_reg(elem);
-        auto const elem_avx = *elem->avx_reg();
-        auto const xmm0 = avx_reg_to_xmm(elem_avx);
-        auto const ymm0 = avx_reg_to_ymm(elem_avx);
+        auto const ymm0 = avx_reg_to_ymm(*elem->avx_reg());
 
         auto [temp_reg, reserv1] = alloc_avx_reg();
         auto const xmm1 = avx_reg_to_xmm(*temp_reg->avx_reg());
 
-        as_.vmovq(xmm0, gpq[0]);
-        as_.vmovq(xmm1, gpq[2]);
-        as_.vpinsrq(xmm0, xmm0, gpq[1], 1);
-        as_.vpinsrq(xmm1, xmm1, gpq[3], 1);
-        as_.vinserti128(ymm0, ymm0, xmm1, 1);
+        mov_words_to_ymm(gpq, ymm0, xmm1);
     }
 
     void Emitter::mov_literal_to_avx_reg(StackElemRef const elem)
@@ -2614,7 +2691,7 @@ namespace monad::vm::compiler::native
     // Discharge
     void Emitter::clz()
     {
-        auto const elem = stack_.pop();
+        auto elem = stack_.pop();
 
         if (elem->literal()) {
             auto const &x = elem->literal()->value;
@@ -2625,31 +2702,36 @@ namespace monad::vm::compiler::native
         discharge_deferred_comparison();
 
         if (elem->general_reg()) {
-            auto const &gpq = general_reg_to_gpq256(*elem->general_reg());
-            std::array<asmjit::x86::Gpq, 4> const &gpq_r64 = {
-                gpq[0].r64(), gpq[1].r64(), gpq[2].r64(), gpq[3].r64()};
-            array_leading_zeros(gpq_r64);
+            Gpq256 const &src = general_reg_to_gpq256(*elem->general_reg());
+            auto [dst, _] = alloc_or_release_general_reg(std::move(elem), {});
+            array_leading_zeros(
+                src, general_reg_to_gpq256(*dst->general_reg()));
+            stack_.push(std::move(dst));
         }
         else if (elem->stack_offset()) {
-            array_leading_zeros(stack_offset_to_mem256(*elem->stack_offset()));
+            auto [dst, _] = alloc_general_reg();
+            array_leading_zeros(
+                stack_offset_to_mem256(*elem->stack_offset()),
+                general_reg_to_gpq256(*dst->general_reg()));
+            stack_.push(std::move(dst));
         }
-        else if (elem->avx_reg()) {
-            // There are no methods to compute CLZ directly from YMM registers
-            // without writing the data to memory. So we spill to the stack and
-            // use array_leading_zeros.
-            mov_stack_elem_to_stack_offset(elem);
-            array_leading_zeros(stack_offset_to_mem256(*elem->stack_offset()));
+        else {
+            MONAD_ASSERT(elem->avx_reg().has_value());
+            AvxRegReserv const elem_reserv{elem};
+            auto [dst, dst_reserv] = alloc_general_reg();
+            auto [tmp, tmp_reserv] = alloc_avx_reg();
+            Gpq256 const &gpq = general_reg_to_gpq256(*dst->general_reg());
+            auto const x = avx_reg_to_xmm(*elem->avx_reg());
+            auto const t = avx_reg_to_xmm(*tmp->avx_reg());
+            // Faster than spilling and reloading the words
+            as_.vmovq(gpq[0], x);
+            as_.vpextrq(gpq[1], x, 1);
+            as_.vextracti128(t, avx_reg_to_ymm(*elem->avx_reg()), 1);
+            as_.vmovq(gpq[2], t);
+            as_.vpextrq(gpq[3], t, 1);
+            array_leading_zeros(gpq, gpq);
+            stack_.push(std::move(dst));
         }
-
-        auto [dst, _] = alloc_general_reg();
-        Gpq256 const &gpq = general_reg_to_gpq256(*dst->general_reg());
-        // mov eax into dst[0]
-        as_.mov(gpq[0].r32(), x86::eax);
-        // zero other parts
-        as_.xor_(gpq[1].r32(), gpq[1].r32());
-        as_.xor_(gpq[2].r32(), gpq[2].r32());
-        as_.xor_(gpq[3].r32(), gpq[3].r32());
-        stack_.push(dst);
     }
 
     // Discharge through `and_` overload
@@ -3314,11 +3396,20 @@ namespace monad::vm::compiler::native
         }
         else {
             MONAD_DEBUG_ASSERT(value->stack_offset().has_value());
-            MONAD_DEBUG_ASSERT(volatile_general_reg == rcx_general_reg);
-            MONAD_DEBUG_ASSERT(
-                !stack_.is_general_reg_on_stack(volatile_general_reg));
-            as_.mov(x86::cl, stack_offset_to_mem(*value->stack_offset()));
-            as_.mov(*mem, x86::cl);
+            auto src = stack_offset_to_mem(*value->stack_offset());
+            src.setSize(4);
+            if (stack_.has_free_general_reg()) {
+                auto [tmp, tmp_reserv] = alloc_general_reg();
+                auto const &gpq = general_reg_to_gpq256(*tmp->general_reg());
+                as_.mov(gpq[0].r32(), src);
+                as_.mov(*mem, gpq[0].r8());
+            }
+            else {
+                auto [tmp, tmp_reserv] = alloc_avx_reg();
+                auto const tmp_x = avx_reg_to_xmm(*tmp->avx_reg());
+                as_.vmovd(tmp_x, src);
+                as_.vpextrb(*mem, tmp_x, 0);
+            }
         }
     }
 
@@ -3416,7 +3507,7 @@ namespace monad::vm::compiler::native
         // `JUMPI` instruction potentially spilling the same stack elements as
         // the predecessor block.
         bool const spill_stack =
-            jump_dests_.count(static_cast<byte_offset>(ft.offset)) ||
+            jump_dests_.contains(static_cast<byte_offset>(ft.offset)) ||
             (ft.terminator == basic_blocks::Terminator::JumpI &&
              stack_.missing_spill_count() > 3 + ft.instrs.size());
         if (spill_stack) {
@@ -5137,12 +5228,13 @@ namespace monad::vm::compiler::native
             discharge_deferred_comparison();
         }
 
-        if (value->avx_reg()) {
-            return shift_avx_reg_by_non_literal<shift_type>(
-                std::move(shift), std::move(value), live);
+        if (value->literal()) {
+            auto const value_literal = value->literal()->value;
+            value.reset(); // Potentially clear locations
+            return shift_literal_by_non_literal<shift_type>(
+                std::move(shift), value_literal, live);
         }
-        else if (value->literal()) {
-            mov_literal_to_avx_reg(value);
+        else if (value->avx_reg()) {
             return shift_avx_reg_by_non_literal<shift_type>(
                 std::move(shift), std::move(value), live);
         }
@@ -5156,6 +5248,81 @@ namespace monad::vm::compiler::native
             return shift_general_reg_by_non_literal<shift_type>(
                 std::move(shift), std::move(value), live);
         }
+    }
+
+    template <Emitter::ShiftType shift_type, typename... LiveSet>
+    StackElemRef Emitter::shift_literal_by_non_literal(
+        StackElemRef shift, uint256_t const &value,
+        std::tuple<LiveSet...> const &live)
+    {
+        destructive_mov_stack_elem_to_bounded_rax(std::move(shift), 256, live);
+
+        // With `value` stored next to 64 bytes of fill, shifting by 8 * k + b
+        // bits is a load at byte offset k shifted by b bits, combined with
+        // the bits carried in from a load one byte further into the fill.
+        // Neither load crosses a cache line for shifts below 256, and the
+        // mask for b sits in 16 bytes of the table neither load reaches.
+        x86::Mem window;
+        x86::Mem bit_mask;
+        if constexpr (shift_type == ShiftType::SHL) {
+            window = rodata_.add96({7, 0, 0, 0}, 0, value, 32);
+            bit_mask = window;
+            window.addOffset(64);
+        }
+        else {
+            bool const negative =
+                shift_type == ShiftType::SAR && (value[3] >> 63);
+            uint256_t const fill =
+                negative ? std::numeric_limits<uint256_t>::max() : 0;
+            window = rodata_.add96(value, fill, {fill[0], fill[1], 7, 0}, 0);
+            bit_mask = window;
+            bit_mask.addOffset(80);
+        }
+
+        auto [dst, dst_reserv] = alloc_avx_reg();
+        auto [tmp1_elem, tmp1_reserv] = alloc_avx_reg();
+        auto [tmp2_elem, tmp2_reserv] = alloc_avx_reg();
+        auto const out = avx_reg_to_ymm(*dst->avx_reg());
+        auto const tmp1 = avx_reg_to_ymm(*tmp1_elem->avx_reg());
+        auto const tmp2 = avx_reg_to_ymm(*tmp2_elem->avx_reg());
+
+        x86::Gpq base = reg_context;
+        if (stack_.has_free_general_reg()) {
+            auto [e, reserv] = alloc_general_reg();
+            // Safe because we are done allocating registers:
+            base = general_reg_to_gpq256(*e->general_reg())[0];
+        }
+        else {
+            as_.push(reg_context);
+        }
+
+        as_.lea(base, window);
+        as_.vmovd(tmp1.xmm(), x86::eax);
+        as_.vpand(tmp1.xmm(), tmp1.xmm(), bit_mask);
+        as_.shr(x86::eax, 3);
+        if constexpr (shift_type == ShiftType::SHL) {
+            as_.neg(x86::rax);
+        }
+        int32_t const carry_offset = shift_type == ShiftType::SHL ? -1 : 1;
+        as_.vmovups(out, x86::ptr(base, x86::rax));
+        as_.vmovups(tmp2, x86::ptr(base, x86::rax, 0, carry_offset));
+        if constexpr (shift_type == ShiftType::SHL) {
+            as_.vpsllq(out, out, tmp1.xmm());
+            as_.vpsllq(tmp2, tmp2, tmp1.xmm());
+            as_.vpsrlq(tmp2, tmp2, 8);
+        }
+        else {
+            as_.vpsrlq(out, out, tmp1.xmm());
+            as_.vpsrlq(tmp2, tmp2, tmp1.xmm());
+            as_.vpsllq(tmp2, tmp2, 8);
+        }
+        as_.vpor(out, out, tmp2);
+
+        if (base == reg_context) {
+            as_.pop(reg_context);
+        }
+
+        return dst;
     }
 
     template <Emitter::ShiftType shift_type, typename... LiveSet>
@@ -6130,6 +6297,19 @@ namespace monad::vm::compiler::native
         // It is later assumed that volatile_general_reg coincides with
         // rdi_general_reg.
         MONAD_DEBUG_ASSERT(rdi_general_reg == volatile_general_reg);
+
+        if (!offset->literal()) {
+            // Memory never shrinks, so these checks need to pass only once.
+            if (offset->touched_memory_size() >= read_size) {
+                mov_stack_elem_low64_to_gpq(offset, x86::rax);
+                as_.add(
+                    x86::rax,
+                    x86::qword_ptr(
+                        reg_context, runtime::context_offset_memory_data));
+                return x86::qword_ptr(x86::rax);
+            }
+            offset->set_touched_memory_size(read_size);
+        }
 
         auto const after_increase_label = as_.newLabel();
 
@@ -8083,39 +8263,34 @@ namespace monad::vm::compiler::native
         }
     }
 
-    // Count the number of leading zeros of the value.
-    // The operands in `arr` must be ordered from least to most significant.
-    //
-    // The implementation optimizes for uniformly distributed values, using a
-    // branched approach to return early when the first non-zero word is found.
-    // For uniformly distributed values, this is more efficient than a cascade
-    // of cmov instructions since the probability of the most significant word
-    // being zero is 1 / 2^64.
-    template <typename T, size_t N>
-    void Emitter::array_leading_zeros(std::array<T, N> const &arr)
+    // Count the number of leading zeros of `src` into `dst`.
+    // The operands in `src` must be ordered from least to most significant.
+    // The registers of `src` may coincide with the registers of `dst`.
+    template <typename T>
+    void
+    Emitter::array_leading_zeros(std::array<T, 4> const &src, Gpq256 const &dst)
     {
-        auto const end_lbl = as_.newLabel();
-        for (size_t i = N; i >= 1; --i) {
-            auto const word_offset = static_cast<int32_t>(64 * (N - i));
-            // Compute number of leading zeros. CF == 1 iff arr[i] == 0
-            as_.lzcnt(x86::rax, arr[i - 1]);
+        // The operands are traversed from least significant to most significant
+        // so that the last non-zero operand determines the result.
+        for (size_t i = 0; i < 4; ++i) {
+            auto const word_offset = static_cast<int32_t>(64 * (3 - i));
+            // Compute number of leading zeros. CF == 1 iff src[i] == 0
+            as_.lzcnt(dst[i], src[i]);
             if (word_offset != 0) {
                 // Leave flags unchanged
-                as_.lea(x86::eax, x86::ptr(x86::eax, word_offset));
+                as_.lea(dst[i].r32(), x86::ptr(dst[i], word_offset));
             }
-            // If arr[i - 1] != 0, jump to end_lbl
-            as_.jnc(end_lbl);
+            if (i != 0) {
+                as_.cmovnc(dst[0].r32(), dst[i].r32()); // if src[i] != 0
+            }
         }
-        as_.bind(end_lbl);
+        for (size_t i = 1; i < 4; ++i) {
+            as_.xor_(dst[i].r32(), dst[i].r32());
+        }
     }
 
     // Count the byte width (number of significant bytes) of the value.
     // The operands in `arr` must be ordered from least to most significant.
-    //
-    // Unlike `array_leading_zeros`, this implementation does not optimize the
-    // case where the input value is uniformly distributed, since
-    // array_byte_width is only used on EXP exponents, which are biased towards
-    // smaller values.
     template <typename T, size_t N>
     void Emitter::array_byte_width(std::array<T, N> const &arr)
     {

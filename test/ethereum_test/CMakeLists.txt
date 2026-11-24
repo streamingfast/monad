@@ -15,45 +15,63 @@
 
 include(ExternalProject)
 
-ExternalProject_Add(
+# Directory of pre-downloaded fixture tarballs. The CI Docker image fills it
+# from the `test_fixtures` stage of docker/Dockerfile, so the build does not
+# have to fetch the (large) tarballs from GitHub on every run. Tarballs that
+# are missing from it are downloaded instead; a tarball whose hash does not
+# match is an error, as it means docker/Dockerfile is out of sync with this
+# file.
+set(MONAD_TEST_FIXTURES_DIR
+    "$ENV{MONAD_TEST_FIXTURES_DIR}"
+    CACHE PATH "Directory of pre-downloaded spec test fixture tarballs")
+
+# The URLs and hashes here are mirrored in the `test_fixtures` stage of
+# docker/Dockerfile; update both together.
+function(add_test_fixtures name url sha256)
+  get_filename_component(filename "${url}" NAME)
+  set(cached "${MONAD_TEST_FIXTURES_DIR}/${filename}")
+  if(MONAD_TEST_FIXTURES_DIR AND EXISTS "${cached}")
+    file(SHA256 "${cached}" cached_sha256)
+    if(cached_sha256 STREQUAL sha256)
+      set(url "${cached}")
+    else()
+      message(FATAL_ERROR
+        "${cached} has SHA256 ${cached_sha256}, expected ${sha256}. "
+        "Update the `test_fixtures` stage of docker/Dockerfile to match "
+        "${url}, or remove the stale tarball from MONAD_TEST_FIXTURES_DIR.")
+    endif()
+  endif()
+
+  ExternalProject_Add(
+    ${name}
+    URL "${url}"
+    URL_HASH "SHA256=${sha256}"
+    PREFIX ${CMAKE_BINARY_DIR}
+    CONFIGURE_COMMAND ""
+    BUILD_COMMAND ""
+    INSTALL_COMMAND ""
+    LOG_DOWNLOAD ON)
+endfunction()
+
+add_test_fixtures(
   ExecutionSpecTestFixtures
-  URL "https://github.com/ethereum/execution-spec-tests/releases/download/v5.4.0/fixtures_develop.tar.gz"
-  URL_HASH "SHA256=3e2b02d49fe903eda4fd8caca5cbf0d139c470e97e1de9a85299b1b034f97099"
-  PREFIX ${CMAKE_BINARY_DIR}
-  CONFIGURE_COMMAND ""
-  BUILD_COMMAND ""
-  INSTALL_COMMAND ""
-  LOG_DOWNLOAD ON)
+  "https://github.com/ethereum/execution-spec-tests/releases/download/v5.4.0/fixtures_develop.tar.gz"
+  3e2b02d49fe903eda4fd8caca5cbf0d139c470e97e1de9a85299b1b034f97099)
 
-ExternalProject_Add(
+add_test_fixtures(
   MonadSpecTestFixtures
-  URL "https://github.com/monad-developers/execution-specs/releases/download/tests-monad@v1.2.2/fixtures_monad.tar.gz"
-  URL_HASH "SHA256=c96c822d2e187e9168aa20f2c158c8a2de96ea076f6e6c473a1b6d3fc5c064df"
-  PREFIX ${CMAKE_BINARY_DIR}
-  CONFIGURE_COMMAND ""
-  BUILD_COMMAND ""
-  INSTALL_COMMAND ""
-  LOG_DOWNLOAD ON)
+  "https://github.com/monad-developers/execution-specs/releases/download/tests-monad@v1.2.2/fixtures_monad.tar.gz"
+  c96c822d2e187e9168aa20f2c158c8a2de96ea076f6e6c473a1b6d3fc5c064df)
 
-ExternalProject_Add(
+add_test_fixtures(
   MonadAmsterdamSpecTestFixtures
-  URL "https://github.com/monad-developers/execution-specs/releases/download/tests-monad_amsterdam@v0.2.0/fixtures_monad_amsterdam.tar.gz"
-  URL_HASH "SHA256=20b2a55f49a4b777f1abc6c196dc0afad22475b0ac598a39cc94fc598e22619d"
-  PREFIX ${CMAKE_BINARY_DIR}
-  CONFIGURE_COMMAND ""
-  BUILD_COMMAND ""
-  INSTALL_COMMAND ""
-  LOG_DOWNLOAD ON)
+  "https://github.com/monad-developers/execution-specs/releases/download/tests-monad_amsterdam@v0.2.0/fixtures_monad_amsterdam.tar.gz"
+  20b2a55f49a4b777f1abc6c196dc0afad22475b0ac598a39cc94fc598e22619d)
 
-ExternalProject_Add(
+add_test_fixtures(
   MonadEip7981SpecTestFixtures
-  URL "https://github.com/monad-developers/execution-specs/releases/download/tests-monad_eip7981@v0.1.0/fixtures_monad_eip7981.tar.gz"
-  URL_HASH "SHA256=d624ec9c38c945c48f43ffb229c0a963660b8506d5bf4fe8068e13df4fdf0b8d"
-  PREFIX ${CMAKE_BINARY_DIR}
-  CONFIGURE_COMMAND ""
-  BUILD_COMMAND ""
-  INSTALL_COMMAND ""
-  LOG_DOWNLOAD ON)
+  "https://github.com/monad-developers/execution-specs/releases/download/tests-monad_eip7981@v0.1.0/fixtures_monad_eip7981.tar.gz"
+  d624ec9c38c945c48f43ffb229c0a963660b8506d5bf4fe8068e13df4fdf0b8d)
 
 add_executable(monad-ethereum-test)
 target_link_libraries(monad-ethereum-test PRIVATE GTest::gtest monad-test-utils)
@@ -80,6 +98,23 @@ monad_compile_options(monad-ethereum-test)
 
 target_link_libraries(monad-ethereum-test PRIVATE monad_unit_test_common)
 
+# Shard the long spec suites and start them first so ctest -j keeps every core
+# busy.
+set(ETHEREUM_TEST_SHARDS 4)
+
+function(add_sharded_test name)
+  math(EXPR last_shard "${ETHEREUM_TEST_SHARDS} - 1")
+  foreach(shard RANGE ${last_shard})
+    add_test(NAME ${name}_${shard} ${ARGN})
+    set_tests_properties(
+      ${name}_${shard}
+      PROPERTIES
+        COST 1000
+        ENVIRONMENT
+        "GTEST_TOTAL_SHARDS=${ETHEREUM_TEST_SHARDS};GTEST_SHARD_INDEX=${shard}")
+  endforeach()
+endfunction()
+
 function(add_ethereum_test)
   set(ONE_VALUE_ARGS FORK)
   cmake_parse_arguments(ADD_ETHEREUM_TEST "" "${ONE_VALUE_ARGS}" "" ${ARGN})
@@ -92,9 +127,9 @@ function(add_ethereum_test)
   list(JOIN ${TESTS_EXCLUDED} ":" TESTS_EXCLUDED)
   set(FILTER "-:${TESTS_EXCLUDED}")
 
-  add_test(NAME ${ADD_ETHEREUM_TEST_FORK}_monad_ethereum_test
-           COMMAND monad-ethereum-test --fork ${ADD_ETHEREUM_TEST_FORK}
-                   --record-exec-events --gtest_filter=${FILTER})
+  add_sharded_test(${ADD_ETHEREUM_TEST_FORK}_monad_ethereum_test
+                   COMMAND monad-ethereum-test --fork ${ADD_ETHEREUM_TEST_FORK}
+                           --record-exec-events --gtest_filter=${FILTER})
 endfunction()
 
 function(add_monad_test)
@@ -109,12 +144,12 @@ function(add_monad_test)
   list(JOIN ${TESTS_EXCLUDED} ":" TESTS_EXCLUDED)
   set(FILTER "-:${TESTS_EXCLUDED}")
 
-  add_test(NAME ${ADD_MONAD_TEST_FORK}_monad_ethereum_test
-           COMMAND monad-ethereum-test --fork ${ADD_MONAD_TEST_FORK}
-                  # TODO: not ready yet
-                  #  --record-exec-events
-                   --blockchain-tests ${CMAKE_BINARY_DIR}/src/MonadSpecTestFixtures/blockchain_tests
-                   --gtest_filter=${FILTER})
+  add_sharded_test(${ADD_MONAD_TEST_FORK}_monad_ethereum_test
+                   COMMAND monad-ethereum-test --fork ${ADD_MONAD_TEST_FORK}
+                          # TODO: not ready yet
+                          #  --record-exec-events
+                           --blockchain-tests ${CMAKE_BINARY_DIR}/src/MonadSpecTestFixtures/blockchain_tests
+                           --gtest_filter=${FILTER})
 endfunction()
 
 add_monad_test(FORK MONAD_EIGHT)
@@ -123,19 +158,19 @@ add_monad_test(FORK MONAD_TEN)
 
 # MONAD_NEXT Amsterdam spec tests, from a separate fixtures release. While the
 # whole suite is excluded (see the exclusion file), the runner exits non-zero
-# via its "No tests were run" guard, so the job is marked WILL_FAIL to keep
+# via its "No tests were run" guard, so shard 0 is marked WILL_FAIL to keep
 # ctest green. WILL_FAIL is set only while the suite is fully excluded: once
 # individual tests are re-enabled by dropping entries from the exclusion list,
 # the job runs normally so real failures (and unexpected passes) surface.
 include(${CMAKE_CURRENT_SOURCE_DIR}/exclude/MONAD_NEXT_amsterdam.cmake)
 list(JOIN MONAD_NEXT_amsterdam_excluded_tests ":" TESTS_EXCLUDED)
-add_test(NAME MONAD_NEXT_amsterdam_monad_ethereum_test
-         COMMAND monad-ethereum-test --fork MONAD_NEXT
-                 --blockchain-tests ${CMAKE_BINARY_DIR}/src/MonadAmsterdamSpecTestFixtures/blockchain_tests
-                 --blockchain-tests ${CMAKE_BINARY_DIR}/src/MonadEip7981SpecTestFixtures/blockchain_tests
-                 --gtest_filter=-:${TESTS_EXCLUDED})
+add_sharded_test(MONAD_NEXT_amsterdam_monad_ethereum_test
+                 COMMAND monad-ethereum-test --fork MONAD_NEXT
+                         --blockchain-tests ${CMAKE_BINARY_DIR}/src/MonadAmsterdamSpecTestFixtures/blockchain_tests
+                         --blockchain-tests ${CMAKE_BINARY_DIR}/src/MonadEip7981SpecTestFixtures/blockchain_tests
+                         --gtest_filter=-:${TESTS_EXCLUDED})
 if(MONAD_NEXT_amsterdam_excluded_tests STREQUAL "BlockchainTests.*")
-  set_tests_properties(MONAD_NEXT_amsterdam_monad_ethereum_test
+  set_tests_properties(MONAD_NEXT_amsterdam_monad_ethereum_test_0
                        PROPERTIES WILL_FAIL TRUE)
 endif()
 

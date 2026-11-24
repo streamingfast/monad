@@ -17,6 +17,7 @@
 #include <category/core/int.hpp>
 #include <category/core/runtime/uint256.hpp>
 #include <category/vm/compiler/ir/basic_blocks.hpp>
+#include <category/vm/compiler/ir/x86.hpp>
 #include <category/vm/compiler/ir/x86/emitter.hpp>
 #include <category/vm/compiler/ir/x86/types.hpp>
 #include <category/vm/compiler/ir/x86/virtual_stack.hpp>
@@ -41,11 +42,13 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
-#include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <limits>
 #include <memory>
+#include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -152,19 +155,9 @@ namespace
         }};
     }
 
-    struct TestStackMemoryDeleter
+    auto test_stack_memory()
     {
-        void operator()(uint8_t *const p) const
-        {
-            std::free(p);
-        }
-    } test_stack_memory_deleter;
-
-    std::unique_ptr<uint8_t, TestStackMemoryDeleter> test_stack_memory()
-    {
-        return {
-            reinterpret_cast<uint8_t *>(std::aligned_alloc(32, 32 * 1024)),
-            test_stack_memory_deleter};
+        return EvmStackAllocator{0}.allocate();
     }
 
     std::vector<Emitter::LocationType> const all_locations = {
@@ -2857,7 +2850,7 @@ TEST(Emitter, shl)
         0x100f0e0d0c0b0a09,
         0x8887868584838281,
         0x908f8e8d8c8b8a89};
-    for (uint64_t i = 0; i <= 260; i += 4) {
+    for (uint64_t i = 0; i <= 260; ++i) {
         uint256_t shifts[5] = {
             i,
             i | (uint256_t{1} << 65),
@@ -2926,7 +2919,7 @@ TEST(Emitter, shr)
         0x100f0e0d0c0b0a09,
         0x8887868584838281,
         0x908f8e8d8c8b8a89};
-    for (uint64_t i = 0; i <= 260; i += 4) {
+    for (uint64_t i = 0; i <= 260; ++i) {
         uint256_t shifts[5] = {
             i,
             i | (uint256_t{1} << 65),
@@ -3029,7 +3022,7 @@ TEST(Emitter, sar)
         0x100f0e0d0c0b0a09,
         0x8887868584838281,
         0x908f8e8d8c8b8a89};
-    for (uint64_t i = 0; i <= 260; i += 4) {
+    for (uint64_t i = 0; i <= 260; ++i) {
         uint256_t shifts[5] = {
             i,
             i | (uint256_t{1} << 65),
@@ -3087,6 +3080,54 @@ TEST(Emitter, sar_max)
     ASSERT_EQ(emit.get_stack().get(0), e);
 }
 
+TEST(Emitter, shift_literal_by_non_literal_without_free_general_reg)
+{
+    asmjit::JitRuntime rt;
+    uint256_t const value{
+        0x0807060504030201,
+        0x100f0e0d0c0b0a09,
+        0x8887868584838281,
+        0x908f8e8d8c8b8a89};
+
+    auto const test = [&](EvmOpCode const opcode,
+                          PureEmitterInstrPtr const instr,
+                          uint256_t const &shift,
+                          uint256_t const &expected) {
+        auto ir = basic_blocks::BasicBlocksIR::unsafe_from(
+            {PUSH0, PUSH0, PUSH0, PUSH0, PUSH0, opcode, PUSH0, RETURN});
+        TestEmitter emit{rt, ir.codesize};
+        (void)emit.begin_new_block(ir.blocks()[0]);
+        for (int32_t i = 0; i < 3; ++i) {
+            emit.push(i);
+            mov_literal_to_location_type(
+                emit, i, Emitter::LocationType::GeneralReg);
+        }
+        ASSERT_FALSE(emit.get_stack().has_free_general_reg());
+        emit.push(value);
+        emit.push(shift);
+        mov_literal_to_location_type(emit, 4, Emitter::LocationType::AvxReg);
+        (emit.*instr)();
+        emit.push(0);
+        emit.return_();
+
+        entrypoint_t entry = emit.finish_contract(rt);
+        evmc_tx_context tx_context{};
+        auto ctx = test_context(&tx_context);
+        auto const &ret = ctx->result;
+        auto stack_memory = test_stack_memory();
+        entry(&*ctx, stack_memory.get());
+
+        ASSERT_EQ(ret.status, runtime::StatusCode::Success);
+        ASSERT_EQ(load_le<uint256_t>(ret.size), expected);
+    };
+
+    for (uint64_t const s : {0u, 1u, 63u, 129u, 255u, 256u}) {
+        test(SHL, &Emitter::shl, s, value << s);
+        test(SHR, &Emitter::shr, s, value >> s);
+        test(SAR, &Emitter::sar, s, sar(s, value));
+    }
+}
+
 TEST(Emitter, clz)
 {
     asmjit::JitRuntime rt;
@@ -3111,6 +3152,110 @@ TEST(Emitter, clz)
         value = value | (uint256_t{0xDEADBEEF} << (i * 4));
         pure_una_instr_test<EvmTraits<MONAD_ETH_OSAKA>>(
             rt, CLZ, &Emitter::clz, value, countl_zero(value));
+    }
+}
+
+TEST(Emitter, clz_without_free_regs)
+{
+    asmjit::JitRuntime rt;
+
+    auto const test = [&](Emitter::LocationType loc, uint256_t const &value) {
+        std::vector<uint8_t> bytecode(
+            1 + GENERAL_REG_COUNT + AVX_REG_COUNT, PUSH0);
+        for (auto const op : {CLZ, PUSH0, RETURN}) {
+            bytecode.push_back(op);
+        }
+        auto ir = basic_blocks::BasicBlocksIR::unsafe_from<
+            EvmTraits<MONAD_ETH_OSAKA>>(std::move(bytecode));
+        TestEmitter emit{rt, ir.codesize};
+        (void)emit.begin_new_block(ir.blocks()[0]);
+
+        // The input takes the first register of its kind, which is the first
+        // candidate for spilling.
+        emit.push(value);
+        mov_literal_to_location_type(emit, 0, loc);
+        int32_t const general_reg_count =
+            GENERAL_REG_COUNT - (loc == Emitter::LocationType::GeneralReg);
+        int32_t const avx_reg_count =
+            AVX_REG_COUNT - (loc == Emitter::LocationType::AvxReg);
+        int32_t i = 1;
+        for (; i <= general_reg_count; ++i) {
+            emit.push(i);
+            mov_literal_to_location_type(
+                emit, i, Emitter::LocationType::GeneralReg);
+        }
+        for (; i <= general_reg_count + avx_reg_count; ++i) {
+            emit.push(i);
+            mov_literal_to_location_type(
+                emit, i, Emitter::LocationType::AvxReg);
+        }
+        ASSERT_FALSE(emit.get_stack().has_free_general_reg());
+        ASSERT_FALSE(emit.get_stack().has_free_avx_reg());
+        emit.swap(static_cast<uint8_t>(i - 1));
+
+        auto const input = emit.get_stack().get(i - 1);
+        emit.clz();
+        if (loc == Emitter::LocationType::AvxReg) {
+            ASSERT_TRUE(input->avx_reg().has_value());
+        }
+        emit.push(0);
+        emit.return_();
+
+        entrypoint_t entry = emit.finish_contract(rt);
+        evmc_tx_context tx_context{};
+        auto ctx = test_context(&tx_context);
+        auto const &ret = ctx->result;
+        auto stack_memory = test_stack_memory();
+        entry(&*ctx, stack_memory.get());
+
+        ASSERT_EQ(ret.status, runtime::StatusCode::Success);
+        ASSERT_EQ(load_le<uint256_t>(ret.size), countl_zero(value));
+    };
+
+    for (auto const loc :
+         {Emitter::LocationType::StackOffset,
+          Emitter::LocationType::GeneralReg,
+          Emitter::LocationType::AvxReg}) {
+        for (auto const n : {0u, 100u, 256u}) {
+            test(loc, std::numeric_limits<uint256_t>::max() >> n);
+        }
+    }
+}
+
+TEST(Emitter, clz_with_deferred_comparison)
+{
+    auto ir =
+        basic_blocks::BasicBlocksIR::unsafe_from<EvmTraits<MONAD_ETH_OSAKA>>(
+            {PUSH0, PUSH0, PUSH0, LT, SWAP1, CLZ, RETURN});
+    asmjit::JitRuntime rt;
+
+    for (auto const loc : all_locations) {
+        for (auto const &[a, b] : {std::pair{1, 2}, std::pair{2, 1}}) {
+            TestEmitter emit{rt, ir.codesize};
+            (void)emit.begin_new_block(ir.blocks()[0]);
+            emit.push(std::numeric_limits<uint256_t>::max());
+            mov_literal_to_location_type(emit, 0, loc);
+            emit.push(b);
+            mov_literal_to_location_type(
+                emit, 1, Emitter::LocationType::StackOffset);
+            emit.push(a);
+            emit.lt();
+            emit.swap(1);
+            ASSERT_TRUE(emit.get_stack().has_deferred_comparison_at(0));
+            emit.clz();
+            emit.return_();
+
+            entrypoint_t entry = emit.finish_contract(rt);
+            evmc_tx_context tx_context{};
+            auto ctx = test_context(&tx_context);
+            auto const &ret = ctx->result;
+            auto stack_memory = test_stack_memory();
+            entry(&*ctx, stack_memory.get());
+
+            ASSERT_EQ(ret.status, runtime::StatusCode::Success);
+            ASSERT_EQ(load_le<uint256_t>(ret.offset), 0);
+            ASSERT_EQ(load_le<uint256_t>(ret.size), a < b);
+        }
     }
 }
 
@@ -3900,6 +4045,66 @@ TEST(Emitter, mload_upper_bound)
     mload_upper_bound_test_impl<runtime::Memory::Version::MIP3>();
 }
 
+template <runtime::Memory::Version memory_version>
+static void memory_repeated_offset_test_impl()
+{
+    std::vector<uint8_t> bytecode{
+        PUSH1,  31,    PUSH1, 1,     DUP2,  MSTORE8, PUSH1, 2,       DUP2,
+        MSTORE, PUSH0, PUSH0, PUSH0, PUSH1, 3,       DUP5,  MSTORE8, POP,
+        POP,    POP,   DUP1,  MLOAD, MSIZE, SWAP1,   RETURN};
+    auto ir = basic_blocks::BasicBlocksIR::unsafe_from(bytecode);
+
+    for (auto loc : all_locations) {
+        asmjit::JitRuntime rt;
+        TestEmitter emit{rt, ir.codesize};
+        (void)emit.begin_new_block(ir.blocks().at(0));
+
+        emit.push(31);
+        mov_literal_to_location_type(emit, 0, loc);
+        emit.push(1);
+        emit.dup(2);
+        emit.mstore8<memory_version>();
+        emit.push(2);
+        emit.dup(2);
+        emit.mstore<memory_version>();
+        for (int32_t i = 1; i <= 3; ++i) {
+            emit.push(0);
+            mov_literal_to_location_type(
+                emit, i, Emitter::LocationType::GeneralReg);
+        }
+        emit.push(3);
+        mov_literal_to_location_type(
+            emit, 4, Emitter::LocationType::StackOffset);
+        emit.dup(5);
+        emit.mstore8<memory_version>();
+        emit.pop();
+        emit.pop();
+        emit.pop();
+        emit.dup(1);
+        emit.mload<memory_version>();
+        emit.msize();
+        emit.swap(1);
+        emit.return_();
+
+        entrypoint_t entry = emit.finish_contract(rt);
+        evmc_tx_context tx_context{};
+        auto ctx = test_context(&tx_context);
+        auto const &ret = ctx->result;
+        auto stack_memory = test_stack_memory();
+        entry(&*ctx, stack_memory.get());
+
+        ASSERT_EQ(ret.status, runtime::StatusCode::Success);
+        ASSERT_EQ(load_le<uint256_t>(ret.offset), (uint256_t{3} << 248) | 2);
+        ASSERT_EQ(load_le<uint256_t>(ret.size), 64);
+    }
+}
+
+TEST(Emitter, MemoryRepeatedOffset)
+{
+    memory_repeated_offset_test_impl<runtime::Memory::Version::V1>();
+    memory_repeated_offset_test_impl<runtime::Memory::Version::MIP3>();
+}
+
 TEST(Emitter, calldataload)
 {
     evmc_tx_context tx_context{};
@@ -4410,4 +4615,90 @@ TEST(Emitter, ReleaseSrcAndDestRegression)
     entry(&*ctx, stack_memory.get());
 
     ASSERT_EQ(ret.status, runtime::StatusCode::Success);
+}
+
+TEST(Emitter, AsmLogLabelsEachInstruction)
+{
+    auto const path = std::filesystem::temp_directory_path() /
+                      "monad_vm_asm_log_labels_each_instruction.s";
+    std::vector<uint8_t> const bytecode{
+        CALLVALUE, PUSH1, 0x06, JUMPI, CALLVALUE, STOP, JUMPDEST, STOP};
+    auto const ir = basic_blocks::BasicBlocksIR::unsafe_from(bytecode);
+
+    asmjit::JitRuntime rt;
+    CompilerConfig config{};
+    config.asm_log_path = path.c_str();
+    (void)compile_basic_blocks<EvmTraits<MONAD_ETH_LATEST_STABLE_REVISION>>(
+        rt, ir, config);
+
+    std::ifstream log{path};
+    std::vector<std::string> labels;
+    for (std::string line; std::getline(log, line);) {
+        if (line.starts_with("//")) {
+            labels.push_back(line);
+        }
+    }
+    std::filesystem::remove(path);
+
+    std::vector<std::string> const expected{
+        "//   0x00:",
+        "//       0x00: CALLVALUE",
+        "//       0x01: PUSH1 0x6",
+        "//     0x03: JumpI 1",
+        "//   0x04:",
+        "//       0x04: CALLVALUE",
+        "//     0x05: Stop",
+        "//   0x06:",
+        "//     0x07: Stop"};
+    EXPECT_EQ(labels, expected);
+}
+
+TEST(Emitter, WriteGeneralRegWordsToFinalStackOffsets)
+{
+    uint256_t const x{1, 2, 3, 4};
+    for (bool const spilled : {false, true}) {
+        for (bool const avx_full : {false, true}) {
+            int32_t const n = avx_full ? AVX_REG_COUNT - 1 : 0;
+            std::vector<uint8_t> bytecode(static_cast<size_t>(n) + 1, PUSH0);
+            bytecode.insert(bytecode.end(), {DUP1, JUMPDEST, RETURN});
+            auto ir = basic_blocks::BasicBlocksIR::unsafe_from(bytecode);
+
+            asmjit::JitRuntime rt;
+            TestEmitter emit{rt, ir.codesize};
+            (void)emit.begin_new_block(ir.blocks().at(0));
+
+            Stack &stack = emit.get_stack();
+
+            for (int32_t i = 0; i < n; ++i) {
+                emit.push(i);
+                mov_literal_to_location_type(
+                    emit, i, Emitter::LocationType::AvxReg);
+            }
+            emit.push(x);
+            mov_literal_to_location_type(
+                emit, n, Emitter::LocationType::GeneralReg);
+            if (spilled) {
+                emit.mov_stack_index_to_stack_offset(n);
+                (void)stack.spill_general_reg(stack.get(n));
+                ASSERT_EQ(
+                    stack.get(n)->stack_offset()->moved_from, PrevLoc::GprReg);
+            }
+            emit.dup(1);
+            emit.fallthrough();
+
+            (void)emit.begin_new_block(ir.blocks().at(1));
+            emit.return_();
+
+            entrypoint_t entry = emit.finish_contract(rt);
+            evmc_tx_context tx_context{};
+            auto ctx = test_context(&tx_context);
+            auto const &ret = ctx->result;
+            auto stack_memory = test_stack_memory();
+            entry(&*ctx, stack_memory.get());
+
+            ASSERT_EQ(ret.status, runtime::StatusCode::Success);
+            ASSERT_EQ(load_le<uint256_t>(ret.offset), x);
+            ASSERT_EQ(load_le<uint256_t>(ret.size), x);
+        }
+    }
 }

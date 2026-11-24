@@ -37,15 +37,20 @@
 #include <nlohmann/json.hpp>
 #include <nlohmann/json_fwd.hpp>
 
+#include <quill/Frontend.h>
+#include <quill/sinks/NullSink.h>
+
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <format>
 #include <ios>
 #include <iostream>
 #include <optional>
 #include <ostream>
+#include <print>
 #include <string>
 #include <vector>
 
@@ -123,7 +128,10 @@ static arguments parse_args(int const argc, char **const argv)
         std::exit(app.exit(e));
     }
 
-    monad::start_logger_minimal();
+    monad_root_logger = quill::Frontend::create_or_get_logger(
+        "root",
+        quill::Frontend::create_or_get_sink<quill::NullSink>("null_sink"));
+    monad_root_logger->set_log_level(quill::LogLevel::None);
 
     return args;
 }
@@ -201,14 +209,14 @@ int mce_main(arguments const &args)
         }
     }();
     if (!ir) {
-        LOG_ERROR("Parsing failed.");
-        monad::flush_logger();
+        std::println(stderr, "Parsing failed.");
         abort();
     }
 
-    Binary bin;
-
     asmjit::JitRuntime rt{};
+
+    // Must be declared after `rt`: ~Nativecode releases its code via `rt`.
+    Binary bin;
 
     native::CompilerConfig config{};
     if (args.asm_log_file) {
@@ -282,7 +290,7 @@ int main(int argc, char **argv)
         return mce_main<EvmTraits<MONAD_ETH_LATEST_STABLE_REVISION>>(args);
     }
     else {
-        LOG_ERROR("unsupported revision '{}'", args.revision);
+        std::println(stderr, "unsupported revision '{}'", args.revision);
         return 1;
     }
 }
